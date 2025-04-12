@@ -1,110 +1,97 @@
 --[[
-  Stormworks UKF Radar Filter - MC1: Preprocessor
+  Stormworks UKF Radar Filter - MC1: Preprocessor (Readability Improved)
   Handles observation buffering, averaging, and angle conversion.
-  Outputs processed data to MC2 via composite signal.
-  Sensor and Radar use the same local frame (Z-fwd, Y-up, X-right).
-  Orientation input uses correct channels and ZYX Euler order.
+  Uses user-provided rotation logic (Code Example 1). No input filtering.
+  Outputs processed data (Avg Dist, Global Azimuth, Global Elevation) to MC2.
 ]]
 
---[[ Log/Error Code Mappings (MC1): (省略) ]]
---[[ ... Log/Error Codes ... ]]
+--[[ Log/Error Code Mappings (MC1):
+  E:va01 - vectorAdd: Dimension mismatch.
+  E:vs01 - vectorSubtract: Dimension mismatch.
+  L:ndc01 - New detection cycle started.
+  L:ao01 - Averaged observation calculated for channel X.
+  E:ao01 - averageObservations: Invalid or empty buffer provided.
+  L:gc01 - Global angles calculated for channel X.
+  E:gc01 - rotateLocalToGlobal_UserA: Calculation failed (likely nil input).
+  E:ga01 - Global angle calculation failed (e.g., sqrt domain error).
+  W:ga01 - Ground distance is zero in global angle calculation.
+  W:ac01 - Angle conversion failed (rotate func returned nil).
+]]
 
 --#################################################################
---# 0. 行列・ベクトル演算 ヘルパー関数群 (MC1で必要なため定義)
+--# 0. 定数定義
 --#################################################################
+local MAX_TARGETS_INPUT = 6 -- 同時に処理する最大目標数
+local PI                = math.pi
+local HALF_PI           = PI / 2
+local PI2               = PI * 2
+
+-- 入力チャンネル定義
+-- レーダー入力 (目標 i = 1 to MAX_TARGETS_INPUT)
+-- Note: base_ch = (i - 1) * 4
+local RADAR_DIST_CH     = function(i) return (i - 1) * 4 + 1 end -- 1, 5, 9, ...
+local RADAR_AZIM_CH     = function(i) return (i - 1) * 4 + 2 end -- 2, 6, 10, ...
+local RADAR_ELEV_CH     = function(i) return (i - 1) * 4 + 3 end -- 3, 7, 11, ...
+local RADAR_ELAPSED_CH  = function(i) return (i - 1) * 4 + 4 end -- 4, 8, 12, ...
+local RADAR_DETECT_CH   = function(i) return i end               -- Bool 1-6
+
+-- 自機姿勢入力 (物理センサーからの再マッピング想定)
+local SELF_YAW_CH       = 28
+local SELF_PITCH_CH     = 29
+local SELF_ROLL_CH      = 30
+
+-- 出力チャンネル定義 (MC2へ)
+-- Note: base_out_ch = (i - 1) * 3 + 1
+local OUT_DIST_CH       = function(i) return (i - 1) * 3 + 1 end -- 1, 4, 7, ...
+local OUT_G_AZIM_CH     = function(i) return (i - 1) * 3 + 2 end -- 2, 5, 8, ...
+local OUT_G_ELEV_CH     = function(i) return (i - 1) * 3 + 3 end -- 3, 6, 9, ...
+local OUT_DETECT_CH     = function(i) return i end               -- Bool 1-6
+
+--#################################################################
+--# 1. グローバル変数 / 状態変数 (トップレベルで初期化)
+--#################################################################
+local observationBuffer = {} -- 観測値バッファ
+local lastDetectionTick = {} -- 最終探知更新tick
+local tickCounter       = 0  -- tickカウンター
+
+--#################################################################
+--# 2. ベクトル演算 ヘルパー関数群
+--#################################################################
+
 --- vectorAdd: ベクトル同士の加算
 function vectorAdd(vecA, vecB)
-    local dimA = #vecA; local dimB = #vecB
-    if dimA ~= dimB then
+    local d1 = #vecA; local d2 = #vecB
+    if d1 ~= d2 then
         debug.log("E:va01"); return nil
     end
-    local r = {}; for i = 1, dimA do r[i] = vecA[i] + vecB[i] end; return r
+    local r = {}
+    for i = 1, d1 do
+        r[i] = vecA[i] + vecB[i]
+    end
+    return r
 end
 
 --- vectorSubtract: ベクトル同士の減算 (vecA - vecB)
 function vectorSubtract(vecA, vecB)
-    local dimA = #vecA; local dimB = #vecB
-    if dimA ~= dimB then
+    local d1 = #vecA; local d2 = #vecB
+    if d1 ~= d2 then
         debug.log("E:vs01"); return nil
     end
-    local r = {}; for i = 1, dimA do r[i] = vecA[i] - vecB[i] end; return r
+    local r = {}
+    for i = 1, d1 do
+        r[i] = vecA[i] - vecB[i]
+    end
+    return r
 end
 
 --- vectorScale: ベクトルのスカラー倍
 function vectorScale(vec, scalar)
-    local r = {}; local dim = #vec; for i = 1, dim do r[i] = vec[i] * scalar end; return r
+    local r = {}; local d = #vec
+    for i = 1, d do
+        r[i] = vec[i] * scalar
+    end
+    return r
 end
-
---- matrixVectorMultiply: 行列とベクトルの乗算 (mat * vec)
-function matrixVectorMultiply(mat, vec)
-    if not mat or #mat == 0 or not mat[1] or #mat[1] == 0 or not vec or #vec == 0 then
-        debug.log("E:mv01"); return nil
-    end
-    local nr = #mat; local nc = #mat[1]; local vd = #vec
-    if nc ~= vd then
-        debug.log("E:mv02"); return nil
-    end
-    local rV = {}; for i = 1, nr do
-        rV[i] = 0; for j = 1, nc do
-            if not mat[i] or mat[i][j] == nil then
-                debug.log("E:mv03"); return nil
-            end; if vec[j] == nil then
-                debug.log("E:mv04"); return nil
-            end; rV[i] = rV[i] + mat[i][j] * vec[j]
-        end
-    end; return rV
-end
-
---- matrixMultiply: 行列同士の乗算 (matA * matB)
-function matrixMultiply(matA, matB)
-    if not matA or #matA == 0 or not matA[1] or #matA[1] == 0 or not matB or #matB == 0 or not matB[1] or #matB[1] == 0 then
-        debug.log("E:mm01"); return nil
-    end
-    local rA = #matA; local cA = #matA[1]; local rB = #matB; local cB = #matB[1]
-    if cA ~= rB then
-        debug.log("E:mm02"); return nil
-    end
-    local rM = {}; for i = 1, rA do
-        rM[i] = {}; for k = 1, cB do
-            local s = 0; for j = 1, cA do
-                if not matA[i] or matA[i][j] == nil or not matB[j] or matB[j][k] == nil then
-                    debug.log("E:mm03"); return nil
-                end; s = s + matA[i][j] * matB[j][k]
-            end; rM[i][k] = s
-        end
-    end; return rM
-end
-
---- matrixTranspose: 行列の転置
-function matrixTranspose(mat)
-    if not mat or #mat == 0 or (mat[1] and #mat[1] == 0) then
-        debug.log("E:mt01"); return nil
-    end
-    local r = #mat; local c = #mat[1] or 0; local rM = {}; for j = 1, c do rM[j] = {} end
-    for i = 1, r do
-        local cCL = #mat[i] or 0; if cCL ~= c and i > 1 then debug.log("W:mt01") end
-        for j = 1, c do
-            if mat[i] and mat[i][j] ~= nil then
-                if not rM[j] then rM[j] = {} end; rM[j][i] = mat[i][j]
-            else
-                if not rM[j] then rM[j] = {} end; rM[j][i] = nil
-            end
-        end
-    end; return rM
-end
-
---#################################################################
---# 1. 定数定義 (トップレベルで定義)
---#################################################################
-local MAX_TARGETS_INPUT = 6
-local PI = math.pi
-
---#################################################################
---# 2. グローバル変数 / 状態変数 (トップレベルで初期化)
---#################################################################
-local observationBuffer = {}
-local lastDetectionTick = {}
-local tickCounter = 0
 
 --#################################################################
 --# 3. 補助関数
@@ -112,88 +99,46 @@ local tickCounter = 0
 
 --- 観測値バッファから平均値を計算する関数
 function averageObservations(buffer)
-    -- (実装は変更なし)
     if not buffer or not buffer.r or not buffer.theta or not buffer.phi or #buffer.r == 0 then
         debug.log("E:ao01"); return nil
     end
-    local count = #buffer.r; if #buffer.theta ~= count or #buffer.phi ~= count then
+    local count = #buffer.r
+    if #buffer.theta ~= count or #buffer.phi ~= count then
         debug.log("E:ao01"); return nil
     end
-    local sum_r, sum_t, sum_p = 0, 0, 0; for i = 1, count do
-        sum_r = sum_r + (buffer.r[i] or 0); sum_t = sum_t + (buffer.theta[i] or 0); sum_p = sum_p + (buffer.phi[i] or 0)
+    local sum_r, sum_t, sum_p = 0, 0, 0
+    for i = 1, count do
+        sum_r = sum_r + (buffer.r[i] or 0)
+        sum_t = sum_t + (buffer.theta[i] or 0)
+        sum_p = sum_p + (buffer.phi[i] or 0)
     end
-    if count == 0 then return { r = 0, theta = 0, phi = 0 } end; return {
+    if count == 0 then return { r = 0, theta = 0, phi = 0 } end
+    return {
         r = sum_r / count,
         theta = sum_t / count,
-        phi =
-            sum_p / count
+        phi = sum_p / count
     }
 end
 
---- ローカル角度をグローバル基準角度に変換する関数 (ZYX Euler Order)
-function angleLocalToGlobal(theta_local, phi_local, self_orientation)
-    if not self_orientation then
-        debug.log("E:ac02"); return nil, nil
+--- ローカル直交座標ベクトルをワールド座標系ベクトルに回転させる関数 (ユーザー提供コード1ベース)
+-- @param pitch number X軸オイラー角 (ラジアン)
+-- @param yaw   number Y軸オイラー角 (ラジアン)
+-- @param roll  number Z軸オイラー角 (ラジアン)
+-- @param Lx number ローカルX座標 (Right)
+-- @param Ly number ローカルY座標 (Up)
+-- @param Lz number ローカルZ座標 (Forward)
+-- @return table or nil ワールド座標系での相対ベクトル {x=dX(East), y=dY(Altitude/Up), z=dZ(North)}
+function rotateLocalToGlobal_UserA(pitch, yaw, roll, Lx, Ly, Lz)
+    if not pitch or not yaw or not roll or not Lx or not Ly or not Lz then
+        debug.log("E:gc01"); return nil
     end
-
-    -- 1. 入力角度をラジアンに変換
-    local theta_rad = (theta_local or 0) * 2 * PI
-    local phi_rad = (phi_local or 0) * 2 * PI
-
-    -- 2. ローカル座標系(Z前, X右, Y上)での方向ベクトル(長さ1)を計算
-    local cos_phi = math.cos(phi_rad); local sin_phi = math.sin(phi_rad)
-    local cos_theta = math.cos(theta_rad); local sin_theta = math.sin(theta_rad)
-    local x_L = cos_phi * sin_theta; local y_L = sin_phi; local z_L = cos_phi * cos_theta
-    local LV = { x_L, y_L, z_L }
-
-    -- 3. 自機姿勢(ラジアン)を取得 (ch4=Pitch, ch5=Yaw, ch6=Roll)
-    local roll = self_orientation.roll or 0   -- Z軸回転 (Roll) - ch6 からの値
-    local pitch = self_orientation.pitch or 0 -- X軸回転 (Pitch) - ch4 からの値
-    local yaw = self_orientation.yaw or 0     -- Y軸回転 (Yaw) - ch5 からの値
-
-    -- 4. 回転行列(ローカル->グローバル)を計算 (ZYX Euler Order)
-    -- R_local_to_world = Rz(yaw) * Ry(pitch) * Rx(roll)
-    -- (注: ZYXオーダーは通常、最初にZ(Yaw), 次に新しいY(Pitch), 最後に新しいX(Roll)で回転)
-    -- (回転行列の定義は convention によって異なる場合があるため注意)
-    local cY = math.cos(yaw); local sY = math.sin(yaw)     -- Yaw (around Y)
-    local cP = math.cos(pitch); local sP = math.sin(pitch) -- Pitch (around X)
-    local cR = math.cos(roll); local sR = math.sin(roll)   -- Roll (around Z)
-
-    -- 各軸周りの回転行列 (World to Body を仮定)
-    -- Rz = {{cR, sR, 0}, {-sR, cR, 0}, {0, 0, 1}} -- Roll around Z
-    -- Ry = {{cP, 0, -sP}, {0, 1, 0}, {sP, 0, cP}} -- Pitch around X (間違いやすい: これはY回転)
-    -- Rx = {{1, 0, 0}, {0, cP, sP}, {0, -sP, cP}} -- Pitch around X
-    -- Ry = {{cY, 0, -sY}, {0, 1, 0}, {sY, 0, cY}} -- Yaw around Y
-    -- Rz = {{cR, sR, 0}, {-sR, cR, 0}, {0, 0, 1}} -- Roll around Z
-
-    -- ZYX オーダー (Intrinsic: Z -> new Y -> new X) での Body to World 回転行列
-    -- R = Rz(yaw) * Ry(pitch) * Rx(roll)
-    -- Z軸周りヨー回転
-    local Rz = { { cY, -sY, 0 }, { sY, cY, 0 }, { 0, 0, 1 } }
-    -- Y軸周りピッチ回転
-    local Ry = { { cP, 0, sP }, { 0, 1, 0 }, { -sP, 0, cP } }
-    -- X軸周りロール回転
-    local Rx = { { 1, 0, 0 }, { 0, cR, -sR }, { 0, sR, cR } }
-
-    -- 回転行列を計算: Rz * Ry * Rx
-    local tempMat = matrixMultiply(Rz, Ry); if not tempMat then
-        debug.log("E:ac03"); return nil, nil
-    end
-    local RotMat = matrixMultiply(tempMat, Rx); if not RotMat then
-        debug.log("E:ac03"); return nil, nil
-    end
-
-    -- 5. ローカル方向ベクトルを回転行列でグローバル方向ベクトルに変換
-    local GV_relative = matrixVectorMultiply(RotMat, LV); if not GV_relative then
-        debug.log("E:ac03"); return nil, nil
-    end
-
-    -- 6. グローバル方向ベクトルからグローバル角度(ラジアン)を計算
-    local dX = GV_relative[1]; local dY = GV_relative[2]; local dZ = GV_relative[3]
-    local ground_dist = math.sqrt(dX ^ 2 + dY ^ 2)
-    local theta_global_rad = math.atan(dX, dY)        -- atan(East, North)
-    local phi_global_rad = math.atan(dZ, ground_dist) -- atan(Up, HorizontalDist)
-    return theta_global_rad, phi_global_rad
+    local the = pitch; local phi = yaw; local psi = roll;
+    local cY = math.cos(phi); local sY = math.sin(phi); local cP = math.cos(the); local sP = math.sin(the); local cR =
+        math.cos(psi); local sR = math.sin(psi)
+    local dX = cY * cR * Lx + (sP * sY * cR - cP * sR) * Ly + (cP * sY * cR + sP * sR) * Lz
+    local dY_Alt = cY * sR * Lx + (sP * sY * sR + cP * cR) * Ly + (cP * sY * sR - sP * cR) * Lz
+    local dZ_North = -sY * Lx + sP * cY * Ly + cP * cY * Lz
+    return { x = dX, y = dY_Alt, z = dZ_North }
 end
 
 --#################################################################
@@ -203,67 +148,124 @@ function onTick()
     tickCounter                      = tickCounter + 1
 
     -- === 4.1 入力読み取り ===
-    -- 自機姿勢 (物理センサー ch4=Pitch, ch5=Yaw, ch6=Roll を想定し、
-    -- Lua入力 ch 28, 29, 30 に Composite Read で接続されていると仮定)
-    local yaw_val                    = input.getNumber(28) -- Yaw value (from sensor ch 5)
-    local pitch_val                  = input.getNumber(29) -- Pitch value (from sensor ch 4)
-    local roll_val                   = input.getNumber(30) -- Roll value (from sensor ch 6)
+    local yaw_val                    = input.getNumber(SELF_YAW_CH)   -- 自機ヨー
+    local pitch_val                  = input.getNumber(SELF_PITCH_CH) -- 自機ピッチ
+    local roll_val                   = input.getNumber(SELF_ROLL_CH)  -- 自機ロール
     local self_orient                = { yaw = yaw_val, pitch = pitch_val, roll = roll_val }
 
-    -- レーダー情報 (チャンネル 1-24, Bool 1-6)
-    local current_observations_local = {}
-    local is_new_cycle               = false
-    local detected_flags             = {}
+    local current_observations_local = {}    -- 現在のtickでのレーダー観測値
+    local is_new_cycle               = false -- 探知更新サイクルかどうかのフラグ
+    local detected_flags             = {}    -- 各チャンネルの検出状態
+
     for i = 1, MAX_TARGETS_INPUT do
-        local base_ch = (i - 1) * 4; local is_detected = input.getBool(i); detected_flags[i] = is_detected
+        local is_detected = input.getBool(RADAR_DETECT_CH(i))
+        detected_flags[i] = is_detected
         if is_detected then
-            local r, t, p, e = input.getNumber(base_ch + 1), input.getNumber(base_ch + 2), input.getNumber(base_ch + 3),
-                input.getNumber(base_ch + 4)
-            current_observations_local[i] = { r = r, theta = t, phi = p, elapsed = e }; if e == 0 then
-                is_new_cycle = true; lastDetectionTick[i] = tickCounter
+            local r = input.getNumber(RADAR_DIST_CH(i))
+            local t = input.getNumber(RADAR_AZIM_CH(i))
+            local p = input.getNumber(RADAR_ELEV_CH(i))
+            local e = input.getNumber(RADAR_ELAPSED_CH(i))
+            current_observations_local[i] = { r = r, theta = t, phi = p, elapsed = e }
+            if e == 0 then
+                is_new_cycle = true
+                lastDetectionTick[i] = tickCounter
             end
         else
-            if observationBuffer[i] then observationBuffer[i] = nil end
+            -- 非検出の場合、対応するバッファをクリア
+            if observationBuffer[i] then
+                observationBuffer[i] = nil
+            end
         end
     end
 
-    -- === 4.2 平均化 & 角度変換 ===
-    local processed_data_for_output = {}
+    -- === 4.2 平均化 & グローバル角度計算 ===
+    local processed_data_for_output = {} -- MC2への出力データ {dist, g_theta, g_phi}
+
     if is_new_cycle then
-        debug.log("L:ndc01")
+        debug.log("L:ndc01") -- 新しい探知サイクル開始ログ
         for i = 1, MAX_TARGETS_INPUT do
             if observationBuffer[i] and observationBuffer[i].r and #observationBuffer[i].r > 0 then
+                -- 観測値の平均化
                 local avg_obs = averageObservations(observationBuffer[i])
                 if avg_obs then
-                    debug.log("L:ao01"); local global_theta, global_phi = angleLocalToGlobal(avg_obs.theta, avg_obs.phi,
-                        self_orient)
-                    if global_theta and global_phi then
-                        processed_data_for_output[i] = { dist = avg_obs.r, g_theta = global_theta, g_phi = global_phi }; debug
-                            .log("L:ac01")
+                    debug.log("L:ao01") -- 平均化完了ログ
+
+                    -- ローカル極座標 -> ローカル直交座標 (X=R, Y=U, Z=Fwd)
+                    local theta_rad = (avg_obs.theta or 0) * PI2
+                    local phi_rad = (avg_obs.phi or 0) * PI2
+                    local r_avg = avg_obs.r or 0
+                    local cp = math.cos(phi_rad); local sp = math.sin(phi_rad)
+                    local ct = math.cos(theta_rad); local st = math.sin(theta_rad)
+                    local localX_R = r_avg * cp * st
+                    local localY_U = r_avg * sp
+                    local localZ_F = r_avg * cp * ct
+
+                    -- ローカル直交ベクトルをグローバル相対ベクトルに回転
+                    local GV_relative = rotateLocalToGlobal_UserA(self_orient.pitch, self_orient.yaw, self_orient.roll,
+                        localX_R, localY_U, localZ_F)
+
+                    if GV_relative then
+                        -- グローバル相対ベクトルからグローバル角度を計算
+                        local dX = GV_relative.x; local dY_North = GV_relative.z; local dZ_Up = GV_relative.y
+                        local ground_dist_sq = dX ^ 2 + dY_North ^ 2
+                        local ground_dist = 0
+                        local theta_global_rad = 0
+                        local phi_global_rad = 0
+
+                        if ground_dist_sq > 1e-9 then                      -- ゼロ除算回避
+                            ground_dist = math.sqrt(ground_dist_sq)
+                            theta_global_rad = math.atan(dX, dY_North)     -- atan(East, North)
+                            phi_global_rad = math.atan(dZ_Up, ground_dist) -- atan(Up, HorizontalDist)
+                        else                                               -- 真上/真下の場合
+                            if dZ_Up >= 0 then phi_global_rad = HALF_PI else phi_global_rad = -HALF_PI end
+                            theta_global_rad = 0
+                            debug.log("W:ga01") -- 警告: 水平距離ゼロ
+                        end
+                        -- 計算結果を保存
+                        processed_data_for_output[i] = { dist = r_avg, g_theta = theta_global_rad, g_phi = phi_global_rad }
+                        debug.log("L:gc01") -- グローバル角度計算完了ログ
                     else
-                        debug.log("W:ac01")
+                        debug.log("E:gc01") -- 回転計算失敗ログ
                     end
-                end; observationBuffer[i] = nil
+                end
+                -- 処理が終わったのでバッファをクリア
+                observationBuffer[i] = nil
             end
+            ::continue_loop:: -- goto 用ラベル (Lua 5.1 では goto はないが、コメントとして残す)
+            -- Note: Lua 5.1 does not have goto. The loop structure needs adjustment if continue is needed.
+            --       In this case, the if/end structure implicitly continues.
         end
     end
+
+    -- === 4.3 現在の観測値をバッファに蓄積 ===
     for ci, obs_local in pairs(current_observations_local) do
-        if not observationBuffer[ci] then observationBuffer[ci] = { r = {}, theta = {}, phi = {} } end; table.insert(
-            observationBuffer[ci].r, obs_local.r); table.insert(observationBuffer[ci].theta, obs_local.theta); table
-            .insert(
-                observationBuffer[ci].phi, obs_local.phi)
+        if not observationBuffer[ci] then
+            observationBuffer[ci] = { r = {}, theta = {}, phi = {} }
+        end
+        table.insert(observationBuffer[ci].r, obs_local.r)
+        table.insert(observationBuffer[ci].theta, obs_local.theta)
+        table.insert(observationBuffer[ci].phi, obs_local.phi)
     end
 
-    -- === 4.3 出力書き込み (MC2へ) ===
+    -- === 4.4 出力書き込み (MC2へ) ===
     for i = 1, MAX_TARGETS_INPUT do
-        local data = processed_data_for_output[i]; local base_num_ch = (i - 1) * 3 + 1; local bool_ch = i; output
-            .setBool(bool_ch, detected_flags[i] or false)
+        local data = processed_data_for_output[i]
+        local out_num_ch_base = OUT_DIST_CH(i)                  -- Base channel for number output
+        local out_bool_ch = OUT_DETECT_CH(i)                    -- Channel for boolean output
+
+        output.setBool(out_bool_ch, detected_flags[i] or false) -- 検出状態
+
         if data and detected_flags[i] then
-            output.setNumber(base_num_ch + 0, data.dist); output.setNumber(base_num_ch + 1, data.g_theta); output
-                .setNumber(base_num_ch + 2, data.g_phi)
+            -- 新しい計算結果があれば出力
+            output.setNumber(out_num_ch_base + 0, data.dist)    -- 平均距離
+            output.setNumber(out_num_ch_base + 1, data.g_theta) -- グローバル方位角 (rad)
+            output.setNumber(out_num_ch_base + 2, data.g_phi)   -- グローバル仰角 (rad)
         else
-            output.setNumber(base_num_ch + 0, 0); output.setNumber(base_num_ch + 1, 0); output.setNumber(base_num_ch + 2,
-                0)
+            -- 新しい計算結果がない場合や非検出の場合は 0 を出力
+            -- (MC2側で Bool=true かつ Dist > 0 かどうかで有効なデータか判断)
+            output.setNumber(out_num_ch_base + 0, 0)
+            output.setNumber(out_num_ch_base + 1, 0)
+            output.setNumber(out_num_ch_base + 2, 0)
         end
     end
 end
