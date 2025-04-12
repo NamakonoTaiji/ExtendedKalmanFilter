@@ -8,266 +8,141 @@
 ]]
 --[[
   Stormworks UKF実装のための基本的な行列・ベクトル演算関数群
-  (これまでに作成した関数も含めて、一つのファイルにまとめていく想定)
+  (ログ出力は debug.log("CODE") 形式)
 ]]
 
---- 2つのベクトル（テーブル）を受け取り、要素ごとに加算した新しいベクトルを返す関数
--- @param vecA number[] 1つ目のベクトル
--- @param vecB number[] 2つ目のベクトル
--- @return number[] or nil 加算結果のベクトル、次元が異なる場合は nil
-function vectorAdd(vecA, vecB)
-    local dimA = #vecA
-    local dimB = #vecB
-    if dimA ~= dimB then
-        print("Error: vectorAdd - Vectors must have the same dimension.")
-        return nil
-    end
-    local resultVec = {}
-    for i = 1, dimA do
-        resultVec[i] = vecA[i] + vecB[i]
-    end
-    return resultVec
-end
+--[[ Log/Error Code Mappings (for Helper Functions):
+  E:va01 - vectorAdd: Dimension mismatch.
+  E:vs01 - vectorSubtract: Dimension mismatch.
+  E:mv01 - matrixVectorMultiply: Empty/invalid matrix or vector.
+  E:mv02 - matrixVectorMultiply: Dimension mismatch (mat cols vs vec dim).
+  E:mv03 - matrixVectorMultiply: Invalid matrix element access.
+  E:mv04 - matrixVectorMultiply: Invalid vector element access.
+  E:mm01 - matrixMultiply: Empty/invalid matrices.
+  E:mm02 - matrixMultiply: Dimension mismatch (matA cols vs matB rows).
+  E:mm03 - matrixMultiply: Invalid matrix element access during multiplication.
+  E:mt01 - matrixTranspose: Empty/invalid matrix.
+  W:mt01 - matrixTranspose: Inconsistent column count (Warning).
+  E:ma01 - matrixAdd: Empty/invalid matrices.
+  E:ma02 - matrixAdd: Dimension mismatch.
+  E:ma03 - matrixAdd: Invalid matrix element access during addition.
+  E:ms01 - matrixSubtract: Empty/invalid matrices.
+  E:ms02 - matrixSubtract: Dimension mismatch.
+  E:ms03 - matrixSubtract: Invalid matrix element access during subtraction.
+]]
 
---- 2つのベクトル（テーブル）を受け取り、要素ごとに引き算した新しいベクトルを返す関数 (vecA - vecB)
--- @param vecA number[] 1つ目のベクトル (引かれる数)
--- @param vecB number[] 2つ目のベクトル (引く数)
--- @return number[] or nil 減算結果のベクトル、次元が異なる場合は nil
-function vectorSubtract(vecA, vecB)
-    local dimA = #vecA
-    local dimB = #vecB
-    if dimA ~= dimB then
-        print("Error: vectorSubtract - Vectors must have the same dimension.")
-        return nil
-    end
-    local resultVec = {}
-    for i = 1, dimA do
-        resultVec[i] = vecA[i] - vecB[i]
-    end
-    return resultVec
-end
-
---- ベクトル（テーブル）とスカラー値（数値）を受け取り、
--- ベクトルの各要素をスカラー値で掛け算した新しいベクトルを返す関数
--- @param vec number[] 対象のベクトル
--- @param scalar number ベクトルに乗算するスカラー値
--- @return number[] 計算結果のベクトル
-function vectorScale(vec, scalar)
-    local resultVec = {}
-    local dim = #vec
-    for i = 1, dim do
-        resultVec[i] = vec[i] * scalar
-    end
-    return resultVec
-end
-
---- 行列（テーブルのテーブル）とベクトル（テーブル）を受け取り、
--- その積 (行列 * ベクトル) を計算した新しいベクトルを返す関数
--- @param mat number[][] 対象の行列 (m行n列)
--- @param vec number[] 対象のベクトル (n次元)
--- @return number[] or nil 計算結果のベクトル (m次元)、次元が不整合の場合は nil
-function matrixVectorMultiply(mat, vec)
-    if not mat or #mat == 0 or not mat[1] or #mat[1] == 0 or not vec or #vec == 0 then
-        print("Error: matrixVectorMultiply - Matrix or vector is empty or invalid.")
-        return nil
-    end
-    local numRows = #mat
-    local numCols = #mat[1]
-    local vecDim = #vec
-    if numCols ~= vecDim then
-        print("Error: matrixVectorMultiply - Matrix columns (" ..
-            numCols .. ") must match vector dimension (" .. vecDim .. ").")
-        return nil
-    end
-    local resultVec = {}
-    for i = 1, numRows do
-        resultVec[i] = 0
-        for j = 1, numCols do
-            -- 行列の要素が存在するか確認
-            if not mat[i] or mat[i][j] == nil then
-                print("Error: matrixVectorMultiply - Invalid matrix element at [" .. i .. "][" .. j .. "]")
-                return nil
-            end
-            -- ベクトルの要素が存在するか確認
-            if vec[j] == nil then
-                print("Error: matrixVectorMultiply - Invalid vector element at index [" .. j .. "]")
-                return nil
-            end
-            resultVec[i] = resultVec[i] + mat[i][j] * vec[j]
-        end
-    end
-    return resultVec
-end
-
---- 2つの行列（テーブルのテーブル）を受け取り、その積 (matA * matB) を計算した新しい行列を返す関数
--- @param matA number[][] 1つ目の行列 (m行n列)
--- @param matB number[][] 2つ目の行列 (n行p列)
--- @return number[][] or nil 計算結果の行列 (m行p列)、次元が不整合の場合は nil
-function matrixMultiply(matA, matB)
-    if not matA or #matA == 0 or not matA[1] or #matA[1] == 0 or not matB or #matB == 0 or not matB[1] or #matB[1] == 0 then
-        print("Error: matrixMultiply - Matrices cannot be empty or invalid.")
-        return nil
-    end
-    local rowsA = #matA
-    local colsA = #matA[1]
-    local rowsB = #matB
-    local colsB = #matB[1]
-    if colsA ~= rowsB then
-        print("Error: matrixMultiply - Matrix A columns (" .. colsA .. ") must match Matrix B rows (" .. rowsB .. ").")
-        return nil
-    end
-    local resultMat = {}
-    for i = 1, rowsA do
-        resultMat[i] = {}
-        for k = 1, colsB do
-            local sum = 0
-            for j = 1, colsA do
-                -- 行列要素の存在チェック
-                if not matA[i] or matA[i][j] == nil or not matB[j] or matB[j][k] == nil then
-                    print("Error: matrixMultiply - Invalid matrix element during multiplication.")
-                    return nil
-                end
-                sum = sum + matA[i][j] * matB[j][k]
-            end
-            resultMat[i][k] = sum
-        end
-    end
-    return resultMat
-end
-
---- 行列（テーブルのテーブル）を受け取り、その転置行列を計算した新しい行列を返す関数
--- @param mat number[][] 対象の行列 (m行n列)
--- @return number[][] or nil 計算結果の転置行列 (n行m列)、入力が不正な場合は nil
-function matrixTranspose(mat)
-    if not mat or #mat == 0 or (mat[1] and #mat[1] == 0) then
-        print("Error: matrixTranspose - Matrix cannot be empty or invalid.")
-        return nil
-    end
-    local rows = #mat
-    local cols = #mat[1] or 0
-    local resultMat = {}
-    for j = 1, cols do
-        resultMat[j] = {}
-    end
-    for i = 1, rows do
-        local currentColLen = #mat[i] or 0
-        if currentColLen ~= cols and i > 1 then
-            print("Warning: matrixTranspose - Inconsistent number of columns found at row " .. i)
-        end
-        for j = 1, cols do
-            if mat[i] and mat[i][j] ~= nil then
-                if not resultMat[j] then resultMat[j] = {} end
-                resultMat[j][i] = mat[i][j]
-            else
-                if not resultMat[j] then resultMat[j] = {} end
-                resultMat[j][i] = nil
-            end
-        end
-    end
-    return resultMat
-end
-
---- 2つの行列（テーブルのテーブル）を受け取り、要素ごとに加算した新しい行列を返す関数
--- @param matA number[][] 1つ目の行列 (m行n列)
--- @param matB number[][] 2つ目の行列 (m行n列)
--- @return number[][] or nil 加算結果の行列 (m行n列)、次元が異なる場合は nil
-function matrixAdd(matA, matB)
-    if not matA or #matA == 0 or not matA[1] or #matA[1] == 0 or not matB or #matB == 0 or not matB[1] or #matB[1] == 0 then
-        print("Error: matrixAdd - Matrices cannot be empty or invalid.")
-        return nil
-    end
-    local rowsA = #matA
-    local colsA = #matA[1]
-    local rowsB = #matB
-    local colsB = #matB[1]
-    if rowsA ~= rowsB or colsA ~= colsB then
-        print("Error: matrixAdd - Matrices must have the same dimensions. A(" ..
-            rowsA .. "x" .. colsA .. "), B(" .. rowsB .. "x" .. colsB .. ")")
-        return nil
-    end
-    local resultMat = {}
-    for i = 1, rowsA do
-        resultMat[i] = {}
-        for j = 1, colsA do
-            if matA[i] == nil or matA[i][j] == nil or matB[i] == nil or matB[i][j] == nil then
-                print("Error: matrixAdd - Invalid matrix element during addition at [" .. i .. "][" .. j .. "]")
-                return nil
-            end
-            resultMat[i][j] = matA[i][j] + matB[i][j]
-        end
-    end
-    return resultMat
-end
-
---- 2つの行列（テーブルのテーブル）を受け取り、要素ごとに引き算した新しい行列を返す関数 (matA - matB)
--- @param matA number[][] 1つ目の行列 (引かれる数) (m行n列)
--- @param matB number[][] 2つ目の行列 (引く数) (m行n列)
--- @return number[][] or nil 減算結果の行列 (m行n列)、次元が異なる場合は nil
-function matrixSubtract(matA, matB)
-    -- 行列が空でないか基本的なチェック
-    if not matA or #matA == 0 or not matA[1] or #matA[1] == 0 or not matB or #matB == 0 or not matB[1] or #matB[1] == 0 then
-        print("Error: matrixSubtract - Matrices cannot be empty or invalid.")
-        return nil
-    end
-
-    -- 行列Aの行数(m)と列数(n)を取得
-    local rowsA = #matA
-    local colsA = #matA[1]
-    -- 行列Bの行数(m)と列数(n)を取得
-    local rowsB = #matB
-    local colsB = #matB[1]
-
-    -- 行列Aと行列Bの次元が一致するか確認 (行数と列数が両方とも同じ)
-    if rowsA ~= rowsB or colsA ~= colsB then
-        print("Error: matrixSubtract - Matrices must have the same dimensions. A(" ..
-            rowsA .. "x" .. colsA .. "), B(" .. rowsB .. "x" .. colsB .. ")")
-        return nil
-    end
-
-    -- 結果を格納するための新しい行列（m行n列）を作成
-    local resultMat = {}
-    for i = 1, rowsA do
-        resultMat[i] = {} -- 新しい行を作成
-        for j = 1, colsA do
-            -- 対応する要素が存在するか確認
-            if matA[i] == nil or matA[i][j] == nil or matB[i] == nil or matB[i][j] == nil then
-                print("Error: matrixSubtract - Invalid matrix element during subtraction at [" .. i .. "][" .. j .. "]")
-                return nil
-            end
-            -- 対応する要素同士を引き算する
-            resultMat[i][j] = matA[i][j] - matB[i][j]
-        end
-    end
-
-    -- 計算結果の行列を返す
-    return resultMat
-end
-
+--- vectorAdd: ベクトル同士の加算
 function vectorAdd(vecA, vecB)
     local dimA = #vecA; local dimB = #vecB
     if dimA ~= dimB then
-        debug.log("Error: vectorAdd - Dimensions mismatch.")
-        return nil
+        debug.log("E:va01"); return nil
     end
     local r = {}; for i = 1, dimA do r[i] = vecA[i] + vecB[i] end; return r
 end
 
--- ... 他のヘルパー関数 (print を debug.log に修正) ...
-function matrixSubtract(matA, matB)
+--- vectorSubtract: ベクトル同士の減算 (vecA - vecB)
+function vectorSubtract(vecA, vecB)
+    local dimA = #vecA; local dimB = #vecB
+    if dimA ~= dimB then
+        debug.log("E:vs01"); return nil
+    end
+    local r = {}; for i = 1, dimA do r[i] = vecA[i] - vecB[i] end; return r
+end
+
+--- vectorScale: ベクトルのスカラー倍
+function vectorScale(vec, scalar)
+    local r = {}; local dim = #vec; for i = 1, dim do r[i] = vec[i] * scalar end; return r
+end
+
+--- matrixVectorMultiply: 行列とベクトルの乗算 (mat * vec)
+function matrixVectorMultiply(mat, vec)
+    if not mat or #mat == 0 or not mat[1] or #mat[1] == 0 or not vec or #vec == 0 then
+        debug.log("E:mv01"); return nil
+    end
+    local nr = #mat; local nc = #mat[1]; local vd = #vec
+    if nc ~= vd then
+        debug.log("E:mv02"); return nil
+    end
+    local rV = {}; for i = 1, nr do
+        rV[i] = 0; for j = 1, nc do
+            if not mat[i] or mat[i][j] == nil then
+                debug.log("E:mv03"); return nil
+            end; if vec[j] == nil then
+                debug.log("E:mv04"); return nil
+            end; rV[i] = rV[i] + mat[i][j] * vec[j]
+        end
+    end; return rV
+end
+
+--- matrixMultiply: 行列同士の乗算 (matA * matB)
+function matrixMultiply(matA, matB)
     if not matA or #matA == 0 or not matA[1] or #matA[1] == 0 or not matB or #matB == 0 or not matB[1] or #matB[1] == 0 then
-        debug.log("Error: matrixSubtract - Invalid input.")
-        return nil
+        debug.log("E:mm01"); return nil
+    end
+    local rA = #matA; local cA = #matA[1]; local rB = #matB; local cB = #matB[1]
+    if cA ~= rB then
+        debug.log("E:mm02"); return nil
+    end
+    local rM = {}; for i = 1, rA do
+        rM[i] = {}; for k = 1, cB do
+            local s = 0; for j = 1, cA do
+                if not matA[i] or matA[i][j] == nil or not matB[j] or matB[j][k] == nil then
+                    debug.log("E:mm03"); return nil
+                end; s = s + matA[i][j] * matB[j][k]
+            end; rM[i][k] = s
+        end
+    end; return rM
+end
+
+--- matrixTranspose: 行列の転置
+function matrixTranspose(mat)
+    if not mat or #mat == 0 or (mat[1] and #mat[1] == 0) then
+        debug.log("E:mt01"); return nil
+    end
+    local r = #mat; local c = #mat[1] or 0; local rM = {}; for j = 1, c do rM[j] = {} end
+    for i = 1, r do
+        local cCL = #mat[i] or 0; if cCL ~= c and i > 1 then debug.log("W:mt01") end
+        for j = 1, c do
+            if mat[i] and mat[i][j] ~= nil then
+                if not rM[j] then rM[j] = {} end; rM[j][i] = mat[i][j]
+            else
+                if not rM[j] then rM[j] = {} end; rM[j][i] = nil
+            end
+        end
+    end; return rM
+end
+
+--- matrixAdd: 行列同士の加算
+function matrixAdd(matA, matB)
+    if not matA or #matA == 0 or not matA[1] or #matA[1] == 0 or not matB or #matB == 0 or not matB[1] or #matB[1] == 0 then
+        debug.log("E:ma01"); return nil
     end
     local rA = #matA; local cA = #matA[1]; local rB = #matB; local cB = #matB[1]
     if rA ~= rB or cA ~= cB then
-        debug.log("Error: matrixSubtract - Dimensions mismatch.")
-        return nil
+        debug.log("E:ma02"); return nil
     end
     local rM = {}; for i = 1, rA do
         rM[i] = {}; for j = 1, cA do
             if matA[i] == nil or matA[i][j] == nil or matB[i] == nil or matB[i][j] == nil then
-                debug.log("Error: matrixSubtract - Invalid element.")
-                return nil
+                debug.log("E:ma03"); return nil
+            end; rM[i][j] = matA[i][j] + matB[i][j]
+        end
+    end; return rM
+end
+
+--- matrixSubtract: 行列同士の減算 (matA - matB)
+function matrixSubtract(matA, matB)
+    if not matA or #matA == 0 or not matA[1] or #matA[1] == 0 or not matB or #matB == 0 or not matB[1] or #matB[1] == 0 then
+        debug.log("E:ms01"); return nil
+    end
+    local rA = #matA; local cA = #matA[1]; local rB = #matB; local cB = #matB[1]
+    if rA ~= rB or cA ~= cB then
+        debug.log("E:ms02"); return nil
+    end
+    local rM = {}; for i = 1, rA do
+        rM[i] = {}; for j = 1, cA do
+            if matA[i] == nil or matA[i][j] == nil or matB[i] == nil or matB[i][j] == nil then
+                debug.log("E:ms03"); return nil
             end; rM[i][j] = matA[i][j] - matB[i][j]
         end
     end; return rM
