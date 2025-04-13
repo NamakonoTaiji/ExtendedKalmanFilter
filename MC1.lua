@@ -19,40 +19,44 @@
 ]]
 
 --#################################################################
---# 0. 定数定義
+--# 1. 定数定義 (トップレベルで定義)
 --#################################################################
-local MAX_TARGETS_INPUT = 6 -- 同時に処理する最大目標数
-local PI                = math.pi
-local HALF_PI           = PI / 2
-local PI2               = PI * 2
+local MAX_TARGETS_INPUT      = 6
+local PI                     = math.pi
+local HALF_PI                = PI / 2
+local PI2                    = PI * 2
 
 -- 入力チャンネル定義
--- レーダー入力 (目標 i = 1 to MAX_TARGETS_INPUT)
--- Note: base_ch = (i - 1) * 4
-local RADAR_DIST_CH     = function(i) return (i - 1) * 4 + 1 end -- 1, 5, 9, ...
-local RADAR_AZIM_CH     = function(i) return (i - 1) * 4 + 2 end -- 2, 6, 10, ...
-local RADAR_ELEV_CH     = function(i) return (i - 1) * 4 + 3 end -- 3, 7, 11, ...
-local RADAR_ELAPSED_CH  = function(i) return (i - 1) * 4 + 4 end -- 4, 8, 12, ...
-local RADAR_DETECT_CH   = function(i) return i end               -- Bool 1-6
-
--- 自機姿勢入力 (物理センサーからの再マッピング想定)
-local SELF_YAW_CH       = 28
-local SELF_PITCH_CH     = 29
-local SELF_ROLL_CH      = 30
+local RADAR_DIST_CH          = function(i) return (i - 1) * 4 + 1 end
+local RADAR_AZIM_CH          = function(i) return (i - 1) * 4 + 2 end
+local RADAR_ELEV_CH          = function(i) return (i - 1) * 4 + 3 end
+local RADAR_ELAPSED_CH       = function(i) return (i - 1) * 4 + 4 end
+local RADAR_DETECT_CH        = function(i) return i end
 
 -- 出力チャンネル定義 (MC2へ)
--- Note: base_out_ch = (i - 1) * 3 + 1
-local OUT_DIST_CH       = function(i) return (i - 1) * 3 + 1 end -- 1, 4, 7, ...
-local OUT_G_AZIM_CH     = function(i) return (i - 1) * 3 + 2 end -- 2, 5, 8, ...
-local OUT_G_ELEV_CH     = function(i) return (i - 1) * 3 + 3 end -- 3, 6, 9, ...
-local OUT_DETECT_CH     = function(i) return i end               -- Bool 1-6
+local OUT_DIST_CH            = function(i) return (i - 1) * 3 + 1 end
+local OUT_G_AZIM_CH          = function(i) return (i - 1) * 3 + 2 end
+local OUT_G_ELEV_CH          = function(i) return (i - 1) * 3 + 3 end
+local OUT_DETECT_CH          = function(i) return i end
 
 --#################################################################
---# 1. グローバル変数 / 状態変数 (トップレベルで初期化)
+--# 2. グローバル変数 / 状態変数 (トップレベルで初期化)
 --#################################################################
-local observationBuffer = {} -- 観測値バッファ
-local lastDetectionTick = {} -- 最終探知更新tick
-local tickCounter       = 0  -- tickカウンター
+local observationBuffer      = {}
+local tickCounter            = 0
+
+-- 固定された更新間隔 (tick数)
+local DetectionIntervalTicks = 1 -- デフォルト値
+-- *** プロパティから名前 "EffectiveRange" で直接読み込む ***
+local EffectiveRange         = property.getNumber("EffectiveRange")
+if EffectiveRange and EffectiveRange > 0 then
+    DetectionIntervalTicks = math.max(math.floor(EffectiveRange / 2000 + 0.5), 1)
+    debug.log("MC1 Init: EffectiveRange=" .. EffectiveRange .. ", DetectionInterval=" .. DetectionIntervalTicks ..
+        " ticks")
+else
+    -- *** 警告メッセージも修正 ***
+    debug.log('W:init01') -- Warning: Radar Range Property "EffectiveRange" not set or invalid.
+end
 
 --#################################################################
 --# 2. ベクトル演算 ヘルパー関数群
@@ -97,26 +101,50 @@ end
 --# 3. 補助関数
 --#################################################################
 
---- 観測値バッファから平均値を計算する関数
+--- 観測値バッファから最小値と最大値の平均（ミッドレンジ）を計算する関数
+-- @param buffer table 観測値 {r={}, theta={}, phi={}} のリストを含むテーブル
+-- @return table or nil 平均値 {r=avg_r, theta=avg_t, phi=avg_p}, 計算不能な場合は nil
 function averageObservations(buffer)
+    -- 入力バッファと内部リストの基本的な検証
     if not buffer or not buffer.r or not buffer.theta or not buffer.phi or #buffer.r == 0 then
         debug.log("E:ao01"); return nil
     end
     local count = #buffer.r
     if #buffer.theta ~= count or #buffer.phi ~= count then
-        debug.log("E:ao01"); return nil
+        debug.log("E:ao01"); return nil -- Inconsistent lengths
     end
-    local sum_r, sum_t, sum_p = 0, 0, 0
-    for i = 1, count do
-        sum_r = sum_r + (buffer.r[i] or 0)
-        sum_t = sum_t + (buffer.theta[i] or 0)
-        sum_p = sum_p + (buffer.phi[i] or 0)
+
+    -- 最初の要素で最小値・最大値を初期化
+    local min_r = buffer.r[1]; local max_r = buffer.r[1]
+    local min_t = buffer.theta[1]; local max_t = buffer.theta[1]
+    local min_p = buffer.phi[1]; local max_p = buffer.phi[1]
+
+    -- nil チェック (最初の要素がnilの場合)
+    if min_r == nil or min_t == nil or min_p == nil then
+        debug.log("E:ao02"); return nil -- Buffer contains nil
     end
-    if count == 0 then return { r = 0, theta = 0, phi = 0 } end
+
+    -- 2番目以降の要素をループして最小値・最大値を更新
+    for i = 2, count do
+        local current_r = buffer.r[i]
+        local current_t = buffer.theta[i]
+        local current_p = buffer.phi[i]
+
+        -- nil や非数値が含まれていたらエラー
+        if type(current_r) ~= "number" or type(current_t) ~= "number" or type(current_p) ~= "number" then
+            debug.log("E:ao02"); return nil -- Buffer contains non-numeric or nil
+        end
+
+        min_r = math.min(min_r, current_r); max_r = math.max(max_r, current_r)
+        min_t = math.min(min_t, current_t); max_t = math.max(max_t, current_t)
+        min_p = math.min(min_p, current_p); max_p = math.max(max_p, current_p)
+    end
+
+    -- 最小値と最大値の平均（ミッドレンジ）を計算して返す
     return {
-        r = sum_r / count,
-        theta = sum_t / count,
-        phi = sum_p / count
+        r = (min_r + max_r) / 2,
+        theta = (min_t + max_t) / 2,
+        phi = (min_p + max_p) / 2
     }
 end
 
@@ -148,126 +176,86 @@ function onTick()
     tickCounter                      = tickCounter + 1
 
     -- === 4.1 入力読み取り ===
-    local yaw_val                    = input.getNumber(SELF_YAW_CH)   -- 自機ヨー
-    local pitch_val                  = input.getNumber(SELF_PITCH_CH) -- 自機ピッチ
-    local roll_val                   = input.getNumber(SELF_ROLL_CH)  -- 自機ロール
+    local yaw_val                    = input.getNumber(28)
+    local pitch_val                  = input.getNumber(29)
+    local roll_val                   = input.getNumber(30)
+    local self_x                     = input.getNumber(25)
+    local self_y                     = input.getNumber(26)
+    local self_z                     = input.getNumber(27)
     local self_orient                = { yaw = yaw_val, pitch = pitch_val, roll = roll_val }
 
-    local current_observations_local = {}    -- 現在のtickでのレーダー観測値
-    local is_new_cycle               = false -- 探知更新サイクルかどうかのフラグ
-    local detected_flags             = {}    -- 各チャンネルの検出状態
-
+    local current_observations_local = {}
+    local is_new_cycle               = false
+    local detected_flags             = {}
     for i = 1, MAX_TARGETS_INPUT do
-        local is_detected = input.getBool(RADAR_DETECT_CH(i))
-        detected_flags[i] = is_detected
+        local is_detected = input.getBool(RADAR_DETECT_CH(i)); detected_flags[i] = is_detected
         if is_detected then
-            local r = input.getNumber(RADAR_DIST_CH(i))
-            local t = input.getNumber(RADAR_AZIM_CH(i))
-            local p = input.getNumber(RADAR_ELEV_CH(i))
-            local e = input.getNumber(RADAR_ELAPSED_CH(i))
-            current_observations_local[i] = { r = r, theta = t, phi = p, elapsed = e }
-            if e == 0 then
-                is_new_cycle = true
-                lastDetectionTick[i] = tickCounter
-            end
+            local r, t, p, e = input.getNumber(RADAR_DIST_CH(i)), input.getNumber(RADAR_AZIM_CH(i)),
+                input.getNumber(RADAR_ELEV_CH(i)), input.getNumber(RADAR_ELAPSED_CH(i))
+            current_observations_local[i] = { r = r, theta = t, phi = p, elapsed = e }; if e == 0 then is_new_cycle = true end
         else
-            -- 非検出の場合、対応するバッファをクリア
-            if observationBuffer[i] then
-                observationBuffer[i] = nil
-            end
+            if observationBuffer[i] then observationBuffer[i] = nil end
         end
     end
 
     -- === 4.2 平均化 & グローバル角度計算 ===
-    local processed_data_for_output = {} -- MC2への出力データ {dist, g_theta, g_phi}
-
+    local processed_data_for_output = {}
     if is_new_cycle then
-        debug.log("L:ndc01") -- 新しい探知サイクル開始ログ
+        debug.log("L:ndc01")
         for i = 1, MAX_TARGETS_INPUT do
             if observationBuffer[i] and observationBuffer[i].r and #observationBuffer[i].r > 0 then
-                -- 観測値の平均化
                 local avg_obs = averageObservations(observationBuffer[i])
                 if avg_obs then
-                    debug.log("L:ao01") -- 平均化完了ログ
-
-                    -- ローカル極座標 -> ローカル直交座標 (X=R, Y=U, Z=Fwd)
-                    local theta_rad = (avg_obs.theta or 0) * PI2
-                    local phi_rad = (avg_obs.phi or 0) * PI2
-                    local r_avg = avg_obs.r or 0
-                    local cp = math.cos(phi_rad); local sp = math.sin(phi_rad)
-                    local ct = math.cos(theta_rad); local st = math.sin(theta_rad)
-                    local localX_R = r_avg * cp * st
-                    local localY_U = r_avg * sp
-                    local localZ_F = r_avg * cp * ct
-
-                    -- ローカル直交ベクトルをグローバル相対ベクトルに回転
+                    debug.log("L:ao01")
+                    local theta_rad = (avg_obs.theta or 0) * PI2; local phi_rad = (avg_obs.phi or 0) * PI2; local r_avg =
+                        avg_obs.r or 0
+                    local cp = math.cos(phi_rad); local sp = math.sin(phi_rad); local ct = math.cos(theta_rad); local st =
+                        math.sin(theta_rad)
+                    local localX_R = r_avg * cp * st; local localY_U = r_avg * sp; local localZ_F = r_avg * cp * ct
                     local GV_relative = rotateLocalToGlobal_UserA(self_orient.pitch, self_orient.yaw, self_orient.roll,
                         localX_R, localY_U, localZ_F)
-
                     if GV_relative then
-                        -- グローバル相対ベクトルからグローバル角度を計算
                         local dX = GV_relative.x; local dY_North = GV_relative.z; local dZ_Up = GV_relative.y
-                        local ground_dist_sq = dX ^ 2 + dY_North ^ 2
-                        local ground_dist = 0
-                        local theta_global_rad = 0
-                        local phi_global_rad = 0
-
-                        if ground_dist_sq > 1e-9 then                      -- ゼロ除算回避
-                            ground_dist = math.sqrt(ground_dist_sq)
-                            theta_global_rad = math.atan(dX, dY_North)     -- atan(East, North)
-                            phi_global_rad = math.atan(dZ_Up, ground_dist) -- atan(Up, HorizontalDist)
-                        else                                               -- 真上/真下の場合
-                            if dZ_Up >= 0 then phi_global_rad = HALF_PI else phi_global_rad = -HALF_PI end
-                            theta_global_rad = 0
-                            debug.log("W:ga01") -- 警告: 水平距離ゼロ
+                        local ground_dist_sq = dX ^ 2 + dY_North ^ 2; local ground_dist = 0; local theta_global_rad = 0; local phi_global_rad = 0
+                        if ground_dist_sq > 1e-9 then
+                            ground_dist = math.sqrt(ground_dist_sq); theta_global_rad = math.atan(dX, dY_North); phi_global_rad =
+                                math.atan(dZ_Up, ground_dist)
+                        else
+                            if dZ_Up >= 0 then phi_global_rad = HALF_PI else phi_global_rad = -HALF_PI end; theta_global_rad = 0; debug
+                                .log("W:ga01")
                         end
-                        -- 計算結果を保存
-                        processed_data_for_output[i] = { dist = r_avg, g_theta = theta_global_rad, g_phi = phi_global_rad }
-                        debug.log("L:gc01") -- グローバル角度計算完了ログ
+                        processed_data_for_output[i] = { dist = r_avg, g_theta = theta_global_rad, g_phi = phi_global_rad }; debug
+                            .log("L:gc01")
                     else
-                        debug.log("E:gc01") -- 回転計算失敗ログ
+                        debug.log("E:gc01")
                     end
-                end
-                -- 処理が終わったのでバッファをクリア
-                observationBuffer[i] = nil
+                end; observationBuffer[i] = nil
             end
-            ::continue_loop:: -- goto 用ラベル (Lua 5.1 では goto はないが、コメントとして残す)
-            -- Note: Lua 5.1 does not have goto. The loop structure needs adjustment if continue is needed.
-            --       In this case, the if/end structure implicitly continues.
+            ::continue_loop::
         end
     end
-
-    -- === 4.3 現在の観測値をバッファに蓄積 ===
     for ci, obs_local in pairs(current_observations_local) do
-        if not observationBuffer[ci] then
-            observationBuffer[ci] = { r = {}, theta = {}, phi = {} }
-        end
-        table.insert(observationBuffer[ci].r, obs_local.r)
-        table.insert(observationBuffer[ci].theta, obs_local.theta)
-        table.insert(observationBuffer[ci].phi, obs_local.phi)
+        if not observationBuffer[ci] then observationBuffer[ci] = { r = {}, theta = {}, phi = {} } end; table.insert(
+            observationBuffer[ci].r, obs_local.r); table.insert(observationBuffer[ci].theta, obs_local.theta); table
+            .insert(
+                observationBuffer[ci].phi, obs_local.phi)
     end
 
-    -- === 4.4 出力書き込み (MC2へ) ===
+    -- === 4.3 出力書き込み (MC2へ) ===
     for i = 1, MAX_TARGETS_INPUT do
-        local data = processed_data_for_output[i]
-        local out_num_ch_base = OUT_DIST_CH(i)                  -- Base channel for number output
-        local out_bool_ch = OUT_DETECT_CH(i)                    -- Channel for boolean output
-
-        output.setBool(out_bool_ch, detected_flags[i] or false) -- 検出状態
-
+        local data = processed_data_for_output[i]; local base_num_ch = OUT_DIST_CH(i); local bool_ch = OUT_DETECT_CH(i); output
+            .setBool(bool_ch, detected_flags[i] or false)
         if data and detected_flags[i] then
-            -- 新しい計算結果があれば出力
-            output.setNumber(out_num_ch_base + 0, data.dist)    -- 平均距離
-            output.setNumber(out_num_ch_base + 1, data.g_theta) -- グローバル方位角 (rad)
-            output.setNumber(out_num_ch_base + 2, data.g_phi)   -- グローバル仰角 (rad)
+            output.setNumber(base_num_ch + 0, data.dist); output.setNumber(base_num_ch + 1, data.g_theta); output
+                .setNumber(base_num_ch + 2, data.g_phi)
         else
-            -- 新しい計算結果がない場合や非検出の場合は 0 を出力
-            -- (MC2側で Bool=true かつ Dist > 0 かどうかで有効なデータか判断)
-            output.setNumber(out_num_ch_base + 0, 0)
-            output.setNumber(out_num_ch_base + 1, 0)
-            output.setNumber(out_num_ch_base + 2, 0)
+            --[[output.setNumber(base_num_ch + 0, 0); output.setNumber(base_num_ch + 1, 0); output.setNumber(base_num_ch + 2,
+                0)]]
         end
     end
+    -- 更新間隔(tick数)を専用チャンネルに出力
+    output.setNumber(19, DetectionIntervalTicks)
+    output.setNumber(20, self_x); output.setNumber(21, self_y); output.setNumber(22, self_z)
 end
 
 --[[ (初期化はトップレベル変数定義で行われる) ]]
