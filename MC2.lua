@@ -20,11 +20,6 @@
   W:init01 - Invalid initial observation, skipping initialization.
 ]]
 
--- ショートハンド (ユーザーコードより)
-local iN = input.getNumber; local iB = input.getBool; local oN = output.setNumber; local oB = output.setBool
-local M = math; local sqrt = M.sqrt; local abs = M.abs; local pi = M.pi; local pi2 = pi * 2; local asin = M.asin; local atan =
-    M.atan; local Dl = debug.log
-
 --#################################################################
 --# 0. コンパクトな行列・ベクトル演算 ヘルパー関数群 (ユーザーコードベース + inv実装)
 --#################################################################
@@ -105,25 +100,50 @@ function inv(M)
     end; local a = M[1][1]; local b = M[1][2]; local c = M[1][3]; local d = M[2][1]; local e = M[2][2]; local f = M[2]
         [3]; local g = M[3][1]; local h = M[3][2]; local i = M[3][3]; if not a or not b or not c or not d or not e or not f or not g or not h or not i then
         debug.log("E:in01"); return nil
-    end; local det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g); if abs(det) < 1e-9 then
+    end; local det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g); if math.abs(det) < 1e-9 then
         debug.log("E:in02"); return nil
     end; local adj = { { (e * i - f * h), (c * h - b * i), (b * f - c * e) }, { (f * g - d * i), (a * i - c * g), (c * d - a * f) }, { (d * h - e * g), (b * g - a * h), (a * e - b * d) } }; local invDet = 1.0 /
         det; local invM = scalar(invDet, adj); return invM
 end
 
+--- 行列をログ出力用の文字列に変換するヘルパー関数
+function matrixToString(M, fmt)
+    if not M then return "nil" end
+    fmt = fmt or "%.3f" -- デフォルトのフォーマット
+    local rows = {}
+    for i = 1, #M do
+        local row = {}
+        if M[i] then
+            for j = 1, #M[i] do
+                table.insert(row, string.format(fmt, M[i][j] or 0)) -- nilなら0を表示
+            end
+        end
+        table.insert(rows, "{" .. table.concat(row, ", ") .. "}")
+    end
+    return "{" .. table.concat(rows, ", ") .. "}"
+end
+
 --#################################################################
 --# 1. 定数 & モデル定義
 --#################################################################
-local STATE_DIM = 9; local OBS_DIM = 3; local MAX_TRACKS = 1
-local I9 = zeros(STATE_DIM, STATE_DIM); if I9 then for i = 1, STATE_DIM do I9[i][i] = 1 end else I9 = {} end
-local R_diag_dist_sq = (0.02 * 50) ^ 2; local R_diag_angle_sq = (0.002 * pi2) ^ 2
-local R = { { R_diag_dist_sq, 0, 0 }, { 0, R_diag_angle_sq, 0 }, { 0, 0, R_diag_angle_sq } }
-local sigma_a = 0.5; local sigma_a_property = property.getNumber("SigmaA"); if sigma_a_property and sigma_a_property > 0 then
-    sigma_a = sigma_a_property; debug.log('MC3 Init: Read SigmaA = ' .. sigma_a .. ' from property.')
-else
-    debug.log('W:init03')
-end; local sigma_a_sq = sigma_a * sigma_a
-local function calculate_Q(dt)
+local STATE_DIM = 9
+local OBS_DIM = 3
+
+local pi2 = math.pi * 2
+local I9 = zeros(STATE_DIM, STATE_DIM);
+if I9 then for i = 1, STATE_DIM do I9[i][i] = 1 end else I9 = {} end
+-- 観測ノイズ R の基本値 (分散) - 仕様に合わせて修正済み
+local R_DIST_VAR_FACTOR = (0.02) ^ 2 /
+    12                                                                                                     -- Variance factor for distance: (0.01*d)^2/3
+local R_ANGLE_VAR = (0.002 * pi2) ^ 2 /
+    12                                                                                                     -- Variance for angle: (0.001*2pi)^2/3
+local R_DEFAULT = { { R_DIST_VAR_FACTOR * (50 ^ 2), 0, 0 }, { 0, R_ANGLE_VAR, 0 }, { 0, 0, R_ANGLE_VAR } } -- Default R for 50m distance
+
+-- プロセスノイズ Q
+local sigma_a = property.getNumber("SigmaA")
+
+local sigma_a_sq = sigma_a * sigma_a
+function calculate_Q(dt)
     local dt2 = dt * dt; local dt3 = dt2 * dt; local dt4 = dt3 * dt; local dt5 = dt4 * dt; local q11 = dt5 / 20; local q12 =
         dt4 / 8; local q13 = dt3 / 6; local q22 = dt3 / 3; local q23 = dt2 / 2; local q33 = dt; local Qb = { { q11, q12, q13 }, { q12, q22, q23 }, { q13, q23, q33 } }; Qb =
         scalar(sigma_a_sq, Qb); if not Qb then return zeros(STATE_DIM, STATE_DIM) end; local Q9 = zeros(STATE_DIM,
@@ -136,10 +156,33 @@ local function calculate_Q(dt)
         end
     end; return Q9
 end
-local Q; local function calculate_F(dt)
+
+-- 状態遷移行列 F (定加速度モデル用)
+function calculate_F(dt)
     local dt2h = 0.5 * dt * dt; return { { 1, dt, dt2h, 0, 0, 0, 0, 0, 0 }, { 0, 1, dt, 0, 0, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0, 0, 0, 0 }, { 0, 0, 0, 1, dt, dt2h, 0, 0, 0 }, { 0, 0, 0, 0, 1, dt, 0, 0, 0 }, { 0, 0, 0, 0, 0, 1, 0, 0, 0 }, { 0, 0, 0, 0, 0, 0, 1, dt, dt2h }, { 0, 0, 0, 0, 0, 0, 0, 1, dt }, { 0, 0, 0, 0, 0, 0, 0, 0, 1 } }
 end
-local F; local Initial_P_Matrix = zeros(STATE_DIM, STATE_DIM); local iposv = 100; local ivelv = 100; local iaccv = 10; if Initial_P_Matrix then
+
+local F; local Q
+
+-- 初期共分散行列 P (9x9 - 要調整)
+local Initial_P_Matrix = zeros(STATE_DIM, STATE_DIM)
+local iposv = 1000 ^ 2; local ivelv = 1000 ^ 2; local iaccv = 100 ^ 2
+-- プロパティから読み込み (オプション)
+local Q_ADAPT_SCALE_prop = property.getNumber("QAdaptScale")
+local Q_ADAPT_EPS_THR_prop = property.getNumber("QAdaptEpsThr")
+local Q_ADAPT_STEEPNESS_prop = property.getNumber("QAdaptSteep")
+if Q_ADAPT_SCALE_prop then
+    Q_ADAPT_SCALE = Q_ADAPT_SCALE_prop; debug.log("I:qsc")
+end
+if Q_ADAPT_EPS_THR_prop then
+    Q_ADAPT_EPS_THR = Q_ADAPT_EPS_THR_prop; debug.log("I:qet")
+end
+if Q_ADAPT_STEEPNESS_prop then
+    Q_ADAPT_STEEPNESS = Q_ADAPT_STEEPNESS_prop; debug.log("I:qst")
+end
+if not Q_ADAPT_SCALE_prop or not Q_ADAPT_EPS_THR_prop or not Q_ADAPT_STEEPNESS_prop then debug.log("W:init04") end
+
+if Initial_P_Matrix then
     for i = 1, STATE_DIM do
         if (i - 1) % 3 == 0 then
             Initial_P_Matrix[i][i] =
@@ -153,55 +196,66 @@ local F; local Initial_P_Matrix = zeros(STATE_DIM, STATE_DIM); local iposv = 100
 else
     Initial_P_Matrix = {}
 end
-local IN_DIST_CH = 1; local IN_G_AZIM_CH = 2; local IN_G_ELEV_CH = 3; local IN_DETECT_CH = 2; local IN_SELF_X_CH = 11; local IN_SELF_Y_CH = 13; local IN_SELF_Z_CH = 12; local IN_DT_N_CH = 10
-local OUT_ACTIVE_CH = function(i) return i end; local OUT_POS_X_CH = function(i) return (i - 1) * 6 + 1 end; local OUT_POS_Y_CH = function(
-    i)
-    return (i - 1) * 6 + 2
-end; local OUT_POS_Z_CH = function(i) return (i - 1) * 6 + 3 end; local OUT_VEL_X_CH = function(
-    i)
-    return (i - 1) * 6 + 4
-end; local OUT_VEL_Y_CH = function(i) return (i - 1) * 6 + 5 end; local OUT_VEL_Z_CH = function(
-    i)
-    return (i - 1) * 6 + 6
-end; local OUT_EPSILON_CH = 32
+-- 入力チャンネル定義 (MC1から - ループ用のみ)
+local IN_DIST_CH     = function(i) return (i - 1) * 3 + 1 end -- Num Ch 1, 4, ...
+local IN_G_AZIM_CH   = function(i) return (i - 1) * 3 + 2 end -- Num Ch 2, 5, ...
+local IN_G_ELEV_CH   = function(i) return (i - 1) * 3 + 3 end -- Num Ch 3, 6, ...
+local IN_NEW_DATA_CH = function(i) return 6 + i end           -- Bool Ch 7, 8, ...
+-- 出力チャンネル定義 (モニターや他のMCへ - ループ用のみ)
+local OUT_ACTIVE_CH  = function(i) return i end               -- Bool Ch 1-6
+local OUT_POS_X_CH   = function(i) return (i - 1) * 6 + 1 end -- Num Ch 1, 7, ...
+local OUT_POS_Y_CH   = function(i) return (i - 1) * 6 + 2 end -- Num Ch 2, 8, ...
+local OUT_POS_Z_CH   = function(i) return (i - 1) * 6 + 3 end -- Num Ch 3, 9, ...
+--一旦コメントアウト
+--local OUT_VEL_X_CH   = function(i) return (i - 1) * 6 + 4 end -- Num Ch 4, 10, ..
+--local OUT_VEL_Y_CH   = function(i) return (i - 1) * 6 + 5 end -- Num Ch 5, 11, ..
+--local OUT_VEL_Z_CH   = function(i) return (i - 1) * 6 + 6 end -- Num Ch 6, 12, ..
 
 --#################################################################
 --# 2. グローバル変数 / 状態変数
 --#################################################################
-local X = zeros(STATE_DIM, 1)
-local P = Initial_P_Matrix or zeros(STATE_DIM, STATE_DIM)
-local isInit = true
-local epsilon = 0
-local tickCounter = 0
+local X              = zeros(STATE_DIM, 1)
+local P              = Initial_P_Matrix or zeros(STATE_DIM, STATE_DIM)
+local isInit         = true
+local epsilon        = 0
+local prev_epsilon   = 0
+local tickCounter    = 0
 
 --#################################################################
 --# 3. EKF コア関数
 --#################################################################
 
---- 観測関数 h(x): 状態ベクトルから観測値（距離、仰角、方位角）を計算 ***[修正済み]***
--- @param x_vec table 状態ベクトル (9x1) {x,vx,ax, y,vy,ay, z,vz,az} - 目標の絶対座標
+--- 観測関数 h(x): 状態ベクトルから観測値（距離、仰角、方位角）を計算 (GPS座標系基準)
+-- @param x_vec table 状態ベクトル (9x1) {x,vx,ax, y,vy,ay, z,vz,az} - 目標の絶対座標 (East, North, Up)
 -- @param self_pos table 自機位置 {sx, sy, sz} (East, North, Up) - 自機の絶対座標
 -- @return table or nil 観測ベクトル (3x1) {dist}, {elev}, {azim} - 自機から見た相対的な極座標
 function observationFunction(x_vec, self_pos)
-    if not x_vec or not self_pos or not x_vec[1] or not x_vec[4] or not x_vec[7] then return nil end
-    -- 状態ベクトルから目標の絶対位置を抽出
+    if not x_vec or not self_pos or not x_vec[1] or not x_vec[4] or not x_vec[7] or not self_pos[1] or not self_pos[2] or not self_pos[3] then return nil end
+    -- 目標の絶対位置 (East, North, Up)
     local target_x = x_vec[1][1]; local target_y = x_vec[4][1]; local target_z = x_vec[7][1]
-    -- 自機位置を取得
+    -- 自機位置 (East, North, Up)
     local self_x = self_pos[1]; local self_y = self_pos[2]; local self_z = self_pos[3]
-    -- *** 自機から目標への相対ベクトルを計算 ***
-    local rel_x = target_x - self_x
-    local rel_y = target_y - self_y
-    local rel_z = target_z - self_z
-    -- *** 相対ベクトルから距離、仰角、方位角を計算 ***
+
+    -- 自機から目標への相対ベクトル (East, North, Up)
+    local rel_x = target_x - self_x -- Relative East
+    local rel_y = target_y - self_y -- Relative North
+    local rel_z = target_z - self_z -- Relative Up
+
+    -- 相対ベクトルから距離、仰角、方位角を計算
     local r_sq = rel_x * rel_x + rel_y * rel_y + rel_z * rel_z
-    if r_sq < 1e-9 then return nil end -- 自機と目標が同一地点の場合
-    local r = sqrt(r_sq)
-    local rh_sq = rel_x * rel_x + rel_y * rel_y
-    local rh = sqrt(rh_sq > 1e-9 and rh_sq or 1e-9) -- 水平距離
-    local dist = r
-    local elev = asin(rel_z / r)                    -- 仰角
-    local azim = atan(rel_x, rel_y)                 -- 方位角 (atan(East, North))
-    return { { dist }, { elev }, { azim } }
+    if r_sq < 1e-9 then return { { 0 }, { 0 }, { 0 } } end -- 目標が自機と同一地点の場合、距離0、角度0を返す (エラーよりはまし)
+    local r = math.sqrt(r_sq)                              -- Distance
+
+    local rh_sq = rel_x * rel_x + rel_y * rel_y            -- Horizontal distance squared
+    local rh = math.sqrt(rh_sq > 1e-9 and rh_sq or 1e-9)   -- Horizontal distance (avoid zero division)
+
+    -- 仰角 (Elevation): asin(Up / Distance) - Range [-pi/2, pi/2]
+    local elev = math.asin(rel_z / r)
+
+    -- 方位角 (Azimuth): atan(East / North) - Range [-pi, pi], North=0, East=pi/2
+    local azim = math.atan(rel_x, rel_y) -- Using math.atan(y, x) equivalent
+
+    return { { r }, { elev }, { azim } }
 end
 
 --- ヤコビアン行列 H = ∂h/∂X の計算 (3x9 for CA model) ***[修正済み]***
@@ -209,31 +263,60 @@ end
 -- @param self_pos table 自機位置 {sx, sy, sz} (East, North, Up) - 自機の絶対座標
 -- @return table or nil ヤコビアン行列 (3x9)
 function calculateJacobianH(x_vec, self_pos)
-    if not x_vec or not self_pos or not x_vec[1] or not x_vec[4] or not x_vec[7] then return nil end
-    -- 状態ベクトルから目標の絶対位置を抽出
+    if not x_vec or not self_pos or not x_vec[1] or not x_vec[4] or not x_vec[7] or not self_pos[1] or not self_pos[2] or not self_pos[3] then return nil end
+    -- 目標の絶対位置 (East, North, Up)
     local target_x = x_vec[1][1]; local target_y = x_vec[4][1]; local target_z = x_vec[7][1]
-    -- 自機位置を取得
+    -- 自機位置 (East, North, Up)
     local self_x = self_pos[1]; local self_y = self_pos[2]; local self_z = self_pos[3]
-    -- *** 自機から目標への相対ベクトルを計算 ***
-    local x = target_x - self_x -- 相対X (East)
-    local y = target_y - self_y -- 相対Y (North)
-    local z = target_z - self_z -- 相対Z (Up)
+
+    -- 自機から目標への相対ベクトル (East, North, Up)
+    local x = target_x - self_x -- Relative East
+    local y = target_y - self_y -- Relative North
+    local z = target_z - self_z -- Relative Up
+
     -- 必要な値を計算 (ゼロ除算回避含む)
-    local r_sq = x * x + y * y + z * z; if r_sq < 1e-9 then return nil end; local r = sqrt(r_sq)
-    local rh_sq = x * x + y * y; if rh_sq < 1e-9 then return nil end; local rh = sqrt(rh_sq)
-    local r2 = r_sq; local r3 = r2 * r; local rh2 = rh_sq
+    local r_sq = x * x + y * y + z * z
+    if r_sq < 1e-9 then return zeros(OBS_DIM, STATE_DIM) end -- Avoid division by zero, return zero Jacobian
+    local r = math.sqrt(r_sq)
+    local rh_sq = x * x + y * y
+    if rh_sq < 1e-9 then rh_sq = 1e-9 end -- Avoid division by zero for azimuth calculation
+    local rh = math.sqrt(rh_sq)
+    local r3 = r_sq * r
+    local rh2 = rh_sq
 
-    local H = zeros(OBS_DIM, STATE_DIM) -- 3x9
+    local H = zeros(OBS_DIM, STATE_DIM) -- Initialize 3x9 Jacobian with zeros
 
-    -- 偏微分を計算 (∂h / ∂(target_pos)) - 計算式自体は相対座標を使えば同じ
-    -- Row 1: ∂dist/∂X = [∂r/∂x, 0, 0, ∂r/∂y, 0, 0, ∂r/∂z, 0, 0]
-    H[1][1] = x / r; H[1][4] = y / r; H[1][7] = z / r
-    -- Row 2: ∂elev/∂X = [∂e/∂x, 0, 0, ∂e/∂y, 0, 0, ∂e/∂z, 0, 0] (e = asin(z/r))
-    local term_elev_denom = sqrt(1 - (z / r) ^ 2); if abs(z / r) > 0.9999 then term_elev_denom = 1e-5 end
-    local term_elev = 1 / term_elev_denom
-    H[2][1] = term_elev * (-z * x / r3); H[2][4] = term_elev * (-z * y / r3); H[2][7] = term_elev * (rh2 / r3)
-    -- Row 3: ∂azim/∂X = [∂a/∂x, 0, 0, ∂a/∂y, 0, 0, ∂a/∂z, 0, 0] (a = atan(x,y))
-    H[3][1] = y / rh2; H[3][4] = -x / rh2; H[3][7] = 0
+    -- 偏微分を計算 (∂h / ∂(target_pos))
+    -- h = {dist, elev, azim}
+    -- X = {pos_e, vel_e, acc_e, pos_n, vel_n, acc_n, pos_u, vel_u, acc_u}
+
+    -- Row 1: ∂dist/∂X = [∂r/∂x_e, 0, 0, ∂r/∂x_n, 0, 0, ∂r/∂x_u, 0, 0]
+    H[1][1] = x / r -- ∂r/∂x_e
+    H[1][4] = y / r -- ∂r/∂x_n
+    H[1][7] = z / r -- ∂r/∂x_u
+
+    -- Row 2: ∂elev/∂X = [∂e/∂x_e, 0, 0, ∂e/∂x_n, 0, 0, ∂e/∂x_u, 0, 0] where e = asin(z/r)
+    -- ∂e/∂x = (1 / sqrt(1 - (z/r)^2)) * ∂(z/r)/∂x
+    -- ∂(z/r)/∂x_e = (r*0 - z*(x/r)) / r^2 = -zx / r^3
+    -- ∂(z/r)/∂x_n = (r*0 - z*(y/r)) / r^2 = -zy / r^3
+    -- ∂(z/r)/∂x_u = (r*1 - z*(z/r)) / r^2 = (r^2 - z^2) / r^3 = (x^2+y^2) / r^3 = rh^2 / r^3
+    local term_elev_denom_sq = 1 - (z / r) ^ 2
+    if term_elev_denom_sq < 1e-9 then term_elev_denom_sq = 1e-9 end -- Avoid sqrt(0) or negative
+    local term_elev = 1 / math.sqrt(term_elev_denom_sq)
+
+    H[2][1] = term_elev * (-z * x / r3) -- ∂e/∂x_e
+    H[2][4] = term_elev * (-z * y / r3) -- ∂e/∂x_n
+    H[2][7] = term_elev * (rh2 / r3)    -- ∂e/∂x_u
+
+    -- Row 3: ∂azim/∂X = [∂a/∂x_e, 0, 0, ∂a/∂x_n, 0, 0, ∂a/∂x_u, 0, 0] where a = atan(x,y) = atan(East, North)
+    -- ∂a/∂x_e = (1 / (1 + (x/y)^2)) * (1/y) = y / (y^2 + x^2) = y / rh^2  <-- Error in formula, should be atan2(y,x) derivative
+    -- Correct derivative for atan(y=East, x=North): atan(x_e, x_n)
+    -- ∂a/∂x_e = (1 / (1 + (x_e/x_n)^2)) * (1/x_n) = x_n / (x_n^2 + x_e^2) = y / rh2
+    -- ∂a/∂x_n = (1 / (1 + (x_e/x_n)^2)) * (-x_e/x_n^2) = -x_e / (x_n^2 + x_e^2) = -x / rh2
+    -- ∂a/∂x_u = 0
+    H[3][1] = y / rh2  -- ∂a/∂x_e
+    H[3][4] = -x / rh2 -- ∂a/∂x_n
+    H[3][7] = 0        -- ∂a/∂x_u
 
     return H
 end
@@ -249,31 +332,29 @@ end
 -- @return table, table, number or nil,nil,nil 更新後の X, P, epsilon
 function EKF_Update(F_current, Q_current, R_obs, Z_obs, X_state, P_cov, current_self_pos) -- 引数追加
     -- === 予測 ===
-    debug.log("L:kf01")
     local X_pred = mul(F_current, X_state)
+
     local P_pred = sum(mul(F_current, mul(P_cov, T(F_current))), Q_current)
     if not X_pred or not P_pred then return nil, nil, nil end
 
     -- === 更新 ===
-    debug.log("L:kf02")
     -- 観測予測 h(x_pred) - 自機位置を渡す
     local Z_pred = observationFunction(X_pred, current_self_pos)
     if not Z_pred then
-        debug.log("E:kf02"); return nil, nil, nil
+        return nil, nil, nil
     end
 
     local Y = sub(Z_obs, Z_pred) -- イノベーション Y = Z_obs - h(x_pred)
     if not Y then
-        debug.log("E:kf02"); return nil, nil, nil
+        return nil, nil, nil
     end
-    if Y[3][1] then Y[3][1] = (Y[3][1] + pi) % pi2 - pi end -- 方位角の差を正規化
+    if Y[3][1] then Y[3][1] = (Y[3][1] + math.pi) % pi2 - math.pi end -- 方位角の差を正規化
 
     -- ヤコビアン H = ∂h/∂X at X_pred - 自機位置を渡す
     local H = calculateJacobianH(X_pred, current_self_pos)
     if not H then
         debug.log("E:kf01"); return nil, nil, nil
     end
-
     -- (以降の計算は変更なし、ただし H が正しく計算されていることが前提)
     local PHT = mul(P_pred, T(H)); if not PHT then
         debug.log("E:kf03"); return nil, nil, nil
@@ -323,59 +404,145 @@ end
 function onTick()
     tickCounter = tickCounter + 1
 
-    -- === 入力読み取り ===
-    local obs_dist = iN(IN_DIST_CH); local obs_azim = iN(IN_G_AZIM_CH); local obs_elev = iN(IN_G_ELEV_CH)
-    local RDetect = iB(1); local n_ticks = iN(19)
-    local self_x = iN(20); local self_y = iN(22); local self_z = iN(21)
-    local current_self_pos = { self_x, self_y, self_z } -- テーブルに格納
-    debug.log(string.format("Self Pos Input: X(11)=%.2f, Y(13)=%.2f, Z(12)=%.2f", self_x, self_y, self_z))
-    -- === 計算 ===
-    local dt = 1 / 60; if n_ticks and n_ticks > 0 then dt = n_ticks / 60 end
-    F = calculate_F(dt); Q = calculate_Q(dt)
-    local obsZ = { { obs_dist }, { obs_elev }, { obs_azim } }
+    -- === 入力読み取り (対象は目標1のみとする) ===
+    local target_index = 1
 
-    if RDetect and dt > 0 then
-        if isInit then
-            debug.log("W:kf02")
-            local r = obsZ[1][1]; local el = obsZ[2][1]; local az = obsZ[3][1]
-            if r and el and az then
-                local cp = M.cos(el); local sp = M.sin(el); local ct = M.cos(az); local st = M.sin(az)
+    -- MC1 からのデータ
+    local obs_dist = input.getNumber(IN_DIST_CH(target_index))
+    local obs_azim = input.getNumber(IN_G_AZIM_CH(target_index))
+    local obs_elev = input.getNumber(IN_G_ELEV_CH(target_index))
+    local newDataAvailable = input.getBool(IN_NEW_DATA_CH(target_index)) -- New Data Flag (Bool Ch 7)
+
+    -- 時間関連情報
+    local n_ticks = input.getNumber(19) -- <<< 修正: 直接数値を指定 >>> Detection Interval (ticks) from MC1
+    local dt = 1 / 60
+    if n_ticks and n_ticks > 0 then dt = n_ticks / 60 end
+
+    -- 自機位置
+    local self_x = input.getNumber(20) -- <<< 修正: 直接数値を指定 >>> East
+    local self_y = input.getNumber(21) -- <<< 修正: 直接数値を指定 >>> North
+    local self_z = input.getNumber(22) -- <<< 修正: 直接数値を指定 >>> Up
+    local current_self_pos = { self_x, self_y, self_z }
+    -- === EKF 計算 ===
+    F = calculate_F(dt)
+    local Q_base = calculate_Q(dt)
+    -- --- 適応的Qの計算 ---
+    local Q_adaptive = Q_base     -- デフォルトは基本Q
+    if Q_base and not isInit then -- 初期化前や基本Q計算失敗時は適応しない
+        -- シグモイド関数でスケーリング係数を計算
+        -- q_scale = 1 + Scale / (1 + exp(-(prev_epsilon - Threshold) * Steepness))
+        local exp_arg = -(prev_epsilon - Q_ADAPT_EPS_THR) * Q_ADAPT_STEEPNESS
+        -- math.expの引数が大きすぎるとinfになるのを防ぐ (例: 700程度でオーバーフローの可能性)
+        if exp_arg > 700 then exp_arg = 700 end
+        local sigmoid_denom = 1 + math.exp(exp_arg)
+        local q_scale = 1 + Q_ADAPT_SCALE / sigmoid_denom
+
+        Q_adaptive = scalar(q_scale, Q_base)
+        if not Q_adaptive then
+            debug.log("E:adapQ") -- 適応Q計算失敗
+            Q_adaptive = Q_base  -- 失敗したら基本Qを使う
+        end
+        -- Dl("AdapQ Scale: ".. string.format("%.2f", q_scale)) -- デバッグ用
+    end
+
+    -- --- 予測ステップ ---
+    local X_pred = X -- 更新がない場合、現在の状態が予測値になる
+    local P_pred = P
+    if not isInit then
+        -- Dl("L:p") -- Predict step log (optional)
+        X_pred = mul(F, X)
+        -- <<< 修正: 適応的なQ (Q_adaptive) を使用 >>>
+        P_pred = sum(mul(F, mul(P, T(F))), Q_adaptive)
+        if not X_pred or not P_pred then
+            debug.log("E:kfp")
+            isInit = true          -- 予測失敗時はリセット
+            X_pred = X; P_pred = P -- リセット前の値を使うか、ゼロにするか？一旦維持
+        end
+    end
+
+    -- --- 更新ステップ (新しいデータがある場合のみ) ---
+    local current_epsilon = 0 -- 今回の更新でのepsilonを保持 (prev_epsilonとは別)
+    if newDataAvailable then
+        local obsZ = { { obs_dist }, { obs_elev }, { obs_azim } }
+        if obs_dist and obs_dist > 1e-6 and obs_elev and obs_azim then
+            -- 適応的観測ノイズRの計算
+            local R_calculated = R_DEFAULT
+            if n_ticks and n_ticks > 0 and obs_dist > 1e-6 then
+                local current_dist_var = R_DIST_VAR_FACTOR * (obs_dist ^ 2)
+                local R_base = { { current_dist_var, 0, 0 }, { 0, R_ANGLE_VAR, 0 }, { 0, 0, R_ANGLE_VAR } }
+                local scale_factor = 1.0
+                scale_factor = math.max(scale_factor, 0.01) -- 下限設定
+                R_calculated = { { current_dist_var, 0, 0 }, { 0, R_ANGLE_VAR, 0 }, { 0, 0, R_ANGLE_VAR } }
+                if not R_calculated then R_calculated = R_DEFAULT end
+            end
+
+            if isInit then
+                -- Dl("I:init") -- Initializing filter
+                local r = obsZ[1][1]; local el = obsZ[2][1]; local az = obsZ[3][1]
+                local cp = math.cos(el); local sp = math.sin(el); local ct = math.cos(az); local st = math.sin(az)
                 local dX = r * cp * st; local dY = r * cp * ct; local dZ = r * sp
                 local initX = self_x + dX; local initY = self_y + dY; local initZ = self_z + dZ
-                if Initial_P_Matrix then P = Initial_P_Matrix else P = zeros(STATE_DIM, STATE_DIM) end
                 X = { { initX }, { 0 }, { 0 }, { initY }, { 0 }, { 0 }, { initZ }, { 0 }, { 0 } }
+                P = Initial_P_Matrix or zeros(STATE_DIM, STATE_DIM)
                 isInit = false
+                prev_epsilon = 0 -- 初期化時は prev_epsilon をリセット
+                current_epsilon = 0
             else
-                debug.log("W:init01")
+                -- EKF更新 (予測された X_pred, P_pred を渡す)
+                local X_new, P_new, eps_new = EKF_Update(F, Q_adaptive, R_calculated, obsZ, X, P, current_self_pos)
+                if X_new and P_new and eps_new then
+                    X = X_new                      -- 状態を更新
+                    P = P_new
+                    current_epsilon = eps_new      -- 今回計算されたepsilon
+                    prev_epsilon = current_epsilon -- 次の予測ステップのために保存
+                else
+                    debug.log("E:kfu")
+                    -- 更新失敗時は状態 X, P を予測ステップの結果(X_pred, P_pred)のままにする
+                    X = X_pred
+                    P = P_pred
+                    current_epsilon = 0 -- 更新失敗時のepsilonは0とする
+                    prev_epsilon = 0    -- 次の予測に影響しないようにリセット
+                end
             end
         else
-            -- EKF 更新ステップ呼び出し - *** 自機位置を渡すように変更 ***
-            local X_new, P_new, eps_new = EKF_Update(F, Q, R, obsZ, X, P, current_self_pos)
-            if X_new and P_new and eps_new then
-                X = X_new; P = P_new; epsilon = eps_new
-            else
-                isInit = true
-            end
+            debug.log("W:obs")
+            prev_epsilon = 0 -- 無効な観測値の場合もリセット
+            current_epsilon = 0
         end
     else
+        -- 新しいデータがない場合
         if not isInit then
-            debug.log("W:kf01"); isInit = true
+            -- 状態 X, P は予測ステップの結果のまま
+            X = X_pred
+            P = P_pred
+            -- prev_epsilon は前の値を維持 (予測だけでは更新しない)
+            current_epsilon = prev_epsilon -- 現在のepsilonとしては前の値を表示？あるいは0？ 0が安全か。
+            current_epsilon = 0
         end
+        -- isInit が true の場合は何もしない
     end
 
     -- === 出力 ===
-    local outputX = 0; local outputY = 0; local outputZ = 0; local outputVX = 0; local outputVY = 0; local outputVZ = 0
+    local outputX, outputY, outputZ = 0, 0, 0
+    -- local outputVX, outputVY, outputVZ = 0, 0, 0
+    local outputActive = false
     if not isInit then
-        outputX = X[1][1]; outputVX = X[2][1]; outputY = X[4][1]; outputVY = X[5][1]; outputZ = X[7][1]; outputVZ = X[8]
-            [1]
+        outputX = X[1][1]; outputVX = X[2][1]
+        outputY = X[4][1]; outputVY = X[5][1]
+        outputZ = X[7][1]; outputVZ = X[8][1]
+        outputActive = true
     end
-    oB(OUT_ACTIVE_CH(1), not isInit and RDetect)
-    oN(OUT_POS_X_CH(1), outputX); oN(OUT_POS_Y_CH(1), outputY); oN(OUT_POS_Z_CH(1), outputZ)
-    oN(OUT_VEL_X_CH(1), outputVX); oN(OUT_VEL_Y_CH(1), outputVY); oN(OUT_VEL_Z_CH(1), outputVZ)
-    oN(OUT_EPSILON_CH, epsilon)
-    for i = 2, MAX_TRACKS do
-        oB(OUT_ACTIVE_CH(i), false); local bc = OUT_POS_X_CH(i); for j = 0, 5 do oN(bc + j, 0) end
-    end
-end
 
---[[ (初期化はトップレベル変数定義で行われる) ]]
+    output.setBool(OUT_ACTIVE_CH(target_index), outputActive) -- Bool Ch 1
+    output.setNumber(OUT_POS_X_CH(target_index), outputX)     -- Num Ch 1
+    output.setNumber(OUT_POS_Y_CH(target_index), outputY)     -- Num Ch 2
+    output.setNumber(OUT_POS_Z_CH(target_index), outputZ)     -- Num Ch 3
+    --一旦コメントアウト
+    --output.setNumber(OUT_VEL_X_CH(target_index), outputVX)    -- Num Ch 4
+    --output.setNumber(OUT_VEL_Y_CH(target_index), outputVY)    -- Num Ch 5
+    --output.setNumber(OUT_VEL_Z_CH(target_index), outputVZ)    -- Num Ch 6
+    output.setNumber(32, current_epsilon) -- Num Ch 32 (Epsilon)
+    --一旦コメントアウト
+    -- debug.log("epsilon:%.2f" .. current_epsilon)
+    -- 複数目標対応はしていないのでクリア処理は不要
+end

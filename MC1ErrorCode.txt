@@ -25,4 +25,5 @@
   E:ac01 - angleLocalToGlobal: Calculation failed.
   E:ac02 - angleLocalToGlobal: Missing orientation data.
   E:ac03 - angleLocalToGlobal: Helper function failed (e.g., matrix multiply).
+  E:ao02 - Buffer contains nil/non-numeric
 ]]

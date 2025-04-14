@@ -8,7 +8,6 @@
 --[[ Log/Error Code Mappings (MC1):
   E:va01 - vectorAdd: Dimension mismatch.
   E:vs01 - vectorSubtract: Dimension mismatch.
-  L:ndc01 - New detection cycle started.
   L:ao01 - Averaged observation calculated for channel X.
   E:ao01 - averageObservations: Invalid or empty buffer provided.
   L:gc01 - Global angles calculated for channel X.
@@ -21,41 +20,45 @@
 --#################################################################
 --# 1. 定数定義 (トップレベルで定義)
 --#################################################################
-local MAX_TARGETS_INPUT      = 6
-local PI                     = math.pi
-local HALF_PI                = PI / 2
-local PI2                    = PI * 2
+local MAX_TARGETS_INPUT       = 6
+local PI                      = math.pi
+local HALF_PI                 = PI / 2
+local PI2                     = PI * 2
 
 -- 入力チャンネル定義
-local RADAR_DIST_CH          = function(i) return (i - 1) * 4 + 1 end
-local RADAR_AZIM_CH          = function(i) return (i - 1) * 4 + 2 end
-local RADAR_ELEV_CH          = function(i) return (i - 1) * 4 + 3 end
-local RADAR_ELAPSED_CH       = function(i) return (i - 1) * 4 + 4 end
-local RADAR_DETECT_CH        = function(i) return i end
+local RADAR_DIST_CH           = function(i) return (i - 1) * 4 + 1 end
+local RADAR_AZIM_CH           = function(i) return (i - 1) * 4 + 2 end
+local RADAR_ELEV_CH           = function(i) return (i - 1) * 4 + 3 end
+local RADAR_ELAPSED_CH        = function(i) return (i - 1) * 4 + 4 end
+local RADAR_DETECT_CH         = function(i) return i end
 
 -- 出力チャンネル定義 (MC2へ)
-local OUT_DIST_CH            = function(i) return (i - 1) * 3 + 1 end
-local OUT_G_AZIM_CH          = function(i) return (i - 1) * 3 + 2 end
-local OUT_G_ELEV_CH          = function(i) return (i - 1) * 3 + 3 end
-local OUT_DETECT_CH          = function(i) return i end
-
+local OUT_DIST_CH             = function(i) return (i - 1) * 3 + 1 end
+local OUT_NEW_DATA_FLAG_CH    = function(i) return 6 + i end -- 例: Bool Ch 7-12
 --#################################################################
 --# 2. グローバル変数 / 状態変数 (トップレベルで初期化)
 --#################################################################
-local observationBuffer      = {}
-local tickCounter            = 0
+local observationBuffer       = {}
+local tickCounter             = 0
+
+-- <<< 修正: 2段階の状態保持 >>>
+-- stateForProcessing: 現在処理中のバッファに対応する自機状態 (1サイクル前のもの)
+local stateForProcessing      = {
+    orient = { yaw = 0, pitch = 0, roll = 0 },
+    pos_gps = { x = 0, y = 0, z = 0 }
+}
+-- latestStateAtCycleStart: 最新のサイクル開始時の自機状態 (次の処理で使用)
+local latestStateAtCycleStart = {
+    orient = { yaw = 0, pitch = 0, roll = 0 },
+    pos_gps = { x = 0, y = 0, z = 0 }
+}
 
 -- 固定された更新間隔 (tick数)
-local DetectionIntervalTicks = 1 -- デフォルト値
+local DetectionIntervalTicks  = 1 -- デフォルト値
 -- *** プロパティから名前 "EffectiveRange" で直接読み込む ***
-local EffectiveRange         = property.getNumber("EffectiveRange")
+local EffectiveRange          = property.getNumber("EffectiveRange")
 if EffectiveRange and EffectiveRange > 0 then
     DetectionIntervalTicks = math.max(math.floor(EffectiveRange / 2000 + 0.5), 1)
-    debug.log("MC1 Init: EffectiveRange=" .. EffectiveRange .. ", DetectionInterval=" .. DetectionIntervalTicks ..
-        " ticks")
-else
-    -- *** 警告メッセージも修正 ***
-    debug.log('W:init01') -- Warning: Radar Range Property "EffectiveRange" not set or invalid.
 end
 
 --#################################################################
@@ -160,9 +163,8 @@ function rotateLocalToGlobal_UserA(pitch, yaw, roll, Lx, Ly, Lz)
     if not pitch or not yaw or not roll or not Lx or not Ly or not Lz then
         debug.log("E:gc01"); return nil
     end
-    local the = pitch; local phi = yaw; local psi = roll;
-    local cY = math.cos(phi); local sY = math.sin(phi); local cP = math.cos(the); local sP = math.sin(the); local cR =
-        math.cos(psi); local sR = math.sin(psi)
+    local cY = math.cos(yaw); local sY = math.sin(yaw); local cP = math.cos(pitch); local sP = math.sin(pitch); local cR =
+        math.cos(roll); local sR = math.sin(roll)
     local dX = cY * cR * Lx + (sP * sY * cR - cP * sR) * Ly + (cP * sY * cR + sP * sR) * Lz
     local dY_Alt = cY * sR * Lx + (sP * sY * sR + cP * cR) * Ly + (cP * sY * sR - sP * cR) * Lz
     local dZ_North = -sY * Lx + sP * cY * Ly + cP * cY * Lz
@@ -173,89 +175,169 @@ end
 --# 4. メインループ (onTick) - Stormworks が毎フレーム呼び出す関数
 --#################################################################
 function onTick()
-    tickCounter                      = tickCounter + 1
+    tickCounter = tickCounter + 1
 
-    -- === 4.1 入力読み取り ===
-    local yaw_val                    = input.getNumber(28)
-    local pitch_val                  = input.getNumber(29)
-    local roll_val                   = input.getNumber(30)
-    local self_x                     = input.getNumber(25)
-    local self_y                     = input.getNumber(26)
-    local self_z                     = input.getNumber(27)
-    local self_orient                = { yaw = yaw_val, pitch = pitch_val, roll = roll_val }
+    -- === 4.1 入力読み取り (現在の自機状態とレーダー観測) ===
+    local current_yaw = input.getNumber(28)
+    local current_pitch = input.getNumber(29)
+    local current_roll = input.getNumber(30)
+    -- Physics Sensor 出力からGPS座標系 (East, North, Up) に読み替え
+    local current_self_x_east = input.getNumber(25)
+    local current_self_y_north = input.getNumber(27) -- Physics Sensor Z is North
+    local current_self_z_up = input.getNumber(26)    -- Physics Sensor Y is Up
+    local current_orient = { yaw = current_yaw, pitch = current_pitch, roll = current_roll }
+    local current_pos_gps = { x = current_self_x_east, y = current_self_y_north, z = current_self_z_up }
 
     local current_observations_local = {}
-    local is_new_cycle               = false
-    local detected_flags             = {}
+    local is_new_cycle = false    -- このtickが新しいサイクルの開始点か？
+    local detected_this_tick = {} -- このtickで検出されたか？ (出力用)
+
     for i = 1, MAX_TARGETS_INPUT do
-        local is_detected = input.getBool(RADAR_DETECT_CH(i)); detected_flags[i] = is_detected
+        local is_detected = input.getBool(RADAR_DETECT_CH(i))
+        detected_this_tick[i] = is_detected -- 現在の検出状態を記録
+
         if is_detected then
             local r, t, p, e = input.getNumber(RADAR_DIST_CH(i)), input.getNumber(RADAR_AZIM_CH(i)),
                 input.getNumber(RADAR_ELEV_CH(i)), input.getNumber(RADAR_ELAPSED_CH(i))
-            current_observations_local[i] = { r = r, theta = t, phi = p, elapsed = e }; if e == 0 then is_new_cycle = true end
+
+            -- elapsed time が nil でないことを確認 (念のため)
+            if e ~= nil then
+                current_observations_local[i] = { r = r, theta = t, phi = p, elapsed = e }
+                -- 新しいサイクルの開始を判定 (elapsed が 0 になった瞬間)
+                if e == 0 then
+                    is_new_cycle = true
+                end
+            end
         else
-            if observationBuffer[i] then observationBuffer[i] = nil end
+            -- 検出が途切れたらその目標のバッファをクリア
+            if observationBuffer[i] then
+                observationBuffer[i] = nil
+                -- debug.log("Target " .. i .. " lost, buffer cleared.")
+            end
         end
     end
 
-    -- === 4.2 平均化 & グローバル角度計算 ===
-    local processed_data_for_output = {}
+    -- === 4.2 過去サイクルのデータ処理 (新しいサイクルの開始時に実行) ===
+    local processed_data_for_output = {} -- このtickでMC2に出力するデータ
+    local new_data_flag_for_output = {}  -- このtickでMC2に出力する更新フラグ
+
     if is_new_cycle then
-        debug.log("L:ndc01")
         for i = 1, MAX_TARGETS_INPUT do
+            -- 過去のサイクルでデータがバッファリングされていれば処理
             if observationBuffer[i] and observationBuffer[i].r and #observationBuffer[i].r > 0 then
                 local avg_obs = averageObservations(observationBuffer[i])
                 if avg_obs then
-                    debug.log("L:ao01")
-                    local theta_rad = (avg_obs.theta or 0) * PI2; local phi_rad = (avg_obs.phi or 0) * PI2; local r_avg =
-                        avg_obs.r or 0
-                    local cp = math.cos(phi_rad); local sp = math.sin(phi_rad); local ct = math.cos(theta_rad); local st =
-                        math.sin(theta_rad)
-                    local localX_R = r_avg * cp * st; local localY_U = r_avg * sp; local localZ_F = r_avg * cp * ct
-                    local GV_relative = rotateLocalToGlobal_UserA(self_orient.pitch, self_orient.yaw, self_orient.roll,
-                        localX_R, localY_U, localZ_F)
+                    local theta_rad = (avg_obs.theta or 0) * PI2
+                    local phi_rad = (avg_obs.phi or 0) * PI2
+                    local r_avg = avg_obs.r or 0
+
+                    -- ローカル直交座標 (Right, Up, Forward) に変換
+                    local cp = math.cos(phi_rad); local sp = math.sin(phi_rad)
+                    local ct = math.cos(theta_rad); local st = math.sin(theta_rad)
+                    local localX_R = r_avg * cp * st -- Right
+                    local localY_U = r_avg * sp      -- Up
+                    local localZ_F = r_avg * cp * ct -- Forward
+
+                    -- <<< 修正: 1サイクル前の姿勢情報 (stateForProcessing.orient) を使用 >>>
+                    local GV_relative = rotateLocalToGlobal_UserA(
+                        stateForProcessing.orient.pitch, stateForProcessing.orient.yaw, stateForProcessing.orient.roll,
+                        localX_R, localY_U, localZ_F
+                    )
+
                     if GV_relative then
-                        local dX = GV_relative.x; local dY_North = GV_relative.z; local dZ_Up = GV_relative.y
-                        local ground_dist_sq = dX ^ 2 + dY_North ^ 2; local ground_dist = 0; local theta_global_rad = 0; local phi_global_rad = 0
+                        -- グローバル角度 (East-North平面からの仰角、NorthからのEast向き方位角) を計算
+                        local dX_East = GV_relative.x
+                        local dY_North = GV_relative.z -- 注意: rotateLocalToGlobal_UserAの出力 Z は North
+                        local dZ_Up = GV_relative.y    -- 注意: rotateLocalToGlobal_UserAの出力 Y は Altitude/Up
+
+                        local ground_dist_sq = dX_East ^ 2 + dY_North ^ 2
+                        local ground_dist = 0
+                        local theta_global_rad = 0 -- Azimuth from North (East is positive)
+                        local phi_global_rad = 0   -- Elevation from Horizon
+
                         if ground_dist_sq > 1e-9 then
-                            ground_dist = math.sqrt(ground_dist_sq); theta_global_rad = math.atan(dX, dY_North); phi_global_rad =
-                                math.atan(dZ_Up, ground_dist)
+                            ground_dist = math.sqrt(ground_dist_sq)
+                            -- atan2(y, x) -> atan2(East, North)
+                            theta_global_rad = math.atan(dX_East, dY_North)
+                            -- atan2(y, x) -> atan2(Up, GroundDist)
+                            phi_global_rad = math.atan(dZ_Up, ground_dist)
                         else
-                            if dZ_Up >= 0 then phi_global_rad = HALF_PI else phi_global_rad = -HALF_PI end; theta_global_rad = 0; debug
-                                .log("W:ga01")
+                            -- Target is directly above or below
+                            if dZ_Up >= 0 then phi_global_rad = HALF_PI else phi_global_rad = -HALF_PI end
+                            theta_global_rad = 0 -- Azimuth is undefined/zero
+                            -- debug.log("W:ga01 - Ground distance zero Ch" .. i)
                         end
-                        processed_data_for_output[i] = { dist = r_avg, g_theta = theta_global_rad, g_phi = phi_global_rad }; debug
-                            .log("L:gc01")
+                        -- 処理結果を保存
+                        processed_data_for_output[i] = { dist = r_avg, g_theta = theta_global_rad, g_phi = phi_global_rad }
+                        new_data_flag_for_output[i] = true -- 新しいデータがあることを示す
                     else
-                        debug.log("E:gc01")
-                    end
-                end; observationBuffer[i] = nil
-            end
-            ::continue_loop::
+                        debug.log("E:gc01r" .. i)
+                        new_data_flag_for_output[i] = false
+                    end -- end if GV_relative
+                else
+                    -- averageObservations が失敗した場合
+                    debug.log("E:ao01a" .. i)
+                    new_data_flag_for_output[i] = false
+                end -- end if avg_obs
+
+                -- 処理が終わったので、この目標のバッファをクリア
+                observationBuffer[i] = nil
+            else
+                -- このサイクルでは処理するデータがなかった (前サイクルで未検出だったなど)
+                new_data_flag_for_output[i] = false
+            end -- end if buffer exists
+        end     -- end for loop (target processing)
+
+        -- <<< 修正: 次のサイクルの処理のために状態を更新 >>>
+        -- stateForProcessing を latestStateAtCycleStart の値で更新
+        stateForProcessing = latestStateAtCycleStart
+        -- latestStateAtCycleStart を現在の値で更新
+        latestStateAtCycleStart = { orient = current_orient, pos_gps = current_pos_gps }
+    else
+        -- is_new_cycle が false の場合、データ処理は行わない
+        for i = 1, MAX_TARGETS_INPUT do
+            new_data_flag_for_output[i] = false -- 新しいデータは出力されない
         end
-    end
+    end                                         -- end if is_new_cycle
+    -- === 4.3 観測値をバッファに追加 (毎tick行う) ===
     for ci, obs_local in pairs(current_observations_local) do
-        if not observationBuffer[ci] then observationBuffer[ci] = { r = {}, theta = {}, phi = {} } end; table.insert(
-            observationBuffer[ci].r, obs_local.r); table.insert(observationBuffer[ci].theta, obs_local.theta); table
-            .insert(
-                observationBuffer[ci].phi, obs_local.phi)
-    end
-
-    -- === 4.3 出力書き込み (MC2へ) ===
-    for i = 1, MAX_TARGETS_INPUT do
-        local data = processed_data_for_output[i]; local base_num_ch = OUT_DIST_CH(i); local bool_ch = OUT_DETECT_CH(i); output
-            .setBool(bool_ch, detected_flags[i] or false)
-        if data and detected_flags[i] then
-            output.setNumber(base_num_ch + 0, data.dist); output.setNumber(base_num_ch + 1, data.g_theta); output
-                .setNumber(base_num_ch + 2, data.g_phi)
-        else
-            --[[output.setNumber(base_num_ch + 0, 0); output.setNumber(base_num_ch + 1, 0); output.setNumber(base_num_ch + 2,
-                0)]]
+        -- バッファが存在しない場合は作成 (検出開始時 or ロスト後再検出時)
+        if not observationBuffer[ci] then
+            observationBuffer[ci] = { r = {}, theta = {}, phi = {} }
+            -- debug.log("Target " .. ci .. " detected, buffer created.")
         end
+        table.insert(observationBuffer[ci].r, obs_local.r)
+        table.insert(observationBuffer[ci].theta, obs_local.theta)
+        table.insert(observationBuffer[ci].phi, obs_local.phi)
     end
-    -- 更新間隔(tick数)を専用チャンネルに出力
-    output.setNumber(19, DetectionIntervalTicks)
-    output.setNumber(20, self_x); output.setNumber(21, self_y); output.setNumber(22, self_z)
-end
 
---[[ (初期化はトップレベル変数定義で行われる) ]]
+    -- === 4.4 出力書き込み (MC2へ) ===
+    for i = 1, MAX_TARGETS_INPUT do
+        local data = processed_data_for_output[i]
+        local new_data_available = new_data_flag_for_output[i] or false
+
+        -- 数値チャンネル出力 (データがある場合のみ意味を持つ値を出力)
+        local base_num_ch = OUT_DIST_CH(i)
+        if new_data_available and data then
+            output.setNumber(base_num_ch + 0, data.dist)
+            output.setNumber(base_num_ch + 1, data.g_theta) -- Global Azimuth (rad)
+            output.setNumber(base_num_ch + 2, data.g_phi)   -- Global Elevation (rad)
+        else
+            -- データがない場合は 0 を出力 (MC2側でフラグを見て無視する想定)
+            output.setNumber(base_num_ch + 0, 0)
+            output.setNumber(base_num_ch + 1, 0)
+            output.setNumber(base_num_ch + 2, 0)
+        end
+
+        -- Boolチャンネル出力 (MC2への更新トリガー)
+        output.setBool(OUT_NEW_DATA_FLAG_CH(i), new_data_available)
+    end
+
+    -- 更新間隔(tick数)を出力 (これは定数なので毎tick出力しても良い)
+    output.setNumber(19, DetectionIntervalTicks)
+
+    -- 自機位置 (EKF更新時の位置として stateForProcessing.pos_gps を使う)
+    output.setNumber(20, stateForProcessing.pos_gps.x) -- East
+    output.setNumber(21, stateForProcessing.pos_gps.y) -- North (GPS Y)
+    output.setNumber(22, stateForProcessing.pos_gps.z) -- Up (GPS Z)
+end
