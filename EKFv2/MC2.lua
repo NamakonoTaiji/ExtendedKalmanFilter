@@ -132,11 +132,9 @@ local OBS_DIM = 3
 local pi2 = math.pi * 2
 local I9 = zeros(STATE_DIM, STATE_DIM);
 if I9 then for i = 1, STATE_DIM do I9[i][i] = 1 end else I9 = {} end
--- 観測ノイズ R の基本値 (分散) - 仕様に合わせて修正済み
-local R_DIST_VAR_FACTOR = (0.02) ^ 2 /
-    12                                                                                                     -- Variance factor for distance: (0.01*d)^2/3
-local R_ANGLE_VAR = (0.002 * pi2) ^ 2 /
-    12                                                                                                     -- Variance for angle: (0.001*2pi)^2/3
+-- 観測ノイズ R の基本値 (分散) - 仕様に合わせて修正済
+local R_DIST_VAR_FACTOR = (0.02) ^ 2 / 12
+local R_ANGLE_VAR = (0.002 * pi2) ^ 2 / 12
 local R_DEFAULT = { { R_DIST_VAR_FACTOR * (50 ^ 2), 0, 0 }, { 0, R_ANGLE_VAR, 0 }, { 0, 0, R_ANGLE_VAR } } -- Default R for 50m distance
 
 -- プロセスノイズ Q
@@ -206,10 +204,10 @@ local OUT_ACTIVE_CH  = function(i) return i end               -- Bool Ch 1-6
 local OUT_POS_X_CH   = function(i) return (i - 1) * 6 + 1 end -- Num Ch 1, 7, ...
 local OUT_POS_Y_CH   = function(i) return (i - 1) * 6 + 2 end -- Num Ch 2, 8, ...
 local OUT_POS_Z_CH   = function(i) return (i - 1) * 6 + 3 end -- Num Ch 3, 9, ...
---一旦コメントアウト
---local OUT_VEL_X_CH   = function(i) return (i - 1) * 6 + 4 end -- Num Ch 4, 10, ..
---local OUT_VEL_Y_CH   = function(i) return (i - 1) * 6 + 5 end -- Num Ch 5, 11, ..
---local OUT_VEL_Z_CH   = function(i) return (i - 1) * 6 + 6 end -- Num Ch 6, 12, ..
+
+local OUT_VEL_X_CH   = function(i) return (i - 1) * 6 + 4 end -- Num Ch 4, 10, ..
+local OUT_VEL_Y_CH   = function(i) return (i - 1) * 6 + 5 end -- Num Ch 5, 11, ..
+local OUT_VEL_Z_CH   = function(i) return (i - 1) * 6 + 6 end -- Num Ch 6, 12, ..
 
 --#################################################################
 --# 2. グローバル変数 / 状態変数
@@ -495,6 +493,7 @@ function onTick()
                     P = P_new
                     current_epsilon = eps_new      -- 今回計算されたepsilon
                     prev_epsilon = current_epsilon -- 次の予測ステップのために保存
+                    debug.log(string.format("epsilon:%.2f", current_epsilon))
                 else
                     debug.log("E:kfu")
                     -- 更新失敗時は状態 X, P を予測ステップの結果(X_pred, P_pred)のままにする
@@ -537,12 +536,11 @@ function onTick()
     output.setNumber(OUT_POS_X_CH(target_index), outputX)     -- Num Ch 1
     output.setNumber(OUT_POS_Y_CH(target_index), outputY)     -- Num Ch 2
     output.setNumber(OUT_POS_Z_CH(target_index), outputZ)     -- Num Ch 3
-    --一旦コメントアウト
-    --output.setNumber(OUT_VEL_X_CH(target_index), outputVX)    -- Num Ch 4
-    --output.setNumber(OUT_VEL_Y_CH(target_index), outputVY)    -- Num Ch 5
-    --output.setNumber(OUT_VEL_Z_CH(target_index), outputVZ)    -- Num Ch 6
-    output.setNumber(32, current_epsilon) -- Num Ch 32 (Epsilon)
-    --一旦コメントアウト
-    -- debug.log("epsilon:%.2f" .. current_epsilon)
-    -- 複数目標対応はしていないのでクリア処理は不要
+
+    output.setNumber(OUT_VEL_X_CH(target_index), outputVX)    -- Num Ch 4
+    output.setNumber(OUT_VEL_Y_CH(target_index), outputVY)    -- Num Ch 5
+    output.setNumber(OUT_VEL_Z_CH(target_index), outputVZ)    -- Num Ch 6
+    output.setNumber(32, current_epsilon)                     -- Num Ch 32 (Epsilon)
+
+    --複数目標対応はしていないのでクリア処理は不要
 end
