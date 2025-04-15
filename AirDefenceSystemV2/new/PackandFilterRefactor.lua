@@ -70,80 +70,44 @@ local function getSignCode(value)
     if value < 0 then return "1" else return "2" end
 end
 local function packTargetData(distance, azimuth, elevation)
-    -- 入力値が0の場合は圧縮せずに 0, 0 を返す
-    if distance == 0 then
-        return 0, 0
-    end
+    if distance == 0 then return 0, 0 end
 
     local pack1_val, pack2_val
-    local q           -- 距離の桁数フラグ (0: 1000m以上, 1: 1000m未満)
-    local d_str_part  -- 距離情報から抽出した部分文字列 (4桁 or 5桁)
-    local e_str       -- 方位角の小数部4桁文字列
-    local f_str       -- 仰角の小数部4桁文字列
-    local aziSignCode -- 方位角の符号 ('1' or '2')
-    local eleSignCode -- 仰角の符号 ('1' or '2')
+    local e_str, f_str
+    local aziSignCode, eleSignCode
 
-    -- 1. 距離に応じた q の設定と丸め処理
-    local distLog = M.log(distance, 10)
-    local roundedDistance
-    if distLog >= 3 then -- 1000m以上
-        q = 0
-        roundedDistance = distance + 5 * (10 ^ (M.floor(distLog) - 4))
-    else -- 1000m未満
-        q = 1
-        roundedDistance = distance + 5 * (10 ^ (M.floor(distLog) - 4))
-    end
+    -- 1. 距離をゼロ埋め4桁の文字列に変換 (最大9999mまで対応)
+    -- round distance to integer before formatting
+    local intDistance = math.floor(distance + 0.5)    -- 四捨五入して整数化
+    if intDistance > 9999 then intDistance = 9999 end -- 上限キャップ
+    if intDistance < 0 then intDistance = 0 end       -- 下限キャップ
+    local distStr4Digits = string.format("%04d", intDistance)
 
-    -- 2 & 3. 角度の符号取得と丸め処理
+    -- 2. 角度の符号と小数部4桁文字列 (変更なし)
     aziSignCode = getSignCode(azimuth)
-    local absAzimuth = M.abs(azimuth) + 0.00005     -- 丸め
+    local absAzimuth = math.abs(azimuth) + 0.00005
     eleSignCode = getSignCode(elevation)
-    local absElevation = M.abs(elevation) + 0.00005 -- 丸め
-
-    -- 4. 角度の小数部4桁を文字列として抽出 (オリジナル方式)
-    local aziFormatted = string.format("%f", absAzimuth) -- デフォルト小数点以下6桁
+    local absElevation = math.abs(elevation) + 0.00005
+    local aziFormatted = string.format("%f", absAzimuth)
     local eleFormatted = string.format("%f", absElevation)
     local aziDotPos = string.find(aziFormatted, "%.")
     local eleDotPos = string.find(eleFormatted, "%.")
-    if aziDotPos then
-        -- 小数点以下1文字目から4文字目までを取得
-        e_str = string.sub(aziFormatted, aziDotPos + 1, aziDotPos + 4)
-    else
-        e_str = "0000"
-    end
-    if eleDotPos then
-        f_str = string.sub(eleFormatted, eleDotPos + 1, eleDotPos + 4)
-    else
-        f_str = "0000"
-    end
-    -- 念のため4桁保証 (string.sub の結果が短い場合など)
-    e_str = string.format("%-4s", e_str):gsub(" ", "0") -- 左寄せ4桁、空白を0で置換
+    if aziDotPos then e_str = string.sub(aziFormatted, aziDotPos + 1, aziDotPos + 4) else e_str = "0000" end
+    if eleDotPos then f_str = string.sub(eleFormatted, eleDotPos + 1, eleDotPos + 4) else f_str = "0000" end
+    e_str = string.format("%-4s", e_str):gsub(" ", "0")
     f_str = string.format("%-4s", f_str):gsub(" ", "0")
 
-    -- 5. 距離情報から必要な部分文字列を抽出 (オリジナル方式)
-    local distFormatted = string.format("%f", roundedDistance) -- デフォルト小数点以下6桁
-    -- 先頭から (4 + q) 文字を取得
-    d_str_part = string.sub(distFormatted, 1, 4 + q)
+    -- 3. パーツ分割 (距離は4桁文字列から2桁ずつ)
+    local distPart1 = string.sub(distStr4Digits, 1, 2) -- 前半2桁
+    local distPart2 = string.sub(distStr4Digits, 3, 4) -- 後半2桁
 
-    -- 6. 距離部分文字列を分割 (常に前半2桁、後半/中央2桁)
-    local distPart1 = string.sub(d_str_part, 1, 2)
-    local distPart2 = string.sub(d_str_part, 3, 4)
-
-    -- 7. pack1_val, pack2_val を組み立てて数値化 (常に7桁になるはず)
+    -- 4. 組み立てと数値化 (常に7桁)
     pack1_val = tonumber(aziSignCode .. e_str .. distPart1)
     pack2_val = tonumber(eleSignCode .. f_str .. distPart2)
+    if pack1_val == nil then pack1_val = 0 end
+    if pack2_val == nil then pack2_val = 0 end
 
-    -- tonumber が nil を返した場合のエラーハンドリング
-    if pack1_val == nil then
-        print("Error: Failed to convert pack1. String: '" .. aziSignCode .. e_str .. distPart1 .. "'")
-        pack1_val = 0
-    end
-    if pack2_val == nil then
-        print("Error: Failed to convert pack2. String: '" .. eleSignCode .. f_str .. distPart2 .. "'")
-        pack2_val = 0
-    end
-
-    -- 8. グローバル定数 RADAR_ID に基づいて最終的な符号を決定
+    -- 5. 符号付け (変更なし)
     local sign1, sign2
     if RADAR_ID == 0 then
         sign1 = -1; sign2 = -1
@@ -154,11 +118,9 @@ local function packTargetData(distance, azimuth, elevation)
     elseif RADAR_ID == 3 then
         sign1 = 1; sign2 = 1
     else
-        print("Error: Invalid RADAR_ID: " .. tostring(RADAR_ID))
         sign1 = -1; sign2 = -1
     end
 
-    -- 計算結果に符号を適用して返す
     return pack1_val * sign1, pack2_val * sign2
 end
 

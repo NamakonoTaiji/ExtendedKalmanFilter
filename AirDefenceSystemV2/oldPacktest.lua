@@ -1,3 +1,5 @@
+pi = math.pi
+pi2 = pi * 2
 function Pack(a, b, c)
     local d, e, f, x1, x2, bsgn, csgn, cabs, babs, q
     if a == 0 then
@@ -38,5 +40,33 @@ function sign(a)
     return tostring(sgn), math.abs(a)
 end
 
-x1, x2 = Pack(999, 0.0, 0.1)
+function VariableUnpack(a, b)
+    local eabs, fabs, d, e, f, s
+    local signList = { -1, 1 }
+    if a * b == 0 then
+        return 0, 0, 0, 0
+    end
+    local list, i, j = { { 1, 2 }, { 3, 4 } }, 1, 1
+    if a > 0 then
+        i = 2
+    end
+    if b > 0 then
+        j = 2
+    end
+    s = list[i][j]
+    a = string.format("%7f", math.abs(a))
+    b = string.format("%7f", math.abs(b))
+    d = tonumber(a:sub(6, 7) .. b:sub(6, -1))
+    eabs = tonumber("0." .. a:sub(2, 5))
+    fabs = tonumber("0." .. b:sub(2, 5))
+    e = eabs * signList[tonumber(a:sub(1, 1))] * pi2
+    f = fabs * signList[tonumber(b:sub(1, 1))] * pi2
+    e = ((e + pi / 2 * (s - 1)) % pi2 + pi) % pi2 - pi
+    return d, e, f, s - 1
+end
+
+x1, x2 = Pack(100, 0.1, 0.05)
 print(x1, x2)
+
+d, e, f, s = VariableUnpack(x1, x2)
+print("distance:" .. d, "azimuth:" .. e, "elevation:" .. f, "id:" .. s)
