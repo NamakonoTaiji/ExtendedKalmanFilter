@@ -150,7 +150,7 @@ function ZYXRotate(the, phi, psi)
     RX = { { 1, 0, 0 }, { 0, math.cos(the), -math.sin(the) }, { 0, math.sin(the), math.cos(the) } }
     RY = { { math.cos(phi), 0, math.sin(phi) }, { 0, 1, 0 }, { -math.sin(phi), 0, math.cos(phi) } }
     RZ = { { math.cos(psi), -math.sin(psi), 0 }, { math.sin(psi), math.cos(psi), 0 }, { 0, 0, 1 } }
-    matrix = mul(RX, RY, RZ)
+    matrix = mul(RZ, RY, RX) -- 正 : mul(RZ,RY,RX) ローカル->グローバル変換はZYX順で回転。 誤 : mul(RX,RY,RZ)
     return matrix
 end
 
@@ -189,16 +189,19 @@ function onTick()
         if iN(i * 2 - 1) ~= 0 then
             dist, azi, ele, radarID = ValiableUnpack(iN(i * 2 - 1), iN(i * 2))
             --kakuzdohosei
-            eulerMatR = ZYXRotate(-iN(28), -iN(29), -iN(30))
+            eulerMatR = ZYXRotate(iN(28), iN(29), iN(30)) -- Pitch, Yaw, Roll
             Rthetaphi = { { math.cos(ele) * math.sin(azi) },
                 { math.sin(ele) },
                 { math.cos(ele) * math.cos(azi) } }
-            Rotate = mul(T(eulerMatR), Rthetaphi)
+            Rotate = mul(eulerMatR, Rthetaphi)
             ele = math.asin(Rotate[2][1])
             azi = math.atan(Rotate[1][1], Rotate[3][1])
             x = dist * math.cos(ele) * math.sin(azi) + phyX       --left/right
             y = dist * math.sin(ele) - (radarID * 2.5) / 4 + phyY --height
             z = dist * math.cos(ele) * math.cos(azi) + phyZ       --front/back
+            debug.log("x=" ..
+                dist * math.cos(ele) * math.sin(azi) ..
+                " y=" .. (dist * math.sin(ele) - (radarID * 2.5) / 4) .. " z=" .. dist * math.cos(ele) * math.cos(azi))
             if i > 6 then
                 c = c2
             end

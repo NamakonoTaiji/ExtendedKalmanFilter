@@ -59,12 +59,11 @@ local MAX_OUTPUT_CHANNELS = 32                                  -- 出力チャ�
 local MAX_TRACKED_TARGETS = math.floor(MAX_OUTPUT_CHANNELS / 3) -- 同時に追跡・出力できる最大目標数 (約10)
 
 -- EKF パラメータ
-local NUM_STATES = 6                        -- 状態変数の数 (x, vx, y, vy, z, vz)
-local DATA_ASSOCIATION_THRESHOLD = 100      -- データアソシエーションの閾値 (epsilon)
-local TARGET_TIMEOUT_TICKS = 70             -- 目標が更新されない場合のタイムアウトtick数 (約1.17秒)
-local TARGET_IS_LEAVING_THRESHOLD = -1      -- 目標が離反していると判断する閾値 (接近速度 < -1 m/s ?)
-local INITIAL_VELOCITY_VARIANCE = (300 ^ 2) -- 新規目標の初期速度分散 (大きい値に設定)
-local OWN_SHIP_Y_OFFSET = 1                 -- 自機のY座標(高さ)へのオフセット (調整が必要な場合)
+local NUM_STATES = 6                                                        -- 状態変数の数 (x, vx, y, vy, z, vz)
+local DATA_ASSOCIATION_THRESHOLD = property.getNumber("D_ASSOC") or 100     -- データアソシエーションの閾値 (epsilon)
+local TARGET_TIMEOUT_TICKS = property.getNumber("TIMEOUT") or 70            -- 目標が更新されない場合のタイムアウトtick数 (約1.17秒)
+local TARGET_IS_LEAVING_THRESHOLD = property.getNumber("TGT_LEAVING") or -1 -- 目標が離反していると判断する閾値 (接近速度 < -1 m/s ?)
+local INITIAL_VELOCITY_VARIANCE = (300 ^ 2)                                 -- 新規目標の初期速度分散 (大きい値に設定)
 
 -- 観測ノイズ共分散行列 R (テンプレート) - レーダーの精度に基づく
 -- オリジナルコードの R0 [source: 40] を参考に設定。
@@ -77,7 +76,7 @@ local OBSERVATION_NOISE_MATRIX_TEMPLATE = {
 }
 
 -- プロセスノイズ Q の適応的調整パラメータ (オリジナルコード [source: 41] より)
-local PROCESS_NOISE_BASE = 1e-4
+local PROCESS_NOISE_BASE = 1e-3
 local PROCESS_NOISE_ADAPTIVE_SCALE = 1e+4
 local PROCESS_NOISE_EPSILON_THRESHOLD = 140
 local PROCESS_NOISE_EPSILON_SLOPE = 100
@@ -162,7 +161,7 @@ function inv(M)
     local aug = {}; for r = 1, n do
         aug[r] = {}; if M[r] == nil then return nil end; for c = 1, n do
             local v = M[r][c]; if v == nil or v ~= v or v == math.huge or v == -math.huge then return nil end; aug[r][c] =
-            v
+                v
         end
         for c = 1, n do aug[r][n + c] = (r == c) and 1 or 0 end
     end                                                                                   -- 入力チェック
@@ -204,12 +203,9 @@ function unpackTargetData(pack1, pack2)
     end
 
     local distance, azimuthRad, elevationRad, radarId
-    local signList = { [-1] = 1, [1] = 2 } -- 修正: 元の signList = {-1, 1} はインデックス1,2に対応していた。
-    -- ここでは符号値(-1 or 1)をキー、コード(1 or 2)を値にする？
-    -- いや、逆だ。コード(1 or 2)をキー、符号値(-1 or 1)を値にすべき。
-    signList = { [1] = -1, [2] = 1 } -- Index 1 (コード'1') -> 符号 -1, Index 2 (コード'2') -> 符号 +1
+    local signList = { [1] = -1, [2] = 1 } -- Index 1 -> 符号 -1, Index 2 -> 符号 +1
 
-    -- 1. レーダーIDのデコード
+    -- 1. レーダーIDのデコード (変更なし)
     local i = (pack1 > 0) and 2 or 1
     local j = (pack2 > 0) and 2 or 1
     local radarIdMap = { { 1, 2 }, { 3, 4 } }
@@ -220,74 +216,46 @@ function unpackTargetData(pack1, pack2)
     local absPack1 = math.abs(pack1)
     local absPack2 = math.abs(pack2)
 
-    -- 3. 安全な方法でゼロ埋め7桁文字列に変換
-    local function formatTo7DigitString(num)
-        local numStr = string.format("%.0f", num)
-        local n = tonumber(numStr)
-        if n == nil or n ~= n or n == math.huge or n == -math.huge or math.abs(n) >= 10000000 then
-            debug.log("Warning: Invalid or too large number for 7-digit format:", num)
-            return "0000000"
-        else
-            -- ゼロの場合も考慮して %07d を使う
-            return string.format("%07d", n)
-        end
-    end
-    local pack1Str = formatTo7DigitString(absPack1)
-    local pack2Str = formatTo7DigitString(absPack2)
+    -- 3. ★修正: 絶対値を直接文字列に変換し、その後で文字列としてゼロ埋め
+    local pack1Str = string.format("%.0f", absPack1) -- まず整数文字列に
+    local pack2Str = string.format("%.0f", absPack2)
 
-    -- 4. 各パーツを抽出
-    local aziSignCodeRaw = tonumber(string.sub(pack1Str, 1, 1)) -- 1桁目: 符号コード (0, 1, or 2)
-    local e_str = string.sub(pack1Str, 2, 5)
-    local distPart1 = string.sub(pack1Str, 6, 7)
+    -- 文字列として右寄せゼロパディングで7桁を保証する
+    -- string.format("%07d", tonumber(pack1Str)) よりも安全
+    pack1Str = string.format("%7s", pack1Str):gsub(" ", "0")
+    pack2Str = string.format("%7s", pack2Str):gsub(" ", "0")
 
-    local eleSignCodeRaw = tonumber(string.sub(pack2Str, 1, 1)) -- 1桁目: 符号コード (0, 1, or 2)
-    local f_str = string.sub(pack2Str, 2, 5)
-    local distPart2 = string.sub(pack2Str, 6, 7)
+    -- 4. 各パーツを抽出 (ここからは変更なし)
+    local aziSignCodeRaw = tonumber(string.sub(pack1Str, 1, 1)) -- 1桁目: 符号コード
+    local e_str = string.sub(pack1Str, 2, 5)                    -- 2-5桁目: 方位角小数部4桁
+    local distPart1 = string.sub(pack1Str, 6, 7)                -- 6-7桁目: 距離前半2桁
 
-    -- ★修正: 符号コードが 0 または不正な値の場合の対策
-    local aziSignIndex -- signList に使うインデックス (1 or 2)
-    if aziSignCodeRaw == 1 or aziSignCodeRaw == 2 then
-        aziSignIndex = aziSignCodeRaw
-    else
-        -- debug.log("Warning: Invalid azimuth sign code:", aziSignCodeRaw, "Defaulting to positive.")
-        aziSignIndex = 2 -- デフォルトで正(Index 2)とする (元のPack関数は正/ゼロを 2 にしていた)
-    end
+    local eleSignCodeRaw = tonumber(string.sub(pack2Str, 1, 1)) -- 1桁目: 符号コード
+    local f_str = string.sub(pack2Str, 2, 5)                    -- 2-5桁目: 仰角小数部4桁
+    local distPart2 = string.sub(pack2Str, 6, 7)                -- 6-7桁目: 距離後半/中央2桁
+    -- 5. 符号インデックスの決定 (不正値対応)
+    local aziSignIndex = (aziSignCodeRaw == 1 or aziSignCodeRaw == 2) and aziSignCodeRaw or 2
+    local eleSignIndex = (eleSignCodeRaw == 1 or eleSignCodeRaw == 2) and eleSignCodeRaw or 2
 
-    local eleSignIndex -- signList に使うインデックス (1 or 2)
-    if eleSignCodeRaw == 1 or eleSignCodeRaw == 2 then
-        eleSignIndex = eleSignCodeRaw
-    else
-        -- debug.log("Warning: Invalid elevation sign code:", eleSignCodeRaw, "Defaulting to positive.")
-        eleSignIndex = 2 -- デフォルトで正(Index 2)とする
-    end
-
-    -- 5. 距離を復元
+    -- 6. 距離を復元
     distance = tonumber(distPart1 .. distPart2)
-    if distance == nil then
-        debug.log("Error: Failed to decode distance."); distance = 0
-    end
+    if distance == nil then distance = 0 end
 
-    -- 6. 角度を復元 (ラジアン単位) - 修正したインデックスを使用
+    -- 7. 角度を復元 (ラジアン単位)
     local aziFraction = tonumber("0." .. e_str)
     local eleFraction = tonumber("0." .. f_str)
-    if aziFraction == nil then
-        debug.log("Error: Failed to decode azi fraction."); aziFraction = 0
-    end
-    if eleFraction == nil then
-        debug.log("Error: Failed to decode ele fraction."); eleFraction = 0
-    end
+    if aziFraction == nil then aziFraction = 0 end
+    if eleFraction == nil then eleFraction = 0 end
 
-    -- signList テーブルから正しい符号値 (-1 or 1) を取得
     local aziSignValue = signList[aziSignIndex]
     local eleSignValue = signList[eleSignIndex]
 
-    azimuthRad = aziFraction * aziSignValue * PI2   -- 正しい符号値を使用
-    elevationRad = eleFraction * eleSignValue * PI2 -- 正しい符号値を使用
+    azimuthRad = aziFraction * aziSignValue * PI2
+    elevationRad = eleFraction * eleSignValue * PI2
 
-    -- 7. 角度を [-PI, PI) の範囲に正規化
+    -- 8. 角度を [-PI, PI) の範囲に正規化
     azimuthRad = (azimuthRad + PI) % PI2 - PI
     elevationRad = (elevationRad + PI) % PI2 - PI
-
     return distance, azimuthRad, elevationRad, radarId
 end
 
@@ -301,19 +269,15 @@ Physics Sensor のオイラー角 (Z-Y-X Intrinsic, 左手系) に対応。
 入力オイラー角は Physics Sensor 出力値をそのまま使う (元コードの反転は不要と判断)。
 ※もし動作がおかしい場合は、元コードのように符号反転を試す。
 ]]
-function rotateVectorZYX(vector, roll, yaw, pitch)
+function rotateVectorZYX(vector, pitch, yaw, roll)
     -- 回転行列 R = Rx(pitch) * Ry(yaw) * Rz(roll)
     -- Rx
-    local cp = math.cos(pitch); local sp = math.sin(pitch)
-    local Rx = { { 1, 0, 0 }, { 0, cp, -sp }, { 0, sp, cp } }
+    local RX = { { 1, 0, 0 }, { 0, math.cos(pitch), -math.sin(pitch) }, { 0, math.sin(pitch), math.cos(pitch) } }
     -- Ry
-    local cy = math.cos(yaw); local sy = math.sin(yaw)
-    local Ry = { { cy, 0, sy }, { 0, 1, 0 }, { -sy, 0, cy } }
+    local RY = { { math.cos(yaw), 0, math.sin(yaw) }, { 0, 1, 0 }, { -math.sin(yaw), 0, math.cos(yaw) } }
     -- Rz
-    local cr = math.cos(roll); local sr = math.sin(roll)
-    local Rz = { { cr, -sr, 0 }, { sr, cr, 0 }, { 0, 0, 1 } }
-
-    local R = mul(Rx, Ry, Rz)
+    local RZ = { { math.cos(roll), -math.sin(roll), 0 }, { math.sin(roll), math.cos(roll), 0 }, { 0, 0, 1 } }
+    local R = mul(RZ, RY, RX)
     return mul(R, vector)
 end
 
@@ -321,41 +285,30 @@ end
 localToGlobalCoords: レーダーのローカル極座標をグローバル直交座標に変換
 出力は Physics Sensor グローバル座標系 (X:東, Y:上, Z:北)
 ]]
-function localToGlobalCoords(distance, localAzimuth, localElevation, radarId, ownPose)
-    -- 1. レーダー基準のローカル直交座標 (+X:右, +Y:上, +Z:前)
-    local radarLocalX = distance * math.cos(localElevation) * math.sin(localAzimuth)
-    local radarLocalY = distance * math.sin(localElevation)
-    local radarLocalZ = distance * math.cos(localElevation) * math.cos(localAzimuth)
-    local radarLocalVector = { { radarLocalX }, { radarLocalY }, { radarLocalZ } }
-
-    -- 2. レーダー設置位置・向きに応じた車両ローカル座標への変換
-    --    4つのレーダーが 前(0), 右(1), 後(2), 左(3) に設置されている前提
-    local radarHeightOffset = 0 -- 必要なら設定
-    local vehicleLocalVector = radarLocalVector
-    local radarYawOffset = 0
-    if radarId == 1 then
-        radarYawOffset = -PI / 2 -- 右
-    elseif radarId == 2 then
-        radarYawOffset = PI      -- 後
-    elseif radarId == 3 then
-        radarYawOffset = PI / 2  -- 左
+function localToGlobalCoords(dist, locAzi, locEle, rId, ownP)
+    -- 1. レーダー基準ローカル直交座標
+    local locX = dist * math.cos(locEle) * math.sin(locAzi); local locY = dist * math.sin(locEle); local locZ = dist *
+        math.cos(locEle) * math.cos(locAzi);
+    local radarLocVec = { { locX }, { locY }, { locZ } };
+    -- 2. ヨー回転適用 -> 車両前方基準ローカル座標へ
+    local rYOff = 0; if rId == 1 then rYOff = PI / 2 elseif rId == 2 then rYOff = PI elseif rId == 3 then rYOff = -PI / 2 end
+    local vehLocVec_rotated = radarLocVec -- ID 0 は回転不要
+    if rYOff ~= 0 then
+        local cy = math.cos(rYOff); local sy = math.sin(rYOff); local RotY = { { cy, 0, sy }, { 0, 1, 0 }, { -sy, 0, cy } };
+        vehLocVec_rotated = mul(RotY, radarLocVec);
     end
-    if radarYawOffset ~= 0 then
-        local cy_off = math.cos(radarYawOffset); local sy_off = math.sin(radarYawOffset)
-        local RotY = { { cy_off, 0, sy_off }, { 0, 1, 0 }, { -sy_off, 0, cy_off } }
-        vehicleLocalVector = mul(RotY, vehicleLocalVector)
-    end
-    vehicleLocalVector[2][1] = vehicleLocalVector[2][1] + radarHeightOffset
+    debug.log("vehLocVec_rotated X: " .. vehLocVec_rotated[1][1] .. " Y:" .. vehLocVec_rotated[2][1] .. " Z:" ..
+        vehLocVec_rotated[3][1] .. " id:" .. rId)
+    vehLocVec_rotated[2][1] = vehLocVec_rotated[2][1] + 2.5 / (rId + 1)
+    -- 5. 車両姿勢で回転 -> グローバルな相対ベクトルへ
+    local globalRelativeVector = rotateVectorZYX(vehLocVec_rotated, ownP.pitch, ownP.yaw, ownP.roll);
 
-    -- 3. 車両ローカル座標からグローバル座標への変換 (自機姿勢による回転)
-    local globalRelativeVector = rotateVectorZYX(vehicleLocalVector, ownPose.roll, ownPose.yaw, ownPose.pitch)
-
-    -- 4. グローバル座標に自機位置を加算
-    local globalX = globalRelativeVector[1][1] + ownPose.x
-    local globalY = globalRelativeVector[2][1] + ownPose.y
-    local globalZ = globalRelativeVector[3][1] + ownPose.z
-
-    return globalX, globalY, globalZ
+    -- 6. 物理センサーのグローバル位置を加算 -> 最終的な目標グローバル座標
+    local gX = globalRelativeVector[1][1] + ownP.x; local gY = globalRelativeVector[2][1] + ownP.y; local gZ =
+        globalRelativeVector[3][1] + ownP.z;
+    debug.log("gX:" ..
+        globalRelativeVector[1][1] .. " gY:" .. globalRelativeVector[2][1] .. " gZ:" .. globalRelativeVector[3][1])
+    return gX, gY, gZ
 end
 
 --------------------------------------------------------------------------------
@@ -448,7 +401,7 @@ function onTick()
 
     -- 1. 自機情報と遅延フラグを取得
     physicsSensorData.x = inputNumber(25)
-    physicsSensorData.y = inputNumber(26) + OWN_SHIP_Y_OFFSET
+    physicsSensorData.y = inputNumber(26)
     physicsSensorData.z = inputNumber(27)
     physicsSensorData.pitch = inputNumber(28)
     physicsSensorData.yaw = inputNumber(29)
@@ -459,53 +412,37 @@ function onTick()
     local currentObservations = {}            -- このtickで有効な観測データリスト
 
     -- 2. 入力データ読み込み、展開、変換、Tick情報付与
-    -- RadarList1 からのデータ (ch 1-12)
-    for i = 1, MAX_INPUT_TARGETS_RL1 do
-        local pack1 = inputNumber(i * 2 - 1)
-        local pack2 = inputNumber(i * 2)
-        if pack1 ~= 0 or pack2 ~= 0 then
-            local dist, localAziRad, localEleRad, rId = unpackTargetData(pack1, pack2)
-            if rId ~= -1 and dist > 0 then
-                local gX, gY, gZ = localToGlobalCoords(dist, localAziRad, localEleRad, rId, physicsSensorData)
-                -- 観測Tickを決定 (遅延フラグを考慮)
-                local observationTick = isDelayed1 and (currentTick - 1) or currentTick
-                table.insert(currentObservations, {
-                    distance = dist,
-                    azimuth = localAziRad,
-                    elevation = localEleRad,
-                    radarId = rId,
-                    globalX = gX,
-                    globalY = gY,
-                    globalZ = gZ,
-                    obsTick = observationTick
-                })
+    if (inputNumber(1) ~= 0 or inputNumber(13) ~= 0) then
+        for i = 1, MAX_INPUT_TARGETS_RL1 + MAX_INPUT_TARGETS_RL2 do
+            local isDelayed
+            if i > MAX_INPUT_TARGETS_RL1 then
+                isDelayed = isDelayed2
+            else
+                isDelayed = isDelayed1
+            end
+            local pack1 = inputNumber(i * 2 - 1)
+            local pack2 = inputNumber(i * 2)
+            --debug.log("pack1:" .. pack1 .. " pack2:" .. pack2)
+            if pack1 ~= 0 or pack2 ~= 0 then
+                local dist, localAziRad, localEleRad, rId = unpackTargetData(pack1, pack2)
+                if rId ~= -1 and dist > 0 then
+                    local gX, gY, gZ = localToGlobalCoords(dist, localAziRad, localEleRad, rId, physicsSensorData)
+                    -- 観測Tickを決定 (遅延フラグを考慮)
+                    local observationTick = isDelayed and (currentTick - 1) or currentTick
+                    table.insert(currentObservations, {
+                        distance = dist,
+                        azimuth = localAziRad,
+                        elevation = localEleRad,
+                        radarId = rId,
+                        globalX = gX,
+                        globalY = gY,
+                        globalZ = gZ,
+                        obsTick = observationTick
+                    })
+                end
             end
         end
     end
-    -- RadarList2 からのデータ (ch 13-24)
-    for i = 1, MAX_INPUT_TARGETS_RL2 do
-        local pack1 = inputNumber(MAX_INPUT_TARGETS_RL1 * 2 + i * 2 - 1)
-        local pack2 = inputNumber(MAX_INPUT_TARGETS_RL1 * 2 + i * 2)
-        if pack1 ~= 0 or pack2 ~= 0 then
-            local dist, localAziRad, localEleRad, rId = unpackTargetData(pack1, pack2)
-            if rId ~= -1 and dist > 0 then
-                local gX, gY, gZ = localToGlobalCoords(dist, localAziRad, localEleRad, rId, physicsSensorData)
-                -- 観測Tickを決定 (遅延フラグを考慮)
-                local observationTick = isDelayed2 and (currentTick - 1) or currentTick
-                table.insert(currentObservations, {
-                    distance = dist,
-                    azimuth = localAziRad,
-                    elevation = localEleRad,
-                    radarId = rId,
-                    globalX = gX,
-                    globalY = gY,
-                    globalZ = gZ,
-                    obsTick = observationTick
-                })
-            end
-        end
-    end
-
     -- 3. データアソシエーションとEKF更新
     local assignedObservationIndices = {}
     local updatedTargetIds = {}

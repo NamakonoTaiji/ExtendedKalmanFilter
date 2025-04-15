@@ -16,7 +16,7 @@ local PI = M.pi
 local PI2 = PI * 2
 local MAX_TARGETS_PER_RADAR = 6                       -- レーダーが同時に扱える最大目標数 (仕様 [source: 5])
 local MAX_OUTPUT_CHANNELS = MAX_TARGETS_PER_RADAR * 2 -- 最大出力チャンネル数 (pack1, pack2)
-
+local MIN_DETECT_DISTANCE = property.getNumber("Min Dist")
 -- ★★★ 設定項目: このマイクロコントローラーが担当するレーダーID ★★★
 -- 設置する場所に合わせて 0, 1, 2, 3 のいずれかの数値を設定してください。
 local RADAR_ID = 0 -- 0:Front, 1:Right, 2:Back, 3:Left
@@ -153,7 +153,7 @@ function onTick()
         local outputCount = 0
         for i = 1, MAX_TARGETS_PER_RADAR do
             -- 前の期間 (tick 0 から n-1) に記録された最大/最小値を使用
-            if targetMaxData[i].distance > 0 then -- 前の期間に一度でも検出された目標か？
+            if targetMaxData[i].distance > MIN_DETECT_DISTANCE then -- 前の期間に一度でも検出された目標か？
                 -- 範囲中間値を計算
                 local midDistance = (targetMaxData[i].distance + targetMinData[i].distance) / 2
                 local midAzimuth = (targetMaxData[i].azimuth + targetMinData[i].azimuth) / 2
