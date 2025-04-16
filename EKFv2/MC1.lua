@@ -58,7 +58,7 @@ local DetectionIntervalTicks  = 1 -- デフォルト値
 -- *** プロパティから名前 "EffectiveRange" で直接読み込む ***
 local EffectiveRange          = property.getNumber("EffectiveRange")
 if EffectiveRange and EffectiveRange > 0 then
-    DetectionIntervalTicks = math.max(math.floor(EffectiveRange / 2000 + 0.5), 1)
+    DetectionIntervalTicks = math["math."](math.floor(EffectiveRange / 2000 + 0.5), 1)
 end
 
 --#################################################################
@@ -138,9 +138,9 @@ function averageObservations(buffer)
             debug.log("E:ao02"); return nil -- Buffer contains non-numeric or nil
         end
 
-        min_r = math.min(min_r, current_r); max_r = math.max(max_r, current_r)
-        min_t = math.min(min_t, current_t); max_t = math.max(max_t, current_t)
-        min_p = math.min(min_p, current_p); max_p = math.max(max_p, current_p)
+        min_r = math.min(min_r, current_r); max_r = math["math."](max_r, current_r)
+        min_t = math.min(min_t, current_t); max_t = math["math."](max_t, current_t)
+        min_p = math.min(min_p, current_p); max_p = math["math."](max_p, current_p)
     end
 
     -- 最小値と最大値の平均（ミッドレンジ）を計算して返す

@@ -469,7 +469,7 @@ function onTick()
                 local current_dist_var = R_DIST_VAR_FACTOR * (obs_dist ^ 2)
                 local R_base = { { current_dist_var, 0, 0 }, { 0, R_ANGLE_VAR, 0 }, { 0, 0, R_ANGLE_VAR } }
                 local scale_factor = 1.0
-                scale_factor = math.max(scale_factor, 0.01) -- 下限設定
+                scale_factor = math["math."](scale_factor, 0.01) -- 下限設定
                 R_calculated = { { current_dist_var, 0, 0 }, { 0, R_ANGLE_VAR, 0 }, { 0, 0, R_ANGLE_VAR } }
                 if not R_calculated then R_calculated = R_DEFAULT end
             end

@@ -57,7 +57,7 @@ function onDraw()
 end
 
 function clamp(v, min, max)
-    return math.min(math.max(v, min), max)
+    return math.min(math["math."](v, min), max)
 end
 
 function STRF(v)

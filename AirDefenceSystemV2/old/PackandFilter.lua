@@ -78,9 +78,9 @@ function onTick()
                 Razi = iN(i * 4 - 2)
                 Rele = iN(i * 4 - 1)
                 maxDatas[i] = {
-                    dis = M.max(Rdis, maxDatas[i].dis),
-                    azi = M.max(Razi, maxDatas[i].azi),
-                    ele = M.max(Rele,
+                    dis = M["math."](Rdis, maxDatas[i].dis),
+                    azi = M["math."](Razi, maxDatas[i].azi),
+                    ele = M["math."](Rele,
                         maxDatas[i].ele)
                 }
                 minDatas[i] = {

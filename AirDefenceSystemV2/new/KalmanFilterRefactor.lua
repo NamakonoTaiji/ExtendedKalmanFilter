@@ -49,21 +49,21 @@ local pairs = pairs -- データアソシエーションで使用
 -- Stormworks API ショートカット
 local inputNumber = input.getNumber
 local outputNumber = output.setNumber
-
+local inputBool = input.getBool
+local outputBool = output.setBool
 -- 定数
 local PI = math.pi
 local PI2 = PI * 2
-local MAX_INPUT_TARGETS_RL1 = 6                                 -- RadarList1からの最大目標数
-local MAX_INPUT_TARGETS_RL2 = 6                                 -- RadarList2からの最大目標数
-local MAX_OUTPUT_CHANNELS = 32                                  -- 出力チャンネル数
-local MAX_TRACKED_TARGETS = math.floor(MAX_OUTPUT_CHANNELS / 3) -- 同時に追跡・出力できる最大目標数 (約10)
+local MAX_INPUT_TARGETS_RL1 = 6 -- RadarList1からの最大目標数
+local MAX_INPUT_TARGETS_RL2 = 6 -- RadarList2からの最大目標数
+local MAX_TRACKED_TARGETS = 10  -- 同時に追跡・出力できる最大目標数
 
 -- EKF パラメータ
-local NUM_STATES = 6                                                        -- 状態変数の数 (x, vx, y, vy, z, vz)
-local DATA_ASSOCIATION_THRESHOLD = property.getNumber("D_ASSOC") or 100     -- データアソシエーションの閾値 (epsilon)
-local TARGET_TIMEOUT_TICKS = property.getNumber("TIMEOUT") or 70            -- 目標が更新されない場合のタイムアウトtick数 (約1.17秒)
-local TARGET_IS_LEAVING_THRESHOLD = property.getNumber("TGT_LEAVING") or -1 -- 目標が離反していると判断する閾値 (接近速度 < -1 m/s ?)
-local INITIAL_VELOCITY_VARIANCE = (300 ^ 2)                                 -- 新規目標の初期速度分散 (大きい値に設定)
+local NUM_STATES = 6                                                      -- 状態変数の数 (x, vx, y, vy, z, vz)
+local DATA_ASSOCIATION_THRESHOLD = property.getNumber("D_ASOC") or 50     -- データアソシエーションの閾値 (epsilon)
+local TARGET_TIMEOUT_TICKS = property.getNumber("T_OUT") or 75            -- 目標が更新されない場合のタイムアウトtick数 (約1.17秒)
+local TARGET_IS_LEAVING_THRESHOLD = property.getNumber("TGT_LVING") or -1 -- 目標が離反していると判断する閾値 (接近速度 < -1 m/s ?)
+local INITIAL_VELOCITY_VARIANCE = (300 ^ 2)                               -- 新規目標の初期速度分散 (大きい値に設定)
 
 -- 観測ノイズ共分散行列 R (テンプレート) - レーダーの精度に基づく
 -- オリジナルコードの R0 [source: 40] を参考に設定。
@@ -76,12 +76,17 @@ local OBSERVATION_NOISE_MATRIX_TEMPLATE = {
 }
 
 -- プロセスノイズ Q の適応的調整パラメータ (オリジナルコード [source: 41] より)
-local PROCESS_NOISE_BASE = 1e-3
-local PROCESS_NOISE_ADAPTIVE_SCALE = 1e+4
-local PROCESS_NOISE_EPSILON_THRESHOLD = 140
-local PROCESS_NOISE_EPSILON_SLOPE = 100
+local PROCESS_NOISE_BASE = property.getNumber("P_BASE") or 0.01
+local PROCESS_NOISE_ADAPTIVE_SCALE = property.getNumber("P_ADPT") or 1e+6
+local PROCESS_NOISE_EPSILON_THRESHOLD = property.getNumber("P_NOISE_EPS_THRS") or 140
+local PROCESS_NOISE_EPSILON_SLOPE = property.getNumber("P_NOISE_EPS_SLOPE") or 100
 -- 予測誤差の不確かさ増加係数 (オリジナルコード [source: 41] より)
-local PREDICTION_UNCERTAINTY_FACTOR_BASE = 1.01
+local PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") or 1.01
+
+-- 敵対判定パラメータ
+local HOSTILE_IDENTIFICATION_THRESHOLD = 8  -- 同定成功回数の閾値
+local HOSTILE_CLOSING_SPEED_THRESHOLD = 100 -- 接近速度の閾値 (m/s) - 必要に応じて調整してください
+local HOSTILE_RECENT_UPDATES_THRESHOLD = 4  -- 閾値超えを要求する直近の更新回数
 
 -- 単位行列 I (6x6)
 local identityMatrix6x6 = { { 1, 0, 0, 0, 0, 0 }, { 0, 1, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0 }, { 0, 0, 0, 1, 0, 0 }, { 0, 0, 0, 0, 1, 0 }, { 0, 0, 0, 0, 0, 1 } }
@@ -89,8 +94,9 @@ local identityMatrix6x6 = { { 1, 0, 0, 0, 0, 0 }, { 0, 1, 0, 0, 0, 0 }, { 0, 0, 
 -- グローバル変数 (状態保持)
 local targetList = {}                                                           -- 追跡中の目標リスト { id, lastTick, X=stateVector, P=covarianceMatrix, epsilon=lastEpsilon }
 local physicsSensorData = { x = 0, y = 0, z = 0, pitch = 0, yaw = 0, roll = 0 } -- 自機情報
-local nextTargetId = 1                                                          -- 新規目標に割り当てるユニークID
 local currentTick = 0                                                           -- このスクリプト内でのTickカウンター
+local nextInternalId = 1                                                        -- これは増え続ける内部ID
+local assignedOutputIds = {}                                                    -- 使用中のOutput IDを管理するセット (例: assignedOutputIds[3] = true なら ID 3 は使用中)
 
 --------------------------------------------------------------------------------
 -- 行列演算ヘルパー関数 (ゼロ行列、コピー、スカラー倍、加算、減算、乗算、転置、逆行列)
@@ -216,7 +222,7 @@ function unpackTargetData(pack1, pack2)
     local absPack1 = math.abs(pack1)
     local absPack2 = math.abs(pack2)
 
-    -- 3. ★修正: 絶対値を直接文字列に変換し、その後で文字列としてゼロ埋め
+    -- 3. 絶対値を直接文字列に変換し、その後で文字列としてゼロ埋め
     local pack1Str = string.format("%.0f", absPack1) -- まず整数文字列に
     local pack2Str = string.format("%.0f", absPack2)
 
@@ -260,6 +266,76 @@ function unpackTargetData(pack1, pack2)
 end
 
 --------------------------------------------------------------------------------
+-- 接近速度計算関数
+--------------------------------------------------------------------------------
+-- 入力: target (目標テーブル), ownPos (自機位置テーブル {x,y,z})
+-- 出力: closingSpeed (スカラー値, m/s)
+function calculateClosingSpeed(target, ownPos)
+    if not target or not target.X then return 0 end -- 安全チェック
+    local relativePosX = target.X[1][1] - ownPos.x
+    local relativePosY = target.X[3][1] - ownPos.y
+    local relativePosZ = target.X[5][1] - ownPos.z
+    local targetVx = target.X[2][1]; local targetVy = target.X[4][1]; local targetVz = target.X[6][1];
+    local relativePosMagSq = relativePosX ^ 2 + relativePosY ^ 2 + relativePosZ ^ 2
+
+    local relativePosMag = math.sqrt(relativePosMagSq);
+    -- 接近速度 = -(相対位置ベクトル・目標速度ベクトル) / 相対距離
+    local closingSpeed = -(relativePosX * targetVx + relativePosY * targetVy + relativePosZ * targetVz) /
+        relativePosMag
+    return closingSpeed
+end
+
+--------------------------------------------------------------------------------
+-- 敵対判定関数
+--------------------------------------------------------------------------------
+-- 入力: target (目標テーブル)
+-- 出力: なし (target.is_hostile を直接更新)
+function checkHostileCondition(target)
+    -- すでに敵対判定済みなら何もしない
+    if target.is_hostile then return end
+
+    -- 1. 同定回数チェック
+    if target.identification_count >= HOSTILE_IDENTIFICATION_THRESHOLD then
+        -- 2. 直近の接近速度チェック
+        local highSpeedCount = 0
+        if #target.recent_closing_speeds >= HOSTILE_RECENT_UPDATES_THRESHOLD then
+            for _, speed in ipairs(target.recent_closing_speeds) do
+                if speed > HOSTILE_CLOSING_SPEED_THRESHOLD then
+                    highSpeedCount = highSpeedCount + 1
+                end
+            end
+            -- 連続して閾値を超えたかチェック
+            if highSpeedCount >= HOSTILE_RECENT_UPDATES_THRESHOLD then
+                target.is_hostile = true
+            end
+        end
+    end
+end
+
+-- ★ Output ID を割り当てる関数
+function assignOutputId(target)
+    if target.outputId ~= nil then return true end -- すでに割り当て済みなら何もしない
+    for id = 1, MAX_TRACKED_TARGETS do
+        if not assignedOutputIds[id] then          -- 空いているIDを見つけたら
+            target.outputId = id                   -- ターゲットに記録
+            assignedOutputIds[id] = true           -- 使用中にマーク
+            -- debug.log("Assigned Output ID " .. id .. " to internal ID " .. target.internalId)
+            return true                            -- 割り当て成功
+        end
+    end
+    -- debug.log("Could not assign Output ID to internal ID " .. target.internalId .. " - All slots full.")
+    return false -- 割り当て失敗 (満杯)
+end
+
+function releaseOutputId(target)
+    if target.outputId ~= nil then
+        -- debug.log("Releasing Output ID " .. target.outputId .. " from internal ID " .. target.internalId)
+        assignedOutputIds[target.outputId] = nil -- 使用中マークを解除
+        target.outputId = nil                    -- ターゲットの記録も消す
+    end
+end
+
+--------------------------------------------------------------------------------
 -- 座標・ベクトル変換関数
 --------------------------------------------------------------------------------
 
@@ -296,18 +372,18 @@ function localToGlobalCoords(dist, locAzi, locEle, rId, ownP)
     if rYOff ~= 0 then
         local cy = math.cos(rYOff); local sy = math.sin(rYOff); local RotY = { { cy, 0, sy }, { 0, 1, 0 }, { -sy, 0, cy } };
         vehLocVec_rotated = mul(RotY, radarLocVec);
+        if vehLocVec_rotated == nil then
+            --return 0, 0, 0
+        end
     end
-    debug.log("vehLocVec_rotated X: " .. vehLocVec_rotated[1][1] .. " Y:" .. vehLocVec_rotated[2][1] .. " Z:" ..
-        vehLocVec_rotated[3][1] .. " id:" .. rId)
-    vehLocVec_rotated[2][1] = vehLocVec_rotated[2][1] + 2.5 / (rId + 1)
+
+    vehLocVec_rotated[2][1] = vehLocVec_rotated[2][1] + 2.5 / (rId + 1) -- レーダーのY軸オフセット
     -- 5. 車両姿勢で回転 -> グローバルな相対ベクトルへ
     local globalRelativeVector = rotateVectorZYX(vehLocVec_rotated, ownP.pitch, ownP.yaw, ownP.roll);
 
     -- 6. 物理センサーのグローバル位置を加算 -> 最終的な目標グローバル座標
     local gX = globalRelativeVector[1][1] + ownP.x; local gY = globalRelativeVector[2][1] + ownP.y; local gZ =
         globalRelativeVector[3][1] + ownP.z;
-    debug.log("gX:" ..
-        globalRelativeVector[1][1] .. " gY:" .. globalRelativeVector[2][1] .. " gZ:" .. globalRelativeVector[3][1])
     return gX, gY, gZ
 end
 
@@ -335,7 +411,7 @@ function getObservationJacobianAndPrediction(stateVector, ownPosition)
 
     -- 1. 観測予測値 h = [距離, 仰角(Y基準), 方位角(Z基準)]
     local predictedDistance = r
-    local predictedElevation = math.asin(relativeY / r)
+    local predictedElevation = math.asin(math.max(-1.0, math.min(1.0, relativeY / r)))
     local predictedAzimuth = math.atan(relativeX, relativeZ)
     local h = { { predictedDistance }, { predictedElevation }, { predictedAzimuth } }
 
@@ -354,6 +430,10 @@ end
 extendedKalmanFilterUpdate: EKF の予測・更新ステップを実行
 ]]
 function extendedKalmanFilterUpdate(stateVector, covariance, observation, ownPosition, dt, lastEpsilon)
+    function CalculateAngleDifference(current, set)
+        return (set - current + PI * 3) % PI2 - PI
+    end
+
     -- 1. 予測ステップ (Predict)
     local F = MatrixCopy(identityMatrix6x6)
     F[1][2] = dt; F[3][4] = dt; F[5][6] = dt
@@ -372,27 +452,89 @@ function extendedKalmanFilterUpdate(stateVector, covariance, observation, ownPos
 
     -- 2. 更新ステップ (Update)
     local Z = { { observation.distance }, { observation.elevation }, { observation.azimuth } }
+
     local H, h = getObservationJacobianAndPrediction(X_predicted, ownPosition)
     local R = MatrixCopy(OBSERVATION_NOISE_MATRIX_TEMPLATE)
-    R[1][1] = R[1][1] * (observation.distance ^ 2) -- 距離の2乗に比例
-
-    local Y = sub(Z, h)
-    Y[3][1] = (Y[3][1] + PI) % PI2 - PI -- 方位角正規化
-    Y[2][1] = (Y[2][1] + PI) % PI2 - PI -- 仰角正規化
+    R[1][1] = R[1][1] * (observation.distance ^ 2)       -- 距離の2乗に比例
+    local Y = zeros(3, 1)
+    Y[1][1] = Z[1][1] - h[1][1]                          -- 距離はそのまま引き算
+    -- CalculateAngleDifference(予測角度, 観測角度) で角度差を計算
+    Y[2][1] = CalculateAngleDifference(h[2][1], Z[2][1]) -- 仰角の差 (正規化済み)
+    Y[3][1] = CalculateAngleDifference(h[3][1], Z[3][1]) -- 方位角の差 (正規化済み)
 
     local S = sum(mul(H, P_predicted, T(H)), R)
     local S_inv = inv(S)
     if S_inv == nil then return stateVector, covariance, lastEpsilon end -- 逆行列計算失敗
     local K = mul(P_predicted, T(H), S_inv)
-
     local X_updated = sum(X_predicted, mul(K, Y))
     local I_minus_KH = sub(identityMatrix6x6, mul(K, H))
     local P_updated = sum(mul(I_minus_KH, P_predicted, T(I_minus_KH)), mul(K, R, T(K)))
     local epsilon = mul(T(Y), S_inv, Y)[1][1]
-
     return X_updated, P_updated, epsilon
 end
 
+--------------------------------------------------------------------------------
+-- デバッグ用: 行列の内容をログに出力する関数
+--------------------------------------------------------------------------------
+-- M: ログ出力したい行列 (テーブルのテーブル形式)
+-- matrixName: (オプション) ログに出力する際の見出しとなる行列の名前 (文字列)
+-- decimalPlaces: (オプション) 表示する小数点以下の桁数 (数値、デフォルトは 3)
+-- fieldWidth: (オプション) 各数値が表示されるフィールドの最小幅 (数値、デフォルトは 10、右寄せ)
+--[[
+function logMatrix(M, matrixName, decimalPlaces, fieldWidth)
+    -- デフォルト値の設定
+    local dp = decimalPlaces or 3 -- 小数点以下桁数
+    local fw = fieldWidth or 10   -- 表示幅
+
+    -- 行列名の出力 (指定されている場合)
+    if matrixName then
+        debug.log("--- Matrix: " .. matrixName .. " ---")
+    end
+
+    -- 入力が行列 (テーブルのテーブル) か、空でないか基本的なチェック
+    if type(M) ~= "table" or #M == 0 or type(M[1]) ~= "table" or #M[1] == 0 then
+        debug.log("Invalid or empty matrix provided to logMatrix.")
+        if matrixName then debug.log("------------------------") end
+        return
+    end
+
+    -- 各行をループして整形された文字列を作成し、ログ出力
+    local rows = #M
+    local cols = #M[1] -- 列数は最初の行に基づいて決定
+
+    for r = 1, rows do
+        local rowString = "["         -- 行の開始を示す括弧
+        if type(M[r]) == "table" then -- 行がテーブルであることを確認
+            for c = 1, cols do
+                local value = M[r][c] -- 要素を取得
+                if type(value) == "number" then
+                    -- 数値の場合、指定された桁数と幅でフォーマット
+                    local formatSpecifier = "%" .. fw .. "." .. dp .. "f"
+                    rowString = rowString .. string.format(formatSpecifier, value)
+                else
+                    -- 数値以外の場合、文字列に変換して幅を合わせて表示
+                    local formatSpecifier = "%" .. fw .. "s"
+                    rowString = rowString .. string.format(formatSpecifier, tostring(value))
+                end
+                -- 要素間にスペースを追加 (最後の要素でなければ)
+                if c < cols then
+                    rowString = rowString .. " "
+                end
+            end
+        else
+            -- 行がテーブルでない場合はエラーメッセージ
+            rowString = rowString .. " Invalid row data (not a table)"
+        end
+        rowString = rowString .. " ]" -- 行の終了を示す括弧
+        debug.log(rowString)          -- 整形された行をログに出力
+    end
+
+    -- 行列名の出力 (指定されている場合)
+    if matrixName then
+        debug.log("------------------------")
+    end
+end
+]]
 --------------------------------------------------------------------------------
 -- メインループ: onTick
 --------------------------------------------------------------------------------
@@ -422,17 +564,19 @@ function onTick()
             end
             local pack1 = inputNumber(i * 2 - 1)
             local pack2 = inputNumber(i * 2)
-            --debug.log("pack1:" .. pack1 .. " pack2:" .. pack2)
+
             if pack1 ~= 0 or pack2 ~= 0 then
                 local dist, localAziRad, localEleRad, rId = unpackTargetData(pack1, pack2)
                 if rId ~= -1 and dist > 0 then
                     local gX, gY, gZ = localToGlobalCoords(dist, localAziRad, localEleRad, rId, physicsSensorData)
+                    local globalElevation = math.asin((gY - physicsSensorData.y) / dist)
+                    local globalAzimuth = math.atan(gX - physicsSensorData.x, gZ - physicsSensorData.z)
                     -- 観測Tickを決定 (遅延フラグを考慮)
                     local observationTick = isDelayed and (currentTick - 1) or currentTick
                     table.insert(currentObservations, {
                         distance = dist,
-                        azimuth = localAziRad,
-                        elevation = localEleRad,
+                        azimuth = globalAzimuth,
+                        elevation = globalElevation,
                         radarId = rId,
                         globalX = gX,
                         globalY = gY,
@@ -444,11 +588,10 @@ function onTick()
         end
     end
     -- 3. データアソシエーションとEKF更新
-    local assignedObservationIndices = {}
-    local updatedTargetIds = {}
-
+    local assignedObservationIndices = {} -- Keeps track of which observation was assigned
+    local updatedTargetInternalIds = {}   -- Keeps track of which tracked targets were updated
     if #currentObservations > 0 then
-        for targetId, currentTarget in pairs(targetList) do
+        for internalId, currentTarget in pairs(targetList) do
             local bestMatchObsIndex = -1
             local minEpsilon = DATA_ASSOCIATION_THRESHOLD + 1
             local matchedState, matchedCovariance, matchedEpsilon, matchedObsTick
@@ -456,101 +599,155 @@ function onTick()
             for j = 1, #currentObservations do
                 if not assignedObservationIndices[j] then
                     local observation = currentObservations[j]
-                    -- dt (時間差) を計算 (観測Tick - 前回の更新Tick)
                     local dt_ticks = observation.obsTick - currentTarget.lastTick
                     if dt_ticks > 0 then
                         local dt_sec = dt_ticks / 60.0
-                        -- EKF更新試算
-                        local X_post, P_post, epsilon = extendedKalmanFilterUpdate(
-                            currentTarget.X, currentTarget.P, observation, physicsSensorData, dt_sec,
-                            currentTarget.epsilon
-                        )
-                        -- 最良マッチを更新
+                        local X_post, P_post, epsilon = extendedKalmanFilterUpdate(currentTarget.X, currentTarget.P,
+                            observation, physicsSensorData, dt_sec, currentTarget.epsilon)
                         if epsilon < minEpsilon then
                             minEpsilon = epsilon
                             bestMatchObsIndex = j
-                            matchedState = X_post; matchedCovariance = P_post; matchedEpsilon = epsilon; matchedObsTick =
-                                observation.obsTick;
+                            matchedState = X_post
+                            matchedCovariance = P_post
+                            matchedEpsilon = epsilon
+                            matchedObsTick = observation.obsTick
                         end
                     end
                 end
             end
 
-            -- 最良マッチが閾値以下なら目標を更新
+            -- ★更新: 最良マッチが見つかった場合の処理
             if bestMatchObsIndex ~= -1 and minEpsilon <= DATA_ASSOCIATION_THRESHOLD then
-                targetList[targetId].X = matchedState
-                targetList[targetId].P = matchedCovariance
-                targetList[targetId].epsilon = matchedEpsilon
-                targetList[targetId].lastTick = matchedObsTick -- 観測Tickで更新
+                -- EKF状態更新
+                targetList[internalId].X = matchedState
+                targetList[internalId].P = matchedCovariance
+                targetList[internalId].epsilon = matchedEpsilon
+                targetList[internalId].lastTick = matchedObsTick
+
+                -- 同定成功回数インクリメント
+                targetList[internalId].identification_count = targetList[internalId].identification_count + 1
+
+                -- 接近速度を計算して記録
+                local currentClosingSpeed = calculateClosingSpeed(targetList[internalId], physicsSensorData)
+                table.insert(targetList[internalId].recent_closing_speeds, currentClosingSpeed)
+                -- リストが指定サイズを超えたら古いものを削除
+                if #targetList[internalId].recent_closing_speeds > HOSTILE_RECENT_UPDATES_THRESHOLD then
+                    table.remove(targetList[internalId].recent_closing_speeds, 1)
+                end
+
+                -- 敵対判定実行
                 assignedObservationIndices[bestMatchObsIndex] = true
-                updatedTargetIds[targetId] = true
+                updatedTargetInternalIds[internalId] = true
             end
         end
     end
 
-    -- 4. 新規目標の登録
+    -- ★ 4. 目標リスト更新ループ (Output ID 管理と削除判定) ★
+    local targetIdsToDelete = {}
+    for internalId, target in pairs(targetList) do
+        -- 4.1 敵対判定実行 & Output ID 管理
+        local wasHostile = target.is_hostile
+        checkHostileCondition(target) -- target.is_hostile が更新される可能性
+        local isHostileNow = target.is_hostile
+
+        if isHostileNow then
+            -- 敵対状態なら Output ID 割り当てを試行 (すでに持っていれば assignOutputId は何もしない)
+            assignOutputId(target)
+        else
+            -- 非敵対状態なら Output ID を解放 (すでに解放済みなら releaseOutputId は何もしない)
+            releaseOutputId(target)
+        end
+
+        -- 4.2 タイムアウト・離反判定
+        local ticksSinceLastUpdate = currentTick - target.lastTick
+        local isTimeout = ticksSinceLastUpdate >= TARGET_TIMEOUT_TICKS
+        local closingSpeed = calculateClosingSpeed(target, physicsSensorData)
+        local isLeaving = (closingSpeed < TARGET_IS_LEAVING_THRESHOLD)
+
+        if isTimeout or isLeaving then
+            table.insert(targetIdsToDelete, internalId)
+            -- ★ 削除対象になったら Output ID を解放
+            releaseOutputId(target)
+            -- debug.log("Target "..internalId.." marked for deletion. Reason: "..(isTimeout and "Timeout" or "Leaving"))
+        end
+    end
+
+    -- 4.3 目標削除実行
+    for _, id_to_delete in ipairs(targetIdsToDelete) do
+        -- debug.log("Deleting Target Internal ID: " .. id_to_delete .. ", Output ID: " .. (targetList[id_to_delete] and targetList[id_to_delete].outputId or "N/A"))
+        targetList[id_to_delete] = nil -- テーブルからエントリを削除
+    end
+
+
+    -- 5. 新規目標の登録
     for j = 1, #currentObservations do
-        if not assignedObservationIndices[j] then -- 未割り当ての観測
+        if not assignedObservationIndices[j] then -- 観測が既存のターゲットに割り当てられていない場合
             local newObs = currentObservations[j]
+            -- 状態ベクトル(X)と共分散行列(P)の初期化
             local X_init = { { newObs.globalX }, { 0 }, { newObs.globalY }, { 0 }, { newObs.globalZ }, { 0 } }
             local P_init = zeros(NUM_STATES, NUM_STATES)
             local init_pos_var_factor = 10
-            local pos_var_x = OBSERVATION_NOISE_MATRIX_TEMPLATE[3][3] * init_pos_var_factor
-            local pos_var_y = OBSERVATION_NOISE_MATRIX_TEMPLATE[2][2] * init_pos_var_factor
-            local pos_var_z = pos_var_x
-            P_init[1][1] = pos_var_x * (newObs.distance ^ 2); P_init[3][3] = pos_var_y * (newObs.distance ^ 2); P_init[5][5] =
-                pos_var_z * (newObs.distance ^ 2);
-            P_init[2][2] = INITIAL_VELOCITY_VARIANCE; P_init[4][4] = INITIAL_VELOCITY_VARIANCE; P_init[6][6] =
-                INITIAL_VELOCITY_VARIANCE;
-            local newId = nextTargetId
-            targetList[newId] = { id = newId, lastTick = newObs.obsTick, X = X_init, P = P_init, epsilon = 1 }
-            nextTargetId = nextTargetId + 1
-            updatedTargetIds[newId] = true
+            local pos_var_dist = OBSERVATION_NOISE_MATRIX_TEMPLATE[1][1] * init_pos_var_factor * (newObs.distance ^ 2)
+            local pos_var_ele = OBSERVATION_NOISE_MATRIX_TEMPLATE[2][2] * init_pos_var_factor
+            local pos_var_azi = OBSERVATION_NOISE_MATRIX_TEMPLATE[3][3] * init_pos_var_factor
+            -- 単純化された初期位置の分散 - より良い方法が存在するが、より複雑な計算を必要とする
+            P_init[1][1] = pos_var_azi -- プレースホルダーの分散割り当て
+            P_init[3][3] = pos_var_ele
+            P_init[5][5] = pos_var_azi
+            P_init[2][2] = INITIAL_VELOCITY_VARIANCE
+            P_init[4][4] = INITIAL_VELOCITY_VARIANCE
+            P_init[6][6] = INITIAL_VELOCITY_VARIANCE
+
+            -- targetListに新しいターゲット・エントリーを作成する
+            local newInternalId = nextInternalId
+            targetList[newInternalId] = {
+                internalId = newInternalId, -- 内部IDを保存する
+                outputId = nil,             -- ★ 出力IDはnilから始まる
+                lastTick = newObs.obsTick,
+                X = X_init,
+                P = P_init,
+                epsilon = 1,                -- 初期イプシロン
+                identification_count = 0,   -- Hostile check data
+                recent_closing_speeds = {}, -- Hostile check data
+                is_hostile = false          -- Hostile check data
+            }
+            -- debug.log("New target registered. Internal ID: " .. newInternalId)
+            nextInternalId = nextInternalId + 1 -- 次の新しい目標のためにインクリメントする
+            -- 注：敵対チェックと出力IDの割り当ては、次のティックの更新ループで行われる。
         end
     end
 
-    -- 5. 古い目標、離反する目標の削除
-    local targetIdsToDelete = {}
-    for targetId, target in pairs(targetList) do
-        local ticksSinceLastUpdate = currentTick - target.lastTick
-        local isTimeout = ticksSinceLastUpdate >= TARGET_TIMEOUT_TICKS
-        local relativePosX = target.X[1][1] - physicsSensorData.x; local relativePosY = target.X[3][1] -
-            physicsSensorData.y; local relativePosZ = target.X[5][1] - physicsSensorData.z;
-        local targetVx = target.X[2][1]; local targetVy = target.X[4][1]; local targetVz = target.X[6][1];
-        local relativePosMagSq = relativePosX ^ 2 + relativePosY ^ 2 + relativePosZ ^ 2; local isLeaving = false;
-        if relativePosMagSq > 1 then
-            local relativePosMag = math.sqrt(relativePosMagSq);
-            local closingSpeed = -(relativePosX * targetVx + relativePosY * targetVy + relativePosZ * targetVz) /
-                relativePosMag;
-            if closingSpeed < TARGET_IS_LEAVING_THRESHOLD then isLeaving = true end
-        end
-        if isTimeout or isLeaving then table.insert(targetIdsToDelete, targetId) end
-    end
-    for _, id in ipairs(targetIdsToDelete) do targetList[id] = nil end
 
-    -- 6. 出力チャンネルクリアと目標座標の書き込み
-    for i = 1, MAX_OUTPUT_CHANNELS do outputNumber(i, 0) end
-    local outputCount = 0
-    for targetId, target in pairs(targetList) do
-        if outputCount < MAX_TRACKED_TARGETS then
-            -- 現在Tickでの予測位置を出力
+    -- 6. 出力処理 (Output ID ベース)
+    -- 最初に出力チャンネルをクリアする
+    for i = 1, 32 do outputNumber(i, 0) end
+
+    -- 追跡されたターゲットを反復処理し、割り当てられた出力IDを持つターゲットを出力する。
+    for internalId, target in pairs(targetList) do
+        -- ★ ターゲットに出力IDが割り当てられているかチェックする
+        if target and target.outputId ~= nil then
+            -- Calculate predicted position for the current tick
             local predX, predY, predZ
             local dt_pred_sec = (currentTick - target.lastTick) / 60.0
-            if dt_pred_sec >= 0 then -- 念のためチェック
-                predX = target.X[1][1] + target.X[2][1] * dt_pred_sec
-                predY = target.X[3][1] + target.X[4][1] * dt_pred_sec
-                predZ = target.X[5][1] + target.X[6][1] * dt_pred_sec
-            else
-                predX = target.X[1][1] -- dtが負なら前回位置
-                predY = target.X[3][1]
-                predZ = target.X[5][1]
+            -- Ensure dt is non-negative; if target just updated, dt is 0
+            dt_pred_sec = math.max(0, dt_pred_sec)
+
+            predX = target.X[1][1] + target.X[2][1] * dt_pred_sec
+            predY = target.X[3][1] + target.X[4][1] * dt_pred_sec
+            predZ = target.X[5][1] + target.X[6][1] * dt_pred_sec
+
+            -- Calculate the base channel using the Output ID
+            local baseChannel = (target.outputId - 1) * 3
+            debug.log("baseCh:" .. baseChannel)
+            -- Check if baseChannel is within limits (sanity check)
+            if baseChannel + 3 <= MAX_TRACKED_TARGETS * 3 then
+                -- Output predicted coordinates to the fixed channels
+                outputNumber(baseChannel + 1, predX) -- X (East)
+                outputNumber(baseChannel + 2, predY) -- Y (Up)
+                outputNumber(baseChannel + 3, predZ) -- Z (North)
+                -- else -- Debugging: Calculated channel out of bounds
+                -- debug.log("Error: Target Output ID "..target.outputId.." results in channel out of bounds.")
             end
-            outputNumber(outputCount * 3 + 1, predX) -- X (East)
-            outputNumber(outputCount * 3 + 2, predY) -- Y (Up)
-            outputNumber(outputCount * 3 + 3, predZ) -- Z (North)
-            outputCount = outputCount + 1
-        else
-            break
         end
     end
 end

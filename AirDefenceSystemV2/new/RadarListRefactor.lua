@@ -115,4 +115,11 @@ function onTick()
             outputChannelIndex = outputChannelIndex + 2
         end
     end
+    --　物理センサ座標,オイラー角出力
+    outputNumber(25, inputNumber(25)) -- Physics X
+    outputNumber(26, inputNumber(26)) -- Physics Y
+    outputNumber(27, inputNumber(27)) -- Physics Z
+    outputNumber(28, inputNumber(28)) -- Euler X
+    outputNumber(29, inputNumber(29)) -- Euler Y
+    outputNumber(30, inputNumber(30)) -- Euler Z
 end
