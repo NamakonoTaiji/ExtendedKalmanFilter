@@ -84,9 +84,9 @@ local PROCESS_NOISE_EPSILON_SLOPE = property.getNumber("P_NOISE_EPS_SLOPE") or 1
 local PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") or 1.01
 
 -- 敵対判定パラメータ
-local HOSTILE_IDENTIFICATION_THRESHOLD = 8  -- 同定成功回数の閾値
-local HOSTILE_CLOSING_SPEED_THRESHOLD = 100 -- 接近速度の閾値 (m/s) - 必要に応じて調整してください
-local HOSTILE_RECENT_UPDATES_THRESHOLD = 4  -- 閾値超えを要求する直近の更新回数
+local HOSTILE_IDENTIFICATION_THRESHOLD = property.getNumber("IDENTI_THRS") or 8       -- 同定成功回数の閾値
+local HOSTILE_CLOSING_SPEED_THRESHOLD = property.getNumber("TGT_CLOSING_SPD") or 100  -- 接近速度の閾値 (m/s) - 必要に応じて調整してください
+local HOSTILE_RECENT_UPDATES_THRESHOLD = property.getNumber("TGT_RECENT_UPDATE") or 4 -- 閾値超えを要求する直近の更新回数
 
 -- 単位行列 I (6x6)
 local identityMatrix6x6 = { { 1, 0, 0, 0, 0, 0 }, { 0, 1, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0 }, { 0, 0, 0, 1, 0, 0 }, { 0, 0, 0, 0, 1, 0 }, { 0, 0, 0, 0, 0, 1 } }
@@ -738,7 +738,6 @@ function onTick()
 
             -- Calculate the base channel using the Output ID
             local baseChannel = (target.outputId - 1) * 3
-            debug.log("baseCh:" .. baseChannel)
             -- Check if baseChannel is within limits (sanity check)
             if baseChannel + 3 <= MAX_TRACKED_TARGETS * 3 then
                 -- Output predicted coordinates to the fixed channels
