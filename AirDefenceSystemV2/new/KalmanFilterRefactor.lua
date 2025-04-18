@@ -39,54 +39,45 @@ kalmanfilter.lua (リファクタリング最終版 - 遅延フラグ対応)
 ================================================================================
 ]]
 
--- Lua標準ライブラリ
-local string = string
-local table = table
-local tonumber = tonumber
-local ipairs = ipairs
-local pairs = pairs -- データアソシエーションで使用
-
 -- Stormworks API ショートカット
 local inputNumber = input.getNumber
 local outputNumber = output.setNumber
-local inputBool = input.getBool
-local outputBool = output.setBool
--- 定数
-local PI = math.pi
-local PI2 = PI * 2
-local MAX_INPUT_TARGETS_RL1 = 6 -- RadarList1からの最大目標数
-local MAX_INPUT_TARGETS_RL2 = 6 -- RadarList2からの最大目標数
-local MAX_TRACKED_TARGETS = 10  -- 同時に追跡・出力できる最大目標数
+-- 定数 (文字数削減のため定数はローカル宣言を削除)
+PI = math.pi
+PI2 = PI * 2
+MAX_INPUT_TARGETS_RL1 = 6 -- RadarList1からの最大目標数
+MAX_INPUT_TARGETS_RL2 = 6 -- RadarList2からの最大目標数
+MAX_TRACKED_TARGETS = 10  -- 同時に追跡・出力できる最大目標数
 
 -- EKF パラメータ
-local NUM_STATES = 6                                                      -- 状態変数の数 (x, vx, y, vy, z, vz)
-local DATA_ASSOCIATION_THRESHOLD = property.getNumber("D_ASOC") or 50     -- データアソシエーションの閾値 (epsilon)
-local TARGET_TIMEOUT_TICKS = property.getNumber("T_OUT") or 75            -- 目標が更新されない場合のタイムアウトtick数 (約1.17秒)
-local TARGET_IS_LEAVING_THRESHOLD = property.getNumber("TGT_LVING") or -1 -- 目標が離反していると判断する閾値 (接近速度 < -1 m/s ?)
-local INITIAL_VELOCITY_VARIANCE = (300 ^ 2)                               -- 新規目標の初期速度分散 (大きい値に設定)
+NUM_STATES = 6                                                -- 状態変数の数 (x, vx, y, vy, z, vz)
+DATA_ASSOCIATION_THRESHOLD = property.getNumber("D_ASOC")     -- データアソシエーションの閾値 (epsilon)
+TARGET_TIMEOUT_TICKS = property.getNumber("T_OUT")            -- 目標が更新されない場合のタイムアウトtick数 (約1.17秒)
+TARGET_IS_LEAVING_THRESHOLD = property.getNumber("TGT_LVING") -- 目標が離反していると判断する閾値 (接近速度 < -1 m/s ?)
+INITIAL_VELOCITY_VARIANCE = (300 ^ 2)                         -- 新規目標の初期速度分散 (大きい値に設定)
 
 -- 観測ノイズ共分散行列 R (テンプレート) - レーダーの精度に基づく
 -- オリジナルコードの R0 [source: 40] を参考に設定。
-local R0_DIST_VAR_FACTOR = (0.02 ^ 2) / 24   -- 距離に対する分散係数 (距離^2に掛ける)
-local R0_ANGLE_VAR = ((2e-3 * PI2) ^ 2) / 24 -- 角度の分散 (固定値)
-local OBSERVATION_NOISE_MATRIX_TEMPLATE = {
-    { R0_DIST_VAR_FACTOR, 0, 0 },            -- 距離誤差分散 (距離に応じてスケール)
-    { 0, R0_ANGLE_VAR, 0 },                  -- 仰角誤差分散
-    { 0, 0, R0_ANGLE_VAR }                   -- 方位角誤差分散
+R0_DIST_VAR_FACTOR = (0.02 ^ 2) / 24   -- 距離に対する分散係数 (距離^2に掛ける)
+R0_ANGLE_VAR = ((2e-3 * PI2) ^ 2) / 24 -- 角度の分散 (固定値)
+OBSERVATION_NOISE_MATRIX_TEMPLATE = {
+    { R0_DIST_VAR_FACTOR, 0, 0 },      -- 距離誤差分散 (距離に応じてスケール)
+    { 0, R0_ANGLE_VAR, 0 },            -- 仰角誤差分散
+    { 0, 0, R0_ANGLE_VAR }             -- 方位角誤差分散
 }
 
 -- プロセスノイズ Q の適応的調整パラメータ (オリジナルコード [source: 41] より)
-local PROCESS_NOISE_BASE = property.getNumber("P_BASE") or 0.01
-local PROCESS_NOISE_ADAPTIVE_SCALE = property.getNumber("P_ADPT") or 1e+6
-local PROCESS_NOISE_EPSILON_THRESHOLD = property.getNumber("P_NOISE_EPS_THRS") or 140
-local PROCESS_NOISE_EPSILON_SLOPE = property.getNumber("P_NOISE_EPS_SLOPE") or 100
+PROCESS_NOISE_BASE = property.getNumber("P_BASE")
+PROCESS_NOISE_ADAPTIVE_SCALE = property.getNumber("P_ADPT")
+PROCESS_NOISE_EPSILON_THRESHOLD = property.getNumber("P_NOISE_EPS_THRS")
+PROCESS_NOISE_EPSILON_SLOPE = property.getNumber("P_NOISE_EPS_SLOPE")
 -- 予測誤差の不確かさ増加係数 (オリジナルコード [source: 41] より)
-local PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") or 1.01
+PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT")
 
 -- 敵対判定パラメータ
-local HOSTILE_IDENTIFICATION_THRESHOLD = property.getNumber("IDENTI_THRS") or 8       -- 同定成功回数の閾値
-local HOSTILE_CLOSING_SPEED_THRESHOLD = property.getNumber("TGT_CLOSING_SPD") or 100  -- 接近速度の閾値 (m/s) - 必要に応じて調整してください
-local HOSTILE_RECENT_UPDATES_THRESHOLD = property.getNumber("TGT_RECENT_UPDATE") or 4 -- 閾値超えを要求する直近の更新回数
+HOSTILE_IDENTIFICATION_THRESHOLD = property.getNumber("IDENTI_THRS")       -- 同定成功回数の閾値
+HOSTILE_CLOSING_SPEED_THRESHOLD = property.getNumber("TGT_CLOSING_SPD")    -- 接近速度の閾値 (m/s) - 必要に応じて調整してください
+HOSTILE_RECENT_UPDATES_THRESHOLD = property.getNumber("TGT_RECENT_UPDATE") -- 閾値超えを要求する直近の更新回数
 
 -- 単位行列 I (6x6)
 local identityMatrix6x6 = { { 1, 0, 0, 0, 0, 0 }, { 0, 1, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0 }, { 0, 0, 0, 1, 0, 0 }, { 0, 0, 0, 0, 1, 0 }, { 0, 0, 0, 0, 0, 1 } }
@@ -137,7 +128,7 @@ end
 function mul(...)
     local mats = { ... }; local A = mats[1]; local R; for i = 2, #mats do
         local B = mats[i]; if #A[1] ~= #B then
-            debug.log("Error: Matrix mul dim mismatch")
+            -- debug.log("Error: Matrix mul dim mismatch")
             return nil
         end
         R = zeros(#A, #B[1]); for r = 1, #A do
@@ -335,6 +326,71 @@ function releaseOutputId(target)
     end
 end
 
+------------------------
+--- クォータニオン演算関数
+------------------------
+-- 二つのクォータニオン q_a = {w, x, y, z}, q_b = {w, x, y, z} の積を計算する関数
+-- q_result = q_a * q_b
+function multiplyQuaternions(q_a, q_b)
+    local w1, x1, y1, z1 = q_a[1], q_a[2], q_a[3], q_a[4]
+    local w2, x2, y2, z2 = q_b[1], q_b[2], q_b[3], q_b[4]
+
+    local w_result = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    local x_result = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    local y_result = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    local z_result = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+
+    return { w_result, x_result, y_result, z_result }
+end
+
+-- ZYXオイラー角 (Roll: phi, Yaw: psi, Pitch: theta) からクォータニオン q = (w, x, y, z) を計算する関数
+-- 入力角度はラジアン単位
+function eulerZYX_to_quaternion(roll, yaw, pitch)
+    -- オイラー角の半分を計算
+    local half_roll = roll * 0.5
+    local half_yaw = yaw * 0.5
+    local half_pitch = pitch * 0.5
+
+    -- 角度の半分のcosとsinを事前計算
+    local cr = math.cos(half_roll)
+    local sr = math.sin(half_roll)
+    local cy = math.cos(half_yaw)
+    local sy = math.sin(half_yaw)
+    local cp = math.cos(half_pitch)
+    local sp = math.sin(half_pitch)
+
+    -- クォータニオンの成分を計算
+    local w = cr * cy * cp + sr * sy * sp
+    local x = cr * cy * sp - sr * sy * cp -- X成分
+    local y = cr * sy * cp + sr * cy * sp -- Y成分
+    local z = sr * cy * cp - cr * sy * sp -- Z成分
+
+    -- クォータニオンをテーブルとして返す (wが最初の要素)
+    -- または {x=x, y=y, z=z, w=w} のような形式でも良い
+    return { w, x, y, z }
+end
+
+-- ベクトル v = {x, y, z} をクォータニオン q = {w, x, y, z} で回転させる関数 (標準版: p' = q p q*)
+function rotateVectorByQuaternion(vector, quaternion)
+    -- ベクトルを純粋クォータニオン p = (0, vx, vy, vz) に変換
+    local px = vector[1] or vector.x or 0
+    local py = vector[2] or vector.y or 0
+    local pz = vector[3] or vector.z or 0
+    local p = { 0, px, py, pz }
+
+    -- 回転クォータニオン q
+    local q = quaternion
+
+    -- 回転クォータニオンの共役 q* = (w, -x, -y, -z) を計算
+    local q_conj = { q[1], -q[2], -q[3], -q[4] }
+
+    -- p' = q * p * q* を計算 (標準的な順序)
+    local p_prime = multiplyQuaternions(multiplyQuaternions(q, p), q_conj) -- ★ 標準の掛け算順序
+
+    -- p' のベクトル部 {x, y, z} を回転後のベクトルとして返す
+    return { p_prime[2], p_prime[3], p_prime[4] }
+end
+
 --------------------------------------------------------------------------------
 -- 座標・ベクトル変換関数
 --------------------------------------------------------------------------------
@@ -344,19 +400,27 @@ rotateVectorZYX: Z-Y-X オイラー角でベクトルを回転 (ローカル->�
 Physics Sensor のオイラー角 (Z-Y-X Intrinsic, 左手系) に対応。
 入力オイラー角は Physics Sensor 出力値をそのまま使う (元コードの反転は不要と判断)。
 ※もし動作がおかしい場合は、元コードのように符号反転を試す。
-]]
+
 function rotateVectorZYX(vector, pitch, yaw, roll)
     -- 回転行列 R = Rx(pitch) * Ry(yaw) * Rz(roll)
-    -- Rx
-    local RX = { { 1, 0, 0 }, { 0, math.cos(pitch), -math.sin(pitch) }, { 0, math.sin(pitch), math.cos(pitch) } }
-    -- Ry
-    local RY = { { math.cos(yaw), 0, math.sin(yaw) }, { 0, 1, 0 }, { -math.sin(yaw), 0, math.cos(yaw) } }
+
     -- Rz
     local RZ = { { math.cos(roll), -math.sin(roll), 0 }, { math.sin(roll), math.cos(roll), 0 }, { 0, 0, 1 } }
+    -- Ry
+    local RY = { { math.cos(yaw), 0, math.sin(yaw) }, { 0, 1, 0 }, { -math.sin(yaw), 0, math.cos(yaw) } }
+    -- Rx
+    local RX = { { 1, 0, 0 }, { 0, math.cos(pitch), -math.sin(pitch) }, { 0, math.sin(pitch), math.cos(pitch) } }
     local R = mul(RZ, RY, RX)
+
+
+    -- 展開したものを使用して計算コスト削減
+    local R = { { math.cos(roll) * math.cos(yaw), math.cos(roll) * math.sin(yaw) * math.sin(pitch) - math.sin(roll) * math.cos(pitch), math.cos(roll) * math.sin(yaw) * math.cos(pitch) + math.sin(roll) * math.sin(pitch) },
+        { math.sin(roll) * math.cos(yaw), math.sin(roll) * math.sin(yaw) * math.sin(pitch) + math.cos(roll) * math.cos(pitch), math.sin(roll) * math.sin(yaw) * math.cos(pitch) - math.cos(roll) * math.sin(pitch) },
+        { -math.sin(yaw),                 math.cos(yaw) * math.sin(pitch),                                                     math.cos(yaw) * math.cos(pitch) } }
+
     return mul(R, vector)
 end
-
+]]
 --[[
 localToGlobalCoords: レーダーのローカル極座標をグローバル直交座標に変換
 出力は Physics Sensor グローバル座標系 (X:東, Y:上, Z:北)
@@ -372,18 +436,19 @@ function localToGlobalCoords(dist, locAzi, locEle, rId, ownP)
     if rYOff ~= 0 then
         local cy = math.cos(rYOff); local sy = math.sin(rYOff); local RotY = { { cy, 0, sy }, { 0, 1, 0 }, { -sy, 0, cy } };
         vehLocVec_rotated = mul(RotY, radarLocVec);
-        if vehLocVec_rotated == nil then
-            --return 0, 0, 0
-        end
     end
 
     vehLocVec_rotated[2][1] = vehLocVec_rotated[2][1] + 2.5 / (rId + 1) -- レーダーのY軸オフセット
     -- 5. 車両姿勢で回転 -> グローバルな相対ベクトルへ
-    local globalRelativeVector = rotateVectorZYX(vehLocVec_rotated, ownP.pitch, ownP.yaw, ownP.roll);
+    -- 2. オイラー角から回転クォータニオンを生成
+    local vehLocVec_rotated = { vehLocVec_rotated[1][1], vehLocVec_rotated[2][1], vehLocVec_rotated[3][1] }
+    local rotation_quaternion = eulerZYX_to_quaternion(ownP.roll, ownP.yaw, ownP.pitch)
+    local globalRelativeVector = rotateVectorByQuaternion(vehLocVec_rotated, rotation_quaternion)
+    --local globalRelativeVector = rotateVectorZYX(vehLocVec_rotated, ownP.pitch, ownP.yaw, ownP.roll);
 
     -- 6. 物理センサーのグローバル位置を加算 -> 最終的な目標グローバル座標
-    local gX = globalRelativeVector[1][1] + ownP.x; local gY = globalRelativeVector[2][1] + ownP.y; local gZ =
-        globalRelativeVector[3][1] + ownP.z;
+    local gX = globalRelativeVector[1] + ownP.x; local gY = globalRelativeVector[2] + ownP.y; local gZ =
+        globalRelativeVector[3] + ownP.z;
     return gX, gY, gZ
 end
 
@@ -589,7 +654,6 @@ function onTick()
     end
     -- 3. データアソシエーションとEKF更新
     local assignedObservationIndices = {} -- Keeps track of which observation was assigned
-    local updatedTargetInternalIds = {}   -- Keeps track of which tracked targets were updated
     if #currentObservations > 0 then
         for internalId, currentTarget in pairs(targetList) do
             local bestMatchObsIndex = -1
@@ -637,7 +701,6 @@ function onTick()
 
                 -- 敵対判定実行
                 assignedObservationIndices[bestMatchObsIndex] = true
-                updatedTargetInternalIds[internalId] = true
             end
         end
     end
@@ -646,7 +709,6 @@ function onTick()
     local targetIdsToDelete = {}
     for internalId, target in pairs(targetList) do
         -- 4.1 敵対判定実行 & Output ID 管理
-        local wasHostile = target.is_hostile
         checkHostileCondition(target) -- target.is_hostile が更新される可能性
         local isHostileNow = target.is_hostile
 
