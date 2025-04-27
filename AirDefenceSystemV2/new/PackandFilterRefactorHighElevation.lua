@@ -1,22 +1,16 @@
--- Lua標準ライブラリ
-local M = math
-local string = string
-local table = table
-local tonumber = tonumber
-local ipairs = ipairs
-
 -- Stormworks API ショートカット
 local inputNumber = input.getNumber
 local inputBool = input.getBool
 local outputNumber = output.setNumber
-local propertyNumber = property.getNumber
 
 -- 定数
-local PI = M.pi
+local PI = math.pi
 local PI2 = PI * 2
-local MAX_TARGETS_PER_RADAR = 4                       -- レーダーが同時に扱える最大目標数 (仕様 [source: 5])
+local MAX_TARGETS_PER_RADAR = 4                       -- このシステムが同時に扱える最大目標数 (仕様 [source: 5])
 local MAX_OUTPUT_CHANNELS = MAX_TARGETS_PER_RADAR * 2 -- 最大出力チャンネル数 (pack1, pack2)
 local MIN_DETECT_DISTANCE = property.getNumber("Min Dist")
+local FRONT_OFFSET = 1
+local HEIGHT_OFFSET = -0.25
 -- ★★★ 設定項目: このマイクロコントローラーが担当するレーダーID ★★★
 -- 設置する場所に合わせて 0, 1, 2, 3 のいずれかの数値を設定してください。
 local RADAR_ID = 0 -- 0:Front, 1:Right, 2:Back, 3:Left
@@ -25,10 +19,6 @@ local RADAR_ID = 0 -- 0:Front, 1:Right, 2:Back, 3:Left
 -- グローバル変数 (マイクロコントローラー内部の状態を保持)
 local targetMaxData = {} -- 各目標の最大値を記録するテーブル { distance, azimuth, elevation }
 local targetMinData = {} -- 各目標の最小値を記録するテーブル { distance, azimuth, elevation }
--- filterTickCounter は不要 (レーダー出力の経過時間tick(ch4)で判断するため)
-
--- 設定値 (プロパティから取得)
-local filterDuration = propertyNumber("n") -- 範囲中間値フィルターの期間 (tick)
 
 -- 初期化処理: targetMaxData と targetMinData テーブルを初期化
 for i = 1, MAX_TARGETS_PER_RADAR do
@@ -49,6 +39,7 @@ Pack関数内で角度の符号をエンコードするために使用。
 --------------------------------------------------------------------------------
 メイン関数: packTargetData
 --------------------------------------------------------------------------------
+高仰角レーダー用のコード
 入力された距離、方位角、仰角を、元の Pack 関数のロジックに基づいて
 2つの数値 (pack1, pack2) に圧縮する。
 圧縮された値には、角度の符号情報、距離情報、およびレーダーID情報が含まれる。
@@ -190,15 +181,59 @@ function onTick()
             local currentAzimuth = inputNumber(i * 4 - 2)
             local currentElevation = inputNumber(i * 4 - 1)
 
+            --[[ ここから座標変換処理 ]]
+
+            -- 角度をラジアンに変換
+            local azimuthRadPrime = currentAzimuth * PI2
+            local elevationRadPrime = currentElevation * PI2
+
+            -- 90度上向きレーダーのローカル直交座標 (xL', yL', zL') を計算
+            -- x': 右方向, y': 上方向(レーダーの物理的な上), z': 前方(レーダーの物理的な前方)
+            local xL_prime = currentDistance * math.cos(elevationRadPrime) * math.sin(azimuthRadPrime)
+            local yL_prime = currentDistance * math.sin(elevationRadPrime)
+            local zL_prime = currentDistance * math.cos(elevationRadPrime) * math.cos(azimuthRadPrime)
+
+            -- 水平レーダー基準のローカル直交座標 (xL, yL, zL) に変換
+            -- 水平レーダーを基準とすると、90度上向きレーダーはX軸周りに+90度回転した状態とみなせる
+            -- 水平X = 上向きX'
+            -- 水平Y = 上向きZ'
+            -- 水平Z = -上向きY'
+            local xL = xL_prime
+            local yL = zL_prime + HEIGHT_OFFSET -- heightOffset
+            local zL = -yL_prime + FRONT_OFFSET -- frontOffset
+
+            -- 水平レーダー基準のローカル極座標 (方位角 alpha, 仰角 beta) に変換
+            local correctedAzimuthRad, correctedElevationRad
+            if currentDistance > 0 then -- ゼロ除算を避ける
+                -- Stormworksの math.atan は atan2(y, x) として機能する [cite: 20]
+                correctedAzimuthRad = math.atan(xL, zL)
+                -- asin の引数が [-1, 1] の範囲に収まるように clamp する (念のため)
+                local elevationArg = math.max(-1.0, math.min(1.0, yL / currentDistance))
+                correctedElevationRad = math.asin(elevationArg)
+            else
+                correctedAzimuthRad = 0
+                correctedElevationRad = 0
+            end
+
+            -- 角度を回転単位に戻す
+            local correctedAzimuth = correctedAzimuthRad / PI2
+            local correctedElevation = correctedElevationRad / PI2
+
+            -- 必要であれば、角度を [-0.5, 0.5) の範囲に正規化 (atan/asinの結果は通常この範囲内だが念のため)
+            -- correctedAzimuth = (correctedAzimuth + 0.5) % 1.0 - 0.5
+            -- correctedElevation = (correctedElevation + 0.5) % 1.0 - 0.5
+
+            --[[ 座標変換処理 ここまで ]]
+
             -- 最大値更新
-            targetMaxData[i].distance = M.max(currentDistance, targetMaxData[i].distance)
-            targetMaxData[i].azimuth = M.max(currentAzimuth, targetMaxData[i].azimuth)
-            targetMaxData[i].elevation = M.max(currentElevation, targetMaxData[i].elevation)
+            targetMaxData[i].distance = math.max(currentDistance, targetMaxData[i].distance)
+            targetMaxData[i].azimuth = math.max(correctedAzimuth, targetMaxData[i].azimuth)
+            targetMaxData[i].elevation = math.max(correctedElevation, targetMaxData[i].elevation)
 
             -- 最小値更新
-            targetMinData[i].distance = M.min(currentDistance, targetMinData[i].distance)
-            targetMinData[i].azimuth = M.min(currentAzimuth, targetMinData[i].azimuth)
-            targetMinData[i].elevation = M.min(currentElevation, targetMinData[i].elevation)
+            targetMinData[i].distance = math.min(currentDistance, targetMinData[i].distance)
+            targetMinData[i].azimuth = math.min(correctedAzimuth, targetMinData[i].azimuth)
+            targetMinData[i].elevation = math.min(correctedElevation, targetMinData[i].elevation)
             -- else
             -- 目標が検出されなくなった場合、その目標の最大/最小値レコードを
             -- リセットするかどうかは仕様による。現状はリセットしない。
