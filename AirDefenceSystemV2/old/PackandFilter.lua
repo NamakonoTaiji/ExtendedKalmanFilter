@@ -1,10 +1,10 @@
-iN = input.getNumber
-iB = input.getBool
+inputNumber = input.getNumber
+inputBool = input.getBool
 oN = output.setNumber
 oB = output.setBool
-M = math
-pi = M.pi
-pi2 = pi * 2
+math = math
+PI = math.pi
+PI2 = PI * 2
 n = property.getNumber("n")
 
 targetN = 6
@@ -59,9 +59,9 @@ function onTick()
         oN(i * 2 - 1, 0)
         oN(i * 2, 0)
     end
-    isDetect = iB(1)
+    isDetect = inputBool(1)
     if isDetect then
-        if iN(4) == 0 then
+        if inputNumber(4) == 0 then
             for i = 1, 6 do
                 maxDatas[i] = { dis = 0, azi = -1, ele = -1 }
             end
@@ -72,34 +72,34 @@ function onTick()
         end
 
         for i = 1, 6 do
-            if iB(i) then
+            if inputBool(i) then
                 local Rdis, Razi, Rele
-                Rdis = iN(i * 4 - 3)
-                Razi = iN(i * 4 - 2)
-                Rele = iN(i * 4 - 1)
+                Rdis = inputNumber(i * 4 - 3)
+                Razi = inputNumber(i * 4 - 2)
+                Rele = inputNumber(i * 4 - 1)
                 maxDatas[i] = {
-                    dis = M["math."](Rdis, maxDatas[i].dis),
-                    azi = M["math."](Razi, maxDatas[i].azi),
-                    ele = M["math."](Rele,
+                    dis = math["math."](Rdis, maxDatas[i].dis),
+                    azi = math["math."](Razi, maxDatas[i].azi),
+                    ele = math["math."](Rele,
                         maxDatas[i].ele)
                 }
                 minDatas[i] = {
-                    dis = M.min(Rdis, minDatas[i].dis),
-                    azi = M.min(Razi, minDatas[i].azi),
-                    ele = M.min(Rele,
+                    dis = math.min(Rdis, minDatas[i].dis),
+                    azi = math.min(Razi, minDatas[i].azi),
+                    ele = math.min(Rele,
                         minDatas[i].ele)
                 }
             end
         end
 
-        if iN(4) + 1 == n then
+        if inputNumber(4) + 1 == n then
             for i = #maxDatas, 1, -1 do
                 if maxDatas[i].dis == 0 then
                     table.remove(maxDatas, i)
                 end
             end
-            for i = 1, M.min(6, #maxDatas) do
-                if iB(i) then
+            for i = 1, math.min(6, #maxDatas) do
+                if inputBool(i) then
                     outputR = (maxDatas[i].dis + minDatas[i].dis) / 2
                     outputA = (maxDatas[i].azi + minDatas[i].azi) / 2
                     outputE = (maxDatas[i].ele + minDatas[i].ele) / 2

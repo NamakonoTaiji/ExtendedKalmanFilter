@@ -1,5 +1,5 @@
-pi = math.pi
-pi2 = pi * 2
+PI = math.pi
+PI2 = PI * 2
 function Pack(a, b, c)
     local d, e, f, x1, x2, bsgn, csgn, cabs, babs, q
     if a == 0 then
@@ -59,9 +59,9 @@ function VariableUnpack(a, b)
     d = tonumber(a:sub(6, 7) .. b:sub(6, -1))
     eabs = tonumber("0." .. a:sub(2, 5))
     fabs = tonumber("0." .. b:sub(2, 5))
-    e = eabs * signList[tonumber(a:sub(1, 1))] * pi2
-    f = fabs * signList[tonumber(b:sub(1, 1))] * pi2
-    e = ((e + pi / 2 * (s - 1)) % pi2 + pi) % pi2 - pi
+    e = eabs * signList[tonumber(a:sub(1, 1))] * PI2
+    f = fabs * signList[tonumber(b:sub(1, 1))] * PI2
+    e = ((e + PI / 2 * (s - 1)) % PI2 + PI) % PI2 - PI
     return d, e, f, s - 1
 end
 

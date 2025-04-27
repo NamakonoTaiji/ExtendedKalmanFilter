@@ -1,15 +1,15 @@
-iN = input.getNumber
-iB = input.getBool
+inputNumber = input.getNumber
+inputBool = input.getBool
 oN = output.setNumber
 oB = output.setBool
-M = math
+math = math
 maxLimitOver = 0
 currentSetedNumber = 0
 PackA = {}
 PackC = {}
 maxRange = property.getNumber("Range")
 function onTick()
-    filterDist = iN(32) * maxRange -- 味方艦が存在するときはmaxRangeを狭めることでシステムを動作させないようにする
+    filterDist = inputNumber(32) * maxRange -- 味方艦が存在するときはmaxRangeを狭めることでシステムを動作させないようにする
     maxOutNumber = 12
     currentSetedNumber = 0
     for i = 1, 12 do
@@ -18,7 +18,7 @@ function onTick()
     -- 二つあるうちの一つ目のレーダーの情報をPackAに格納
     for i = 1, 6 do
         local a, b, dist
-        a, b = iN(i * 2 - 1), iN(i * 2)
+        a, b = inputNumber(i * 2 - 1), inputNumber(i * 2)
         if a * b == 0 then
             dist = 0
         else
@@ -28,14 +28,14 @@ function onTick()
             dist = tonumber(a:sub(6, 7) .. b:sub(6, -1))
         end
         -- 距離が0でない、かつフィルター距離より小さい場合にPackAに格納
-        if iN(i * 2 - 1) ~= 0 and dist < filterDist then
-            table.insert(PackA, { p1 = iN(i * 2 - 1), p2 = iN(i * 2) })
+        if inputNumber(i * 2 - 1) ~= 0 and dist < filterDist then
+            table.insert(PackA, { p1 = inputNumber(i * 2 - 1), p2 = inputNumber(i * 2) })
         end
     end
     -- 二つあるうちの二つ目のレーダーの情報をPackCに格納
     for i = 7, 12 do
         local a, b, dist
-        a, b = iN(i * 2 - 1), iN(i * 2)
+        a, b = inputNumber(i * 2 - 1), inputNumber(i * 2)
         if a * b == 0 then
             dist = 0
         else
@@ -43,8 +43,8 @@ function onTick()
             b = string.format("%7f", math.abs(b))
             dist = tonumber(a:sub(6, 7) .. b:sub(6, -1))
         end
-        if iN(i * 2 - 1) ~= 0 and dist < filterDist then
-            table.insert(PackC, { p1 = iN(i * 2 - 1), p2 = iN(i * 2) })
+        if inputNumber(i * 2 - 1) ~= 0 and dist < filterDist then
+            table.insert(PackC, { p1 = inputNumber(i * 2 - 1), p2 = inputNumber(i * 2) })
         end
     end
 
@@ -66,7 +66,7 @@ function onTick()
         maxOutNumber = maxOutNumber - currentSetedNumber -- 最大出力可能数から出力する数を引く
         if #PackC > 0 and maxOutNumber > 0 then          -- まだ出力できるch数が残っている場合
             -- PackCの情報を出力
-            for i = 1, M.min(#PackC, maxOutNumber / 2) do
+            for i = 1, math.min(#PackC, maxOutNumber / 2) do
                 oN((i * 2 - 1) + currentSetedNumber, PackC[1].p1)
                 oN((i * 2) + currentSetedNumber, PackC[1].p2)
                 table.remove(PackC, 1)
@@ -82,7 +82,7 @@ function onTick()
         end
         maxOutNumber = maxOutNumber - currentSetedNumber
         if #PackA > 0 and maxOutNumber > 0 then
-            for i = 1, M.min(#PackA, maxOutNumber / 2) do
+            for i = 1, math.min(#PackA, maxOutNumber / 2) do
                 oN((i * 2 - 1) + currentSetedNumber, PackA[1].p1)
                 oN((i * 2) + currentSetedNumber, PackA[1].p2)
                 table.remove(PackA, 1)

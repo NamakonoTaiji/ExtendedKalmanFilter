@@ -1,7 +1,7 @@
-iN = input.getNumber
+inputNumber = input.getNumber
 oN = output.setNumber
-pi = math.pi
-pi2 = pi * 2
+PI = math.pi
+PI2 = PI * 2
 c = 0
 targetList = {}
 signList = { -1, 1 }
@@ -113,7 +113,7 @@ I = zeros(6, 6)
 for i = 1, 6 do
     I[i][i] = 1
 end
-R0 = scalar(1 / 24, { { 0.02 ^ 2, 0, 0 }, { 0, (2e-3 * pi2) ^ 2, 0 }, { 0, 0, (2e-3 * pi2) ^ 2 } })
+R0 = scalar(1 / 24, { { 0.02 ^ 2, 0, 0 }, { 0, (2e-3 * PI2) ^ 2, 0 }, { 0, 0, (2e-3 * PI2) ^ 2 } })
 
 function Get_r_rh(x, y, z)
     local rh = x ^ 2 + z ^ 2
@@ -134,7 +134,7 @@ function KF(F, Q, R, Z, X, P, I, phyX, phyY, phyZ, epsilon, t)
     h = { { math.sqrt(r) }, { math.asin(relativeY / math.sqrt(r)) }, { math.atan(relativeX, relativeZ) } }
     Y = sub(Z, h)
 
-    Y[3][1] = (Y[3][1] + 3 * pi) % pi2 - pi
+    Y[3][1] = (Y[3][1] + 3 * PI) % PI2 - PI
 
     S = sum(R, mul(H, P, T(H)))
 
@@ -172,24 +172,24 @@ function ValiableUnpack(a, b)
     d = tonumber(a:sub(6, 7) .. b:sub(6, -1))
     eabs = tonumber("0." .. a:sub(2, 5))
     fabs = tonumber("0." .. b:sub(2, 5))
-    e = eabs * signList[tonumber(a:sub(1, 1))] * pi2
-    f = fabs * signList[tonumber(b:sub(1, 1))] * pi2
-    e = ((e + pi / 2 * (s - 1)) % pi2 + pi) % pi2 - pi
+    e = eabs * signList[tonumber(a:sub(1, 1))] * PI2
+    f = fabs * signList[tonumber(b:sub(1, 1))] * PI2
+    e = ((e + PI / 2 * (s - 1)) % PI2 + PI) % PI2 - PI
     return d, e, f, s - 1
 end
 
 function onTick()
-    phyX = iN(25)
-    phyY = iN(26) + 1
-    phyZ = iN(27)
-    c = iN(31)
-    c2 = iN(32)
+    phyX = inputNumber(25)
+    phyY = inputNumber(26) + 1
+    phyZ = inputNumber(27)
+    c = inputNumber(31)
+    c2 = inputNumber(32)
     Datas = {}
     for i = 1, 12 do
-        if iN(i * 2 - 1) ~= 0 then
-            dist, azi, ele, radarID = ValiableUnpack(iN(i * 2 - 1), iN(i * 2))
+        if inputNumber(i * 2 - 1) ~= 0 then
+            dist, azi, ele, radarID = ValiableUnpack(inputNumber(i * 2 - 1), inputNumber(i * 2))
             --kakuzdohosei
-            eulerMatR = ZYXRotate(iN(28), iN(29), iN(30)) -- Pitch, Yaw, Roll
+            eulerMatR = ZYXRotate(inputNumber(28), inputNumber(29), inputNumber(30)) -- Pitch, Yaw, Roll
             Rthetaphi = { { math.cos(ele) * math.sin(azi) },
                 { math.sin(ele) },
                 { math.cos(ele) * math.cos(azi) } }

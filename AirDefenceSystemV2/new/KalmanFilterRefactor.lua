@@ -31,6 +31,11 @@ kalmanfilter.lua (リファクタリング最終版 - 遅延フラグ対応)
   - ch (i*3 - 2): 目標 i の予測 X 座標 (East)
   - ch (i*3 - 1): 目標 i の予測 Y 座標 (Up)
   - ch (i*3)    : 目標 i の予測 Z 座標 (North)
+- オンオフ 1-10: 追跡中の目標の更新フラグ(目標更新時の1tickだけオンを出力する)
+  - ch 1: 目標 1 の更新フラグ
+  - ch 2: 目標 2 の更新フラグ
+  - ...
+  - ch 10: 目標 10 の更新フラグ
 
 前提:
 - RadarList1 は レーダーID 0 (Front) と 2 (Back) のデータを扱う。
@@ -40,8 +45,9 @@ kalmanfilter.lua (リファクタリング最終版 - 遅延フラグ対応)
 ]]
 
 -- Stormworks API ショートカット
-local inputNumber = input.getNumber
-local outputNumber = output.setNumber
+inputNumber = input.getNumber
+outputNumber = output.setNumber
+outputBool = output.setBool
 -- 定数 (文字数削減のため定数はローカル宣言を削除)
 PI = math.pi
 PI2 = PI * 2
@@ -231,8 +237,8 @@ function unpackTargetData(pack1, pack2)
     local f_str = string.sub(pack2Str, 2, 5)                    -- 2-5桁目: 仰角小数部4桁
     local distPart2 = string.sub(pack2Str, 6, 7)                -- 6-7桁目: 距離後半/中央2桁
     -- 5. 符号インデックスの決定 (不正値対応)
-    local aziSignIndex = (aziSignCodeRaw == 1 or aziSignCodeRaw == 2) and aziSignCodeRaw or 2
-    local eleSignIndex = (eleSignCodeRaw == 1 or eleSignCodeRaw == 2) and eleSignCodeRaw or 2
+    local aziSignIndex = (aziSignCodeRaw == 1 or aziSignCodeRaw == 2) and aziSignCodeRaw
+    local eleSignIndex = (eleSignCodeRaw == 1 or eleSignCodeRaw == 2) and eleSignCodeRaw
 
     -- 6. 距離を復元
     distance = tonumber(distPart1 .. distPart2)
@@ -604,6 +610,9 @@ end
 -- メインループ: onTick
 --------------------------------------------------------------------------------
 function onTick()
+    for internalId, target in pairs(targetList) do
+        target.isUpdated = false
+    end
     currentTick = currentTick + 1 -- 内部Tickカウンター更新
 
     -- 1. 自機情報と遅延フラグを取得
@@ -690,7 +699,7 @@ function onTick()
 
                 -- 同定成功回数インクリメント
                 targetList[internalId].identification_count = targetList[internalId].identification_count + 1
-
+                targetList[internalId].isUpdated = true
                 -- 接近速度を計算して記録
                 local currentClosingSpeed = calculateClosingSpeed(targetList[internalId], physicsSensorData)
                 table.insert(targetList[internalId].recent_closing_speeds, currentClosingSpeed)
@@ -749,7 +758,7 @@ function onTick()
             local X_init = { { newObs.globalX }, { 0 }, { newObs.globalY }, { 0 }, { newObs.globalZ }, { 0 } }
             local P_init = zeros(NUM_STATES, NUM_STATES)
             local init_pos_var_factor = 10
-            local pos_var_dist = OBSERVATION_NOISE_MATRIX_TEMPLATE[1][1] * init_pos_var_factor * (newObs.distance ^ 2)
+            -- local pos_var_dist = OBSERVATION_NOISE_MATRIX_TEMPLATE[1][1] * init_pos_var_factor * (newObs.distance ^ 2)
             local pos_var_ele = OBSERVATION_NOISE_MATRIX_TEMPLATE[2][2] * init_pos_var_factor
             local pos_var_azi = OBSERVATION_NOISE_MATRIX_TEMPLATE[3][3] * init_pos_var_factor
             -- 単純化された初期位置の分散 - より良い方法が存在するが、より複雑な計算を必要とする
@@ -771,7 +780,8 @@ function onTick()
                 epsilon = 1,                -- 初期イプシロン
                 identification_count = 0,   -- Hostile check data
                 recent_closing_speeds = {}, -- Hostile check data
-                is_hostile = false          -- Hostile check data
+                is_hostile = false,         -- Hostile check data
+                isUpdated = false
             }
             -- debug.log("New target registered. Internal ID: " .. newInternalId)
             nextInternalId = nextInternalId + 1 -- 次の新しい目標のためにインクリメントする
@@ -782,7 +792,10 @@ function onTick()
 
     -- 6. 出力処理 (Output ID ベース)
     -- 最初に出力チャンネルをクリアする
-    for i = 1, 32 do outputNumber(i, 0) end
+    for i = 1, 32 do
+        outputNumber(i, 0)
+        outputBool(i, false)
+    end
 
     -- 追跡されたターゲットを反復処理し、割り当てられた出力IDを持つターゲットを出力する。
     for internalId, target in pairs(targetList) do
@@ -806,6 +819,7 @@ function onTick()
                 outputNumber(baseChannel + 1, predX) -- X (East)
                 outputNumber(baseChannel + 2, predY) -- Y (Up)
                 outputNumber(baseChannel + 3, predZ) -- Z (North)
+                outputBool(target.outputId, target.isUpdated)
                 -- else -- Debugging: Calculated channel out of bounds
                 -- debug.log("Error: Target Output ID "..target.outputId.." results in channel out of bounds.")
             end
