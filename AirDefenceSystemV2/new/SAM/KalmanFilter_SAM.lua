@@ -39,7 +39,19 @@ KalmanFilter_SAM.lua (v0.3 - 新コーディングルール適用: nilチェッ�
 - 数値 4: 推定目標速度 Vx
 - 数値 5: 推定目標速度 Vy
 - 数値 6: 推定目標速度 Vz
-- 数値 7: 最新のイプシロンε
+- 数値 7: データリンク座標 X
+- 数値 8: データリンク座標 Y
+- 数値 9: データリンク座標 Z
+- 数値 10: 自機グローバル位置 X
+- 数値 11: 自機グローバル位置 Y
+- 数値 12: 自機グローバル位置 Z
+- 数値 13: 自機オイラー角 Pitch (ラジアン)
+- 数値 14: 自機オイラー角 Yaw (ラジアン)
+- 数値 15: 自機オイラー角 Roll (ラジアン)
+- 数値 16: 自機X軸速度(パススルー)
+- 数値 17: 自機Y軸速度(パススルー)
+- 数値 18: 自機Z軸速度(パススルー)
+- 数値 32: 最新のイプシロンε
 
 前提:
 - 座標系は Physics Sensor 座標系 (X:東, Y:上, Z:北, 左手系) を基準とする。
@@ -332,7 +344,7 @@ function eulerZYX_to_quaternion(roll, yaw, pitch)
 end
 
 function rotateVectorByQuaternion(vector, quaternion)
-    local px, py, pz, q, q_conj, temp, p_prime
+    local px, py, pz, p, q, q_conj, temp, p_prime
     -- nilチェックは原則削除
     px = vector[1] or vector.x or 0
     py = vector[2] or vector.y or 0
@@ -607,7 +619,6 @@ end
 --------------------------------------------------------------------------------
 function onTick()
     -- 関数冒頭でローカル変数を宣言
-    local distSq, success_try, X_up, P_up, eps_up, success_update, ticksSinceLastSeen, predictedX, dataLinkTargetDistanceSq, isRadarEffectiveRange, isDataLinkInitRequired, minEpsilon, bestMatchObsIndex, tempState, tempCovar, dt_pred_sec, F_pred, X_assoc_pred, epsilon_try, relativeGlobalVec, distCheck, globalElevation, globalAzimuth, associatedObservation, minInitDistSq, bestInitObs, dx, dy, dz, distSqownGlobalPos, ownEuler, ownVector, ownOrientation, dataLinkTargetGlobal, isDataLinkValid, currentObservations, isRadarDetecting, baseChannel, dist, localAziRad, localEleRad, localX, localY, localZ, targetLocalPosVec, targetGlobal
 
     currentTick = currentTick + 1
     isTracking = false -- Tick開始時にリセット
@@ -617,7 +628,7 @@ function onTick()
     -- 自機情報 (試験用)
     ownGlobalPos = { x = input.getNumber(8), y = input.getNumber(12), z = input.getNumber(16) }
     ownEuler = { Pitch = input.getNumber(20), Yaw = input.getNumber(24), Roll = input.getNumber(25) }
-    ownVector = { input.getNumber(30), input.getNumber(31), input.getNumber(32) }
+    ownVector = { x = input.getNumber(30), y = input.getNumber(31), z = input.getNumber(32) }
     -- 自機姿勢をクォータニオンに変換
     ownOrientation = eulerZYX_to_quaternion(ownEuler.Roll, ownEuler.Yaw, ownEuler.Pitch)
     -- nilチェックは原則削除 (エラー発生時は単位クォータニオンで代替)
@@ -815,11 +826,24 @@ function onTick()
         output.setNumber(4, trackedTarget.X[2][1])                                            -- 推定 Vx
         output.setNumber(5, trackedTarget.X[4][1])                                            -- 推定 Vy
         output.setNumber(6, trackedTarget.X[6][1])                                            -- 推定 Vz
-        output.setNumber(7, trackedTarget.epsilon or 0)                                       -- 最新のε (nilなら0)
+        output.setNumber(32, trackedTarget.epsilon or 0)                                      -- 最新のε (nilなら0)
     else
         -- トラックがない場合は0を出力
-        for i = 1, 7 do
+        for i = 1, 6 do
             output.setNumber(i, 0)
         end
     end
+    -- ミサイル制御マイコンへのパススルー
+    output.setNumber(7, dataLinkTargetGlobal.x)
+    output.setNumber(8, dataLinkTargetGlobal.y)
+    output.setNumber(9, dataLinkTargetGlobal.z)
+    output.setNumber(10, ownGlobalPos.x)
+    output.setNumber(11, ownGlobalPos.y)
+    output.setNumber(12, ownGlobalPos.z)
+    output.setNumber(13, ownEuler.Pitch)
+    output.setNumber(14, ownEuler.Yaw)
+    output.setNumber(15, ownEuler.Roll)
+    output.setNumber(16, ownVector.x)
+    output.setNumber(17, ownVector.y)
+    output.setNumber(18, ownVector.z)
 end
