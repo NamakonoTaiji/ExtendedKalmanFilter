@@ -1,0 +1,45 @@
+graph LR
+    subgraph Radar_Units
+        R0["Radar 0 (Front)"]
+        R0UP["Radar 0 (Front,UP)"]
+        R1["Radar 1 (Right)"]
+        R1UP["Radar 1 (Right,UP)"]
+        R2["Radar 2 (Back)"]
+        R2UP["Radar 2 (Back,UP)"]
+        R3["Radar 3 (Left)"]
+        R3UP["Radar 3 (Left,UP)"]
+    end
+    subgraph Preprocessing
+        PF0(PackandFilter ID 0)
+        PF1(PackandFilter ID 1)
+        PF2(PackandFilter ID 2)
+        PF3(PackandFilter ID 3)
+    end
+    subgraph Aggregation
+        RL1(RadarList 1)
+        RL2(RadarList 2)
+    end
+    KF(KalmanFilter)
+    PS[Physics Sensor]
+    Out((Output))
+
+    R0 -- "ch 1-8 (EncodedData)" --> PF0
+    R0UP -- "ch 1-8 (EncodedData)" --> PF0
+    R1 -- "ch 1-8 (EncodedData)" --> PF1
+    R1UP -- "ch 1-8 (EncodedData)" --> PF1
+    R2 -- "ch 1-8 (EncodedData)" --> PF2
+    R2UP -- "ch 1-8 (EncodedData)" --> PF2
+    R3 -- "ch 1-8 (EncodedData)" --> PF3
+    R3UP -- "ch 1-8 (EncodedData)" --> PF3
+
+    PF0 --> RL1
+    PF2 --> RL1
+    PF1 --> RL2
+    PF3 --> RL2
+
+    PS -- "ch 1-6 (Pose/Pos)" --> KF
+
+    RL1 -- "ch 1-12 (Data), ch 25-30 (Pose/Pos Passthrough), ch 31 (DelayFlag1)" --> KF
+    RL2 -- "ch 13-24 (Data), ch 25-30 (Pose/Pos Passthrough), ch 32 (DelayFlag2)" --> KF
+
+    KF -- "ch 1-30 (Target Coords), ch 1-10 (Update Flags)" --> Out

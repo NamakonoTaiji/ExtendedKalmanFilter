@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>ADSDocument.md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<h1 id="%E9%98%B2%E7%A9%BA%E3%83%AC%E3%83%BC%E3%83%80%E3%83%BC%E3%82%B7%E3%82%B9%E3%83%86%E3%83%A0%E4%BB%95%E6%A7%98%E6%A6%82%E8%A6%81-%E6%9B%B4%E6%96%B0%E7%89%88-v41">防空レーダーシステム仕様概要 (更新版 v4.1)</h1>
+<h2 id="1-%E3%82%B7%E3%82%B9%E3%83%86%E3%83%A0%E7%9B%AE%E6%A8%99">1. システム目標</h2>
+<p>搭載された車両や構造物に対して、周囲の空中目標（航空機など）を探知・追跡し、そのグローバル座標 (Physics Sensor 座標系) を提供することを目的とする。拡張カルマンフィルター (EKF) を用いて、ノイズを含むレーダー観測値から目標の正確な位置と速度を推定し、敵対的な目標を識別して特定の出力チャンネルで座標を出力する。</p>
+<h2 id="2-%E3%83%8F%E3%83%BC%E3%83%89%E3%82%A6%E3%82%A7%E3%82%A2%E6%A7%8B%E6%88%90">2. ハードウェア構成</h2>
+<ul>
+<li><strong>レーダー:</strong> 4 基の水平レーダー + 4 基の高仰角レーダーコンポーネントを使用。
+<ul>
+<li>各レーダーは、方位角 (水平) FOV を狭く、仰角 (高仰角) FOV を広く設定。</li>
+<li>4 基の水平レーダーを垂直に積み重ね、<strong>前向き (ID 0, 頂点)</strong>、<strong>右向き (ID 1)</strong>、<strong>後ろ向き (ID 2)</strong>、<strong>左向き (ID 3, 最下部)</strong> に 90 度ずつ回転させて設置。</li>
+<li>水平レーダーは、初期設定で<strong>Pitch Angle 0.06 (上向きオフセット 21.6°)</strong>、<strong>FOV X 0.04 (14.4°)</strong>、<strong>FOV Y 0.13 (46.8°)</strong> に設定されている。</li>
+<li>高仰角レーダーは、水平レーダーからみて正面に、90 度傾けて仰向けにした状態で設置 (ローカル X 軸を+90° 回転させた形)。</li>
+<li>高仰角レーダーは、初期設定で<strong>Pitch Angle -0.07 (下向きオフセット 25.2°)</strong>、<strong>FOV X 0.04 (14.4°)</strong>、<strong>FOV Y 0.13 (46.8°)</strong> に設定されている。</li>
+<li>高仰角レーダーは、座標変換ロジックが異なる (<code>PackandFilterRefactorHighElevation.lua</code>)。</li>
+<li>各レーダーの最大探知距離 (EffectiveRange) は可変であり、探知間隔をプロパティから設定する必要がある (<code>PackandFilterRefactor.lua</code> / <code>PackandFilterRefactorHighElevation.lua</code> のプロパティ <code>n</code>)。</li>
+</ul>
+</li>
+<li><strong>物理センサー (Physics Sensor):</strong> 1 基。
+<ul>
+<li>垂直に積み重ねられたレーダー群の一番下に取り付けられ、レーダー群全体と共にピボットで回転する。</li>
+<li>センサーの向きは **Radar 0 と同じ方向（正面）**を向くように設置する。</li>
+<li>車両のグローバル座標 (X:東, Y:上, Z:北) および姿勢 (オイラー角 Pitch, Yaw, Roll) を取得する。</li>
+<li>このセンサーの位置が、システム全体の<strong>座標計算の基準点</strong>となる。</li>
+</ul>
+</li>
+<li><strong>マイクロコントローラー:</strong> 以下の Lua スクリプトを実行するマイクロコントローラー群で構成される。
+<ul>
+<li><code>PackandFilterRefactor.lua</code> x 4 基 (各水平レーダーに対応、<code>RADAR_ID</code> を 0, 1, 2, 3 に設定)。</li>
+<li><code>PackandFilterRefactorHighElevation.lua</code> x 4 基 (各高仰角レーダーに対応、<code>RADAR_ID</code> を 0, 1, 2, 3 に設定)。</li>
+<li><code>RadarListRefactorv2.lua</code> x 2 基 (RadarList1 は ID 0, 2 を担当、RadarList2 は ID 1, 3 を担当)。</li>
+<li><code>KalmanFilterRefactor.lua</code> x 1 基 (システム全体の処理を担当)。</li>
+</ul>
+</li>
+</ul>
+<h2 id="3-%E3%83%9E%E3%82%A4%E3%82%AF%E3%83%AD%E3%82%B3%E3%83%B3%E3%83%88%E3%83%AD%E3%83%BC%E3%83%A9%E3%83%BC%E3%82%A2%E3%83%BC%E3%82%AD%E3%83%86%E3%82%AF%E3%83%81%E3%83%A3%E3%81%A8%E3%83%87%E3%83%BC%E3%82%BF%E3%83%95%E3%83%AD%E3%83%BC">3. マイクロコントローラーアーキテクチャとデータフロー</h2>
+<pre><code class="language-mermaid"><div class="mermaid">graph LR
+    subgraph Radar_Units
+        R0["Radar 0 (Front)"]
+        R0UP["Radar 0 (Front,UP)"]
+        R1["Radar 1 (Right)"]
+        R1UP["Radar 1 (Right,UP)"]
+        R2["Radar 2 (Back)"]
+        R2UP["Radar 2 (Back,UP)"]
+        R3["Radar 3 (Left)"]
+        R3UP["Radar 3 (Left,UP)"]
+    end
+    subgraph Preprocessing
+        PF0(PackandFilter ID 0)
+        PF1(PackandFilter ID 1)
+        PF2(PackandFilter ID 2)
+        PF3(PackandFilter ID 3)
+    end
+    subgraph Aggregation
+        RL1(RadarList 1)
+        RL2(RadarList 2)
+    end
+    KF(KalmanFilter)
+    PS[Physics Sensor]
+    Out((Output))
+
+    R0 -- "ch 1-8 (EncodedData)" --> PF0
+    R0UP -- "ch 1-8 (EncodedData)" --> PF0
+    R1 -- "ch 1-8 (EncodedData)" --> PF1
+    R1UP -- "ch 1-8 (EncodedData)" --> PF1
+    R2 -- "ch 1-8 (EncodedData)" --> PF2
+    R2UP -- "ch 1-8 (EncodedData)" --> PF2
+    R3 -- "ch 1-8 (EncodedData)" --> PF3
+    R3UP -- "ch 1-8 (EncodedData)" --> PF3
+
+    PF0 --> RL1
+    PF2 --> RL1
+    PF1 --> RL2
+    PF3 --> RL2
+
+    PS -- "ch 1-6 (Pose/Pos)" --> KF
+
+    RL1 -- "ch 1-12 (Data), ch 25-30 (Pose/Pos Passthrough), ch 31 (DelayFlag1)" --> KF
+    RL2 -- "ch 13-24 (Data), ch 25-30 (Pose/Pos Passthrough), ch 32 (DelayFlag2)" --> KF
+
+    KF -- "ch 1-30 (Target Coords), ch 1-10 (Update Flags)" --> Out
+</div></code></pre>
+<p><strong>(注:</strong> Physics Sensor からの情報は、現在 <code>KalmanFilterRefactor.lua</code> マイコンでのみ座標変換と EKF 計算のために使用されています。)</p>
+<h2 id="4-%E5%90%84%E5%87%A6%E7%90%86%E3%82%B9%E3%83%86%E3%83%83%E3%83%97%E8%A9%B3%E7%B4%B0">4. 各処理ステップ詳細</h2>
+<h3 id="41-%E3%83%AC%E3%83%BC%E3%83%80%E3%83%BC%E5%87%BA%E5%8A%9B">4.1. レーダー出力</h3>
+<ul>
+<li>各レーダーは、探知した目標（最大 8 目標）の情報をローカル極座標（距離、方位角、仰角）と探知経過時間 tick でコンポジット信号として出力する。</li>
+<li>探知からの経過時間 (数値 ch4) は、レーダー内部の「真の値」が更新された瞬間に 0 となる。</li>
+<li>レーダーの探知間隔 (DetectionInterval) は、EffectiveRange および <code>PackandFilterRefactor.lua</code> / <code>PackandFilterRefactorHighElevation.lua</code> のプロパティ <code>n</code> 設定に依存する。</li>
+</ul>
+<h3 id="42-packandfilterrefactorlua--packandfilterrefactorhighelevationlua">4.2. <code>PackandFilterRefactor.lua</code> / <code>PackandFilterRefactorHighElevation.lua</code></h3>
+<ul>
+<li><strong>役割:</strong> 各レーダーからの入力を受け、フィルタリングとデータ圧縮を行う。</li>
+<li><strong>フィルター:</strong>
+<ul>
+<li>レーダーの探知更新タイミング (入力 ch4 が 0 になった時) を基準とする。</li>
+<li>プロパティ <code>n</code> で指定された<strong>探知間隔の期間</strong>における、各検出目標の距離・方位角・仰角の <strong>最大値</strong> と <strong>最小値</strong> を記録する (<code>targetMaxData</code>, <code>targetMinData</code>)。</li>
+<li>探知更新タイミング (経過 tick が 0 になった時) に、前の期間に記録した最大値と最小値から <strong>範囲中間値 (max + min) / 2</strong> を計算する。</li>
+</ul>
+</li>
+<li><strong>データ圧縮 (<code>packTargetData</code> 関数):</strong>
+<ul>
+<li>計算された中間値（距離、方位角、仰角）を 2 つの <strong>7 桁</strong> の数値 <code>pack1</code>, <code>pack2</code> に圧縮する。</li>
+<li><strong>エンコード方式:</strong>
+<ul>
+<li><strong>距離:</strong> 整数に四捨五入後 (<code>math.floor(distance + 0.5)</code>)、上限 9999m でキャップし、ゼロ埋め 4 桁の文字列 (<code>string.format(&quot;%04d&quot;, intDistance)</code>) に変換。前半 2 桁を <code>pack1</code> の末尾 2 桁に、後半 2 桁を <code>pack2</code> の末尾 2 桁に格納。</li>
+<li><strong>方位角/仰角:</strong>
+<ul>
+<li><strong>符号:</strong> <code>getSignCode</code> 関数で <code>'1'</code> (負) または <code>'2'</code> (正/ゼロ) の文字列を取得。</li>
+<li><strong>絶対値:</strong> <code>math.abs(angle) + 0.00005</code> で微小値を加算後、<code>string.format(&quot;%f&quot;, ...)</code> で文字列化し、小数点以下 4 桁を抽出 (<code>string.sub(..., dotPos + 1, dotPos + 4)</code>)。4 桁に満たない場合はゼロ埋め。</li>
+<li><strong>pack1:</strong> <code>aziSignCode(1桁) + aziFractionStr(4桁) + distPart1(2桁)</code> を数値化。</li>
+<li><strong>pack2:</strong> <code>eleSignCode(1桁) + eleFractionStr(4桁) + distPart2(2桁)</code> を数値化。</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><strong>レーダー ID エンコード:</strong>
+<ul>
+<li>スクリプト冒頭で設定された <code>RADAR_ID</code> (0-3) に基づき、<code>pack1</code>, <code>pack2</code> の <strong>符号</strong> を決定して出力する。
+<ul>
+<li>ID 0 (Front): (-, -)</li>
+<li>ID 1 (Right): (-, +)</li>
+<li>ID 2 (Back): (+, -)</li>
+<li>ID 3 (Left): (+, +)</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><strong>出力:</strong> 圧縮された <code>pack1</code>, <code>pack2</code> のペアを最大 <strong>4 目標分</strong> (<strong>8 チャンネル</strong>) 出力する。プロパティ <code>Min Dist</code> 以下の距離の目標は出力しない。</li>
+<li><strong>高仰角版 (<code>PackandFilterRefactorHighElevation.lua</code>):</strong>
+<ul>
+<li>物理的に上向き設置されたレーダーからの入力を想定。</li>
+<li>入力されたローカル極座標を、<strong>水平設置レーダー基準のローカル極座標に変換</strong>してからフィルタリングと圧縮を行う。</li>
+<li>変換には <code>FRONT_OFFSET</code> と <code>HEIGHT_OFFSET</code> 定数を使用する。</li>
+</ul>
+</li>
+</ul>
+<h3 id="43-radarlistrefactorv2lua">4.3. <code>RadarListRefactorv2.lua</code></h3>
+<ul>
+<li><strong>役割:</strong> 2 つの <code>PackandFilterRefactor</code> (水平・高仰角含む) からのデータ (それぞれ最大 8 目標) を集約し、<code>KalmanFilterRefactor</code> へ渡すデータを整理する。RadarList1 (ID 0, 2 担当) と RadarList2 (ID 1, 3 担当) の 2 基が独立して動作する。</li>
+<li><strong>入力:</strong>
+<ul>
+<li>数値 1-16: <code>PackandFilter</code> A (ID 0 または 1) からの出力 (pack1, pack2 x 8 目標)</li>
+<li>数値 17-32: <code>PackandFilter</code> C (ID 2 または 3) からの出力 (pack1, pack2 x 8 目標)</li>
+<li>(物理センサーデータ ch 25-30 はこのスクリプトでは直接使用されないが、配線は通過する可能性がある)</li>
+</ul>
+</li>
+<li><strong>データ集約:</strong> 2 系統からの入力データを結合する (<code>allTargets</code> リスト)。</li>
+<li><strong>オーバーフロー処理:</strong>
+<ul>
+<li>入力された合計目標数が自身の出力上限 (<strong>6 目標</strong>) を超えた場合、その Tick では 6 目標分のみを <code>targetsToOutput</code> リストに入れる。</li>
+<li>出力しきれなかったデータ (<code>allTargets</code> の残り) は内部の <code>overflowBuffer</code> に一時保存する。</li>
+</ul>
+</li>
+<li><strong>遅延出力とフラグ:</strong>
+<ul>
+<li><code>overflowBuffer</code> にデータが保存された場合、<strong>次の Tick</strong> で <code>isOutputtingOverflow</code> フラグが <code>true</code> になり、バッファ内のデータが <code>targetsToOutput</code> として出力される。</li>
+<li>遅延データを出力する Tick では、出力チャンネル <strong>31</strong> (RadarList1) または <strong>32</strong> (RadarList2) に <strong>1</strong> (遅延フラグ) をセットする。</li>
+<li>通常データを出力する Tick では、遅延フラグチャンネルに <strong>0</strong> がセットされる。</li>
+</ul>
+</li>
+<li><strong>物理センサーデータパススルー:</strong> (このスクリプトでは直接のパススルーロジックは記述されていないが、Kalman Filter への入力のために配線上で接続される)</li>
+<li><strong>出力:</strong> 整理された <code>pack1</code>, <code>pack2</code> のペア (最大 6 目標分、チャンネル 1-12)、遅延フラグ (チャンネル 31 または 32) を出力する。</li>
+</ul>
+<h3 id="44-kalmanfilterrefactorlua">4.4. <code>KalmanFilterRefactor.lua</code></h3>
+<ul>
+<li><strong>役割:</strong> システムの中核。目標情報の展開、座標変換、EKF による追跡、データアソシエーション、目標管理、敵対判定、最終的な座標出力を行う。</li>
+<li><strong>入力:</strong>
+<ul>
+<li>数値 1-12: RadarList1 からの出力 (<code>pack1</code>, <code>pack2</code> x 6 目標)</li>
+<li>数値 13-24: RadarList2 からの出力 (<code>pack1</code>, <code>pack2</code> x 6 目標)</li>
+<li>数値 25-30: 物理センサーデータ (X, Y, Z, Pitch, Yaw, Roll) - RadarList 経由または直接接続</li>
+<li>数値 31: RadarList1 からの遅延フラグ (<code>isDelayed1</code>)</li>
+<li>数値 32: RadarList2 からの遅延フラグ (<code>isDelayed2</code>)</li>
+</ul>
+</li>
+<li><strong>データ展開 (<code>unpackTargetData</code> 関数):</strong>
+<ul>
+<li>入力された <code>pack1</code>, <code>pack2</code> をデコードし、距離(m)、ローカル方位角(rad)、ローカル仰角(rad)、レーダー ID(0-3) を復元する。</li>
+<li><code>PackandFilterRefactor.lua</code> の <code>packTargetData</code> 関数に対応した 7 桁数値の構造を解析する。</li>
+</ul>
+</li>
+<li><strong>座標変換 (<code>localToGlobalCoords</code> 関数):</strong>
+<ul>
+<li>レーダー基準のローカル極座標（入力）をローカル直交座標 (<code>locX</code>, <code>locY</code>, <code>locZ</code>) に変換。</li>
+<li><code>radarId</code> に基づき <strong>ヨー回転</strong> を行い、車両前方基準のローカル座標に変換 (<code>vehLocVec_rotated</code>)。
+<ul>
+<li>ID 0: 回転なし</li>
+<li>ID 1: +90 度 ($PI/2$) 回転</li>
+<li>ID 2: +180 度 ($PI$) 回転</li>
+<li>ID 3: -90 度 ($-PI/2$) 回転</li>
+</ul>
+</li>
+<li>レーダー設置位置の Y 軸オフセット $2.5 / (rId + 1)$ を追加。</li>
+<li>車両の姿勢 (<code>pitch</code>, <code>yaw</code>, <code>roll</code>) に基づき <strong>クォータニオン回転</strong> (<code>eulerZYX_to_quaternion</code>, <code>rotateVectorByQuaternion</code>) を適用し、グローバルな<strong>相対ベクトル</strong>を得る (<code>globalRelativeVector</code>)。オイラー角の回転順序は ZYX (Roll, Yaw, Pitch)。</li>
+<li>物理センサーのグローバル座標 (<code>physicsSensorData.x</code>, <code>.y</code>, <code>.z</code>) を加算し、最終的な目標のグローバル座標 (Physics Sensor 座標系: X=東, Y=上, Z=北) を得る (<code>gX</code>, <code>gY</code>, <code>gZ</code>)。</li>
+</ul>
+</li>
+<li><strong>EKF (<code>extendedKalmanFilterUpdate</code> 関数):</strong>
+<ul>
+<li><strong>状態ベクトル X:</strong> $[x, v_x, y, v_y, z, v_z]^T$ (グローバル位置・速度、計 6 状態)。</li>
+<li><strong>予測ステップ:</strong>
+<ul>
+<li>状態遷移行列 $F$ を作成 (等速直線運動モデル)。</li>
+<li>状態 $X$ を予測: $X_{predicted} = F \times X_{current}$。</li>
+<li><strong>プロセスノイズ共分散行列 Q</strong> を計算:
+<ul>
+<li>基本となる $Q_{base}$ を $dt$ (時間差) から計算。</li>
+<li>適応的係数 <code>adaptiveFactor</code> を、前回の誤差 $\epsilon_{last}$ とプロパティ (<code>P_BASE</code>, <code>P_ADPT</code>, <code>P_NOISE_EPS_THRS</code>, <code>P_NOISE_EPS_SLOPE</code>) を用いて計算。</li>
+<li>$Q_{adapted} = adaptiveFactor \times Q_{base}$。</li>
+</ul>
+</li>
+<li>誤差共分散 $P$ を予測: $P_{predicted} = uncertaintyFactor \times (F \times P_{current} \times F^T) + Q_{adapted}$。</li>
+<li><code>uncertaintyIncreaseFactor</code> は プロパティ <code>PRED_UNCERTAINTY_FACT</code> を用いて $PRED_UNCERTAINTY_FACT ^ {(2 \times dt_ticks)}$ で計算。</li>
+</ul>
+</li>
+<li><strong>更新ステップ:</strong>
+<ul>
+<li>観測値 $Z$ (<code>distance</code>, <code>globalElevation</code>, <code>globalAzimuth</code>) を用意。</li>
+<li>観測ヤコビ行列 $H$ と観測予測値 $h$ を <code>getObservationJacobianAndPrediction</code> 関数で計算。</li>
+<li><strong>観測ノイズ共分散行列 R</strong> を計算: テンプレート <code>OBSERVATION_NOISE_MATRIX_TEMPLATE</code> を基に、距離の分散 $R[1][1]$ を $distance^2$ でスケール。</li>
+<li>イノベーション (観測残差) $Y$ を計算: $Y = Z - h$。角度差は <code>CalculateAngleDifference</code> (atan2 相当) を使用して正規化。</li>
+<li>カルマンゲイン $K$ を計算: $K = P_{predicted} \times H^T \times S^{-1}$ ここで $S = H \times P_{predicted} \times H^T + R$。</li>
+<li>状態 $X$ を更新: $X_{updated} = X_{predicted} + K \times Y$。</li>
+<li>共分散 $P$ を更新: $P_{updated} = (I - K \times H) \times P_{predicted} \times (I - K \times H)^T + K \times R \times K^T$ (Joseph form)。</li>
+<li>誤差指標 $\epsilon$ を計算: $\epsilon = Y^T \times S^{-1} \times Y$。</li>
+</ul>
+</li>
+<li><strong><code>dt</code> (時間差) 計算:</strong>
+<ul>
+<li><code>kalmanfilter.lua</code> 内部の <code>currentTick</code> カウンターを使用。</li>
+<li>各観測データについて、入力された遅延フラグ (<code>isDelayed1</code> or <code>isDelayed2</code>) を確認。</li>
+<li>観測データの真の発生 Tick を推定: <code>observationTick = isDelayed and (currentTick - 1) or currentTick</code>。</li>
+<li>EKF で使用する時間差 (秒) を計算: <code>dt_ticks = observation.obsTick - currentTarget.lastTick</code> (前回更新 Tick からの差)、<code>dt_sec = dt_ticks / 60.0</code>。</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><strong>データアソシエーション:</strong>
+<ul>
+<li>既存の各追跡目標 (<code>targetList</code>) に対して、全ての新規観測データ (<code>currentObservations</code>) で EKF 更新を <strong>試算</strong>。</li>
+<li>更新時の誤差指標 $\epsilon$ が最小で、かつプロパティ <code>D_ASOC</code> 以下の観測データを、その目標に対応するものとして割り当てる (<strong>最近傍法</strong>)。</li>
+</ul>
+</li>
+<li><strong>目標管理:</strong>
+<ul>
+<li><strong>新規登録:</strong> どの既存目標にも割り当てられなかった観測データを新規目標として登録。
+<ul>
+<li>内部 ID (<code>internalId</code>) を付与。出力 ID (<code>outputId</code>) は <code>nil</code> で初期化。</li>
+<li>初期状態: 位置は観測時のグローバル座標、速度はゼロ。</li>
+<li>初期誤差共分散 <code>P_init</code> は、位置の分散を観測ノイズから、速度の分散を <code>INITIAL_VELOCITY_VARIANCE</code> から設定。</li>
+</ul>
+</li>
+<li><strong>削除:</strong>
+<ul>
+<li>一定時間 (プロパティ <code>T_OUT</code>) 更新されなかった目標。</li>
+<li>または、自機から離反している (接近速度 <code>closingSpeed</code> &lt; プロパティ <code>TGT_LVING</code>) と判定された目標をリストから削除。</li>
+<li>削除時に割り当てられていた <code>outputId</code> を解放 (<code>releaseOutputId</code>)。</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><strong>敵対判定 (<code>checkHostileCondition</code>, <code>calculateClosingSpeed</code>):</strong>
+<ul>
+<li>目標ごとに <code>identification_count</code> (EKF 更新成功回数) と <code>recent_closing_speeds</code> (直近の接近速度リスト) を記録。</li>
+<li>接近速度は <code>calculateClosingSpeed</code> 関数で、相対位置ベクトルと目標速度ベクトルの内積から計算。</li>
+<li><code>identification_count</code> が プロパティ <code>IDENTI_THRS</code> 以上、<strong>かつ</strong>、直近 プロパティ <code>TGT_RECENT_UPDATE</code> 回の <code>closingSpeed</code> がすべて プロパティ <code>TGT_CLOSING_SPD</code> を超えている場合に、<code>target.is_hostile</code> フラグを <code>true</code> に設定。</li>
+</ul>
+</li>
+<li><strong>出力 ID 管理 (<code>assignOutputId</code>, <code>releaseOutputId</code>):</strong>
+<ul>
+<li><code>target.is_hostile</code> が <code>true</code> になった目標に対して、空いている出力 ID (1 ～ <code>MAX_TRACKED_TARGETS</code> (デフォルト 10)) を割り当てる (<code>assignOutputId</code>)。</li>
+<li><code>target.is_hostile</code> が <code>false</code> になった、または目標が削除される場合に、割り当てられていた出力 ID を解放する (<code>releaseOutputId</code>)。</li>
+</ul>
+</li>
+<li><strong>出力:</strong>
+<ul>
+<li><strong>Output ID が割り当てられている</strong> 追跡中の各目標について、現在の <code>currentTick</code> における <strong>予測位置</strong> (X, Y, Z) を計算 (<code>target.X[1][1] + target.X[2][1] * dt_pred_sec</code>, etc.)。</li>
+<li>対応する <strong>Output ID に基づく固定チャンネル</strong> に座標を出力。
+<ul>
+<li>目標 Output ID $i$ の座標はチャンネル $(i-1) \times 3 + 1$ (X), $(i-1) \times 3 + 2$ (Y), $(i-1) \times 3 + 3$ (Z) に出力。</li>
+</ul>
+</li>
+<li>出力は最大 <code>MAX_TRACKED_TARGETS</code> (デフォルト 10) 目標まで。</li>
+<li>オンオフ出力チャンネル 1 ～ <code>MAX_TRACKED_TARGETS</code> に、対応する Output ID の目標が <strong>その Tick で更新されたかどうか</strong> を示すフラグ (<code>target.isUpdated</code>) を出力。</li>
+</ul>
+</li>
+</ul>
+<h2 id="5-%E5%BA%A7%E6%A8%99%E7%B3%BB">5. 座標系</h2>
+<ul>
+<li><strong>レーダーローカル:</strong> 各レーダーの正面方向を基準とする極座標および直交座標。</li>
+<li><strong>車両ローカル:</strong> 車両の前方を基準とする直交座標 (+X:右, +Y:上, +Z:前)。<code>localToGlobalCoords</code> 内で一時的に使用。</li>
+<li><strong>グローバル:</strong> Stormworks の <strong>Physics Sensor 座標系</strong> (<strong>左手系</strong>: +X:東, +Y:上, +Z:北) を基準とする。最終出力はこの座標系。</li>
+</ul>
+<h2 id="6-%E4%B8%BB%E8%A6%81%E3%83%91%E3%83%A9%E3%83%A1%E3%83%BC%E3%82%BF%E3%83%BB%E8%A8%AD%E5%AE%9A%E9%A0%85%E7%9B%AE">6. 主要パラメータ・設定項目</h2>
+<ul>
+<li><strong><code>PackandFilterRefactor.lua</code>:</strong>
+<ul>
+<li><code>RADAR_ID</code>: 0, 1, 2, 3 のいずれかを手動設定。</li>
+<li>プロパティ <code>n</code>: フィルター期間 (tick)。</li>
+<li>プロパティ <code>Min Dist</code>: 最小探知距離 (m)。</li>
+</ul>
+</li>
+<li><strong><code>PackandFilterRefactorHighElevation.lua</code>:</strong>
+<ul>
+<li>上記に加え、<code>FRONT_OFFSET</code>, <code>HEIGHT_OFFSET</code> 定数。</li>
+</ul>
+</li>
+<li><strong><code>RadarListRefactorv2.lua</code>:</strong>
+<ul>
+<li><code>MAX_INPUT_TARGETS_PER_SOURCE</code>: 各入力ソースからの最大目標数 (8)。</li>
+<li><code>MAX_OUTPUT_TARGETS</code>: 出力する最大目標数 (6)。</li>
+</ul>
+</li>
+<li><strong><code>KalmanFilterRefactor.lua</code>:</strong>
+<ul>
+<li>(コード内定数) <code>MAX_TRACKED_TARGETS</code>: 最大追跡・出力目標数 (デフォルト 10)。</li>
+<li>プロパティ <code>D_ASOC</code>: データアソシエーション閾値 ($\epsilon$)。</li>
+<li>プロパティ <code>T_OUT</code>: 目標タイムアウト tick 数。</li>
+<li>プロパティ <code>TGT_LVING</code>: 目標離反判定の接近速度閾値 (m/s)。</li>
+<li>(コード内定数) <code>INITIAL_VELOCITY_VARIANCE</code>: 新規目標の初期速度分散 ($m^2/s^2$)。</li>
+<li>(コード内定数) <code>OBSERVATION_NOISE_MATRIX_TEMPLATE</code>: 観測ノイズの基本設定 (R0 係数含む)。</li>
+<li>プロパティ <code>P_BASE</code>: プロセスノイズの基本係数。</li>
+<li>プロパティ <code>P_ADPT</code>: プロセスノイズの適応的スケーリング係数。</li>
+<li>プロパティ <code>P_NOISE_EPS_THRS</code>: プロセスノイズ適応調整の $\epsilon$ 閾値。</li>
+<li>プロパティ <code>P_NOISE_EPS_SLOPE</code>: プロセスノイズ適応調整の $\epsilon$ 傾き。</li>
+<li>プロパティ <code>PRED_UNCERTAINTY_FACT</code>: 予測不確かさ増加係数の底。</li>
+<li>プロパティ <code>IDENTI_THRS</code>: 敵対判定に必要な同定成功回数。</li>
+<li>プロパティ <code>TGT_CLOSING_SPD</code>: 敵対判定の接近速度閾値 (m/s)。</li>
+<li>プロパティ <code>TGT_RECENT_UPDATE</code>: 敵対判定に必要な閾値超えの連続更新回数。</li>
+</ul>
+</li>
+</ul>
+<h2 id="7-%E9%96%A2%E9%80%A3%E3%82%B7%E3%82%B9%E3%83%86%E3%83%A0-%E5%8F%82%E8%80%83">7. 関連システム (参考)</h2>
+<p>以下のスクリプトは、本レーダーシステムからの出力を利用する火器管制システム (FCS) の一部と考えられます。これらの仕様は本ドキュメントの範囲外ですが、連携のために存在を記載します。</p>
+<ul>
+<li><strong><code>PackRefactor.lua</code> (MissileFCS):</strong>
+<ul>
+<li><code>KalmanFilterRefactor.lua</code> から出力される敵対目標座標 (Output ID ベース) を入力。</li>
+<li>共有バスを通じて他の FCS と連携し、担当目標を選択・ロックオン。</li>
+<li>発射トリガーとミサイル信号強度を監視し、発射信号とデータリンク座標を出力。担当目標管理は Output ID ベース。</li>
+</ul>
+</li>
+<li><strong><code>VLSFCS.lua</code>:</strong>
+<ul>
+<li>垂直発射システム (VLS) 用の FCS。</li>
+<li><code>KalmanFilterRefactor.lua</code> の出力を受け取る。</li>
+<li>ハッチ制御、発射タイミング調整、共有バスによる競合チェック (前の FCS の状態や担当重複を確認) などのロジックを含む。</li>
+</ul>
+</li>
+</ul>
+<h2 id="8-%E6%9B%B4%E6%96%B0%E5%B1%A5%E6%AD%B4%E3%81%AB%E5%9F%BA%E3%81%A5%E3%81%8F%E5%A4%89%E6%9B%B4%E7%82%B9">8. 更新履歴に基づく変更点</h2>
+<ul>
+<li>ハードウェア構成を水平 4 基+高仰角 4 基に修正、レーダー初期設定、探知間隔のプロパティ化を追記。</li>
+<li>マイクロコントローラー構成を更新 (<code>PackandFilterHighElevation.lua</code> x4, <code>RadarListRefactorv2.lua</code> x2)。</li>
+<li>Physics Sensor の使用箇所に関する注記を修正。</li>
+<li><code>PackandFilterRefactor.lua</code> のフィルタリングロジックを、レーダーの探知更新タイミング (ch4==0) に基づく範囲中間値計算に修正。データ圧縮方式を 7 桁数値エンコード方式に更新。探知間隔 <code>n</code> のプロパティ化を反映。</li>
+<li><code>PackandFilterRefactorHighElevation.lua</code> を追加。上向きレーダー用の座標変換処理を含む。</li>
+<li><code>RadarListRefactorv2.lua</code> を使用するように更新。入力チャンネル仕様を修正。遅延出力機能と遅延フラグ (ch31/32) を反映。</li>
+<li><code>KalmanFilterRefactor.lua</code> を大幅更新:
+<ul>
+<li>データ展開 (<code>unpackTargetData</code>) を 7 桁数値に対応。</li>
+<li>座標変換 (<code>localToGlobalCoords</code>) にクォータニオン回転を導入。レーダー設置オフセットを追加。</li>
+<li>EKF の $dt$ 計算で遅延フラグを考慮。</li>
+<li>EKF のプロセスノイズ $Q$ に適応的調整を導入。予測誤差共分散 $P$ の計算式を更新。</li>
+<li>EKF の更新ステップで角度差の正規化を導入。誤差共分散 $P$ の更新に Joseph form を使用。</li>
+<li>敵対判定ロジック (<code>checkHostileCondition</code>, <code>calculateClosingSpeed</code>) を追加。</li>
+<li>Output ID の割り当てと解放ロジック (<code>assignOutputId</code>, <code>releaseOutputId</code>) を追加。</li>
+<li>出力を Output ID ベースの固定チャンネルに変更。更新フラグ (on/off ch 1-10) を追加。</li>
+</ul>
+</li>
+<li>関連システム (<code>PackRefactor.lua</code>, <code>VLSFCS.lua</code>) の記述を更新し、Output ID ベースの連携を反映。</li>
+<li>全体的にパラメータ名をプロパティ取得に変更し、設定の柔軟性を向上。</li>
+</ul>
+<h2 id="9-%E8%AA%B2%E9%A1%8C">9. 課題</h2>
+<ul>
+<li>データアソシエーションは最近傍法であり、目標が交差する場合などに誤割り当てが発生する可能性がある。</li>
+<li>高仰角レーダーや VLSFCS など、特定の構成要素に関する詳細な仕様統合が必要な場合がある。</li>
+<li>目標の敵判定を、こちらに向かってきているかどうかも含めて考える必要がある可能性が高い。</li>
+</ul>
+
+</body>
+</html>

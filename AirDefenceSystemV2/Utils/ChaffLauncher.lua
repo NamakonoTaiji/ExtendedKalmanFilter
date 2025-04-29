@@ -39,14 +39,15 @@ function onTick()
             }
             local distanceSquared = (targetP.x - ownP.x) ^ 2 + (targetP.y - ownP.y) ^ 2 + (targetP.z - ownP.z) ^ 2
             --debug.log("detectedEnemy..distance = " .. tostring(math.sqrt(distanceSquared)))
-            -- 距離が閾値以内ならチャフフラグを立てる
+            -- 距離が閾値以内ならチャフ放出フラグを立てる
             if (distanceSquared < CHAFF_DEPLOY_TARGET_DISTANCE ^ 2) then
                 --debug.log("isChaffDeploy")
                 isChaffDeploy = true
             end
         end
     end
-    if (isChaffDeploy or (chaffIntervalTimer ~= 0)) and (chaffIntervalTimer < CHAFF_DEPLOY_INTERVAL_TIME) then
+    -- チャフ放出フラグがあるかタイマーが有効の時はカウントを進める
+    if (isChaffDeploy or chaffIntervalTimer ~= 0) and (chaffIntervalTimer < CHAFF_DEPLOY_INTERVAL_TIME) then
         chaffIntervalTimer = chaffIntervalTimer + 1
         --debug.log("chaffIntervalTimer = " .. chaffIntervalTimer)
     else

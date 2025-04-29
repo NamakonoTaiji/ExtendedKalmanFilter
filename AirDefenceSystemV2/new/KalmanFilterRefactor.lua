@@ -51,10 +51,10 @@ outputBool = output.setBool
 -- 定数 (文字数削減のため定数はローカル宣言を削除)
 PI = math.pi
 PI2 = PI * 2
-MAX_INPUT_TARGETS_RL1 = 6 -- RadarList1からの最大目標数
-MAX_INPUT_TARGETS_RL2 = 6 -- RadarList2からの最大目標数
-MAX_TRACKED_TARGETS = 10  -- 同時に追跡・出力できる最大目標数
-
+MAX_INPUT_TARGETS_RL1 = 6                                     -- RadarList1からの最大目標数
+MAX_INPUT_TARGETS_RL2 = 6                                     -- RadarList2からの最大目標数
+MAX_TRACKED_TARGETS = 10                                      -- 同時に追跡・出力できる最大目標数
+LOGIC_DELAY = 8 + property.getNumber("n")                     -- 暫定ロジック遅延 1ステップ前のデータが送られてくるので探知間隔も足す必要があるかもしれない。
 -- EKF パラメータ
 NUM_STATES = 6                                                -- 状態変数の数 (x, vx, y, vy, z, vz)
 DATA_ASSOCIATION_THRESHOLD = property.getNumber("D_ASOC")     -- データアソシエーションの閾値 (epsilon)
@@ -85,61 +85,75 @@ HOSTILE_IDENTIFICATION_THRESHOLD = property.getNumber("IDENTI_THRS")       -- �
 HOSTILE_CLOSING_SPEED_THRESHOLD = property.getNumber("TGT_CLOSING_SPD")    -- 接近速度の閾値 (m/s) - 必要に応じて調整してください
 HOSTILE_RECENT_UPDATES_THRESHOLD = property.getNumber("TGT_RECENT_UPDATE") -- 閾値超えを要求する直近の更新回数
 
+
+
 -- 単位行列 I (6x6)
-local identityMatrix6x6 = { { 1, 0, 0, 0, 0, 0 }, { 0, 1, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0 }, { 0, 0, 0, 1, 0, 0 }, { 0, 0, 0, 0, 1, 0 }, { 0, 0, 0, 0, 0, 1 } }
+identityMatrix6x6 = { { 1, 0, 0, 0, 0, 0 }, { 0, 1, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0 }, { 0, 0, 0, 1, 0, 0 }, { 0, 0, 0, 0, 1, 0 }, { 0, 0, 0, 0, 0, 1 } }
 
 -- グローバル変数 (状態保持)
-local targetList = {}                                                           -- 追跡中の目標リスト { id, lastTick, X=stateVector, P=covarianceMatrix, epsilon=lastEpsilon }
-local physicsSensorData = { x = 0, y = 0, z = 0, pitch = 0, yaw = 0, roll = 0 } -- 自機情報
-local currentTick = 0                                                           -- このスクリプト内でのTickカウンター
-local nextInternalId = 1                                                        -- これは増え続ける内部ID
-local assignedOutputIds = {}                                                    -- 使用中のOutput IDを管理するセット (例: assignedOutputIds[3] = true なら ID 3 は使用中)
+targetList = {}                                                           -- 追跡中の目標リスト { id, lastTick, X=stateVector, P=covarianceMatrix, epsilon=lastEpsilon }
+physicsSensorData = { x = 0, y = 0, z = 0, pitch = 0, yaw = 0, roll = 0 } -- 自機情報
+currentTick = 0                                                           -- このスクリプト内でのTickカウンター
+nextInternalId = 1                                                        -- これは増え続ける内部ID
+assignedOutputIds = {}                                                    -- 使用中のOutput IDを管理するセット (例: assignedOutputIds[3] = true なら ID 3 は使用中)
 
 --------------------------------------------------------------------------------
 -- 行列演算ヘルパー関数 (ゼロ行列、コピー、スカラー倍、加算、減算、乗算、転置、逆行列)
 --------------------------------------------------------------------------------
 -- zeros(rows, cols)
 function zeros(rows, cols)
-    local m = {}; for r = 1, rows do
-        m[r] = {}; for c = 1, cols do m[r][c] = 0 end
+    local m = {}
+    for r = 1, rows do
+        m[r] = {}
+        for c = 1, cols do m[r][c] = 0 end
     end
     return m
 end
 
 -- MatrixCopy(M)
 function MatrixCopy(M)
-    local N = {}; for r, row in ipairs(M) do N[r] = { table.unpack(row) } end
+    local N = {}
+    for r, row in ipairs(M) do N[r] = { table.unpack(row) } end
     return N
 end
 
 -- scalar(s, M)
 function scalar(s, M)
-    local R = zeros(#M, #M[1]); for r = 1, #M do for c = 1, #M[1] do R[r][c] = M[r][c] * s end end
+    local R = zeros(#M, #M[1])
+    for r = 1, #M do for c = 1, #M[1] do R[r][c] = M[r][c] * s end end
     return R
 end
 
 -- sum(A, B)
 function sum(A, B)
-    local R = zeros(#A, #A[1]); for r = 1, #A do for c = 1, #A[1] do R[r][c] = A[r][c] + B[r][c] end end
+    local R = zeros(#A, #A[1])
+    for r = 1, #A do for c = 1, #A[1] do R[r][c] = A[r][c] + B[r][c] end end
     return R
 end
 
 -- sub(A, B)
 function sub(A, B)
-    local R = zeros(#A, #A[1]); for r = 1, #A do for c = 1, #A[1] do R[r][c] = A[r][c] - B[r][c] end end
+    local R = zeros(#A, #A[1])
+    for r = 1, #A do for c = 1, #A[1] do R[r][c] = A[r][c] - B[r][c] end end
     return R
 end
 
 -- mul(...) - 可変長引数対応
 function mul(...)
-    local mats = { ... }; local A = mats[1]; local R; for i = 2, #mats do
-        local B = mats[i]; if #A[1] ~= #B then
+    local mats, A, R, B, sVal
+    mats = { ... }
+    A = mats[1]
+    for i = 2, #mats do
+        B = mats[i]
+        if #A[1] ~= #B then
             -- debug.log("Error: Matrix mul dim mismatch")
             return nil
         end
-        R = zeros(#A, #B[1]); for r = 1, #A do
+        R = zeros(#A, #B[1])
+        for r = 1, #A do
             for c = 1, #B[1] do
-                local sVal = 0; for k = 1, #B do sVal = sVal + A[r][k] * B[k][c] end
+                sVal = 0
+                for k = 1, #B do sVal = sVal + A[r][k] * B[k][c] end
                 R[r][c] = sVal
             end
         end
@@ -150,44 +164,59 @@ end
 
 -- T(M) - 転置
 function T(M)
-    local rows = #M; local cols = #M[1]; local R = zeros(cols, rows); for r = 1, rows do
+    local rows, cols, R
+    rows = #M
+    cols = #M[1]
+    R = zeros(cols, rows)
+    for r = 1, rows do
         for c = 1, cols do
-            R[c][r] = M
-                [r][c]
+            R[c][r] = M[r][c]
         end
     end
     return R
 end
 
 function inv(M)
-    if M == nil or #M == 0 or #M[1] == 0 then return nil end; local n = #M; if n ~= #M[1] then return nil end -- 基本チェック
-    local aug = {}; for r = 1, n do
-        aug[r] = {}; if M[r] == nil then return nil end; for c = 1, n do
-            local v = M[r][c]; if v == nil or v ~= v or v == math.huge or v == -math.huge then return nil end; aug[r][c] =
-                v
+    if M == nil or #M == 0 or #M[1] == 0 then return nil end
+    local n = #M
+    if n ~= #M[1] then return nil end -- 基本チェック
+    local aug = {}
+    for r = 1, n do
+        aug[r] = {}
+        if M[r] == nil then return nil end
+        for c = 1, n do
+            local v = M[r][c]
+            if v == nil or v ~= v or v == math.huge or v == -math.huge then return nil end
+            aug[r][c] = v
         end
         for c = 1, n do aug[r][n + c] = (r == c) and 1 or 0 end
-    end                                                                                   -- 入力チェック
+    end -- 入力チェック
     for r = 1, n do
-        local piv = aug[r][r]; if piv == nil or math.abs(piv) < 1e-12 then return nil end -- ピボットチェック
+        local piv = aug[r][r]
+        if piv == nil or math.abs(piv) < 1e-12 then return nil end -- ピボットチェック
         for c = r, 2 * n do
-            if aug[r][c] == nil then return nil end; aug[r][c] = aug[r][c] / piv
+            if aug[r][c] == nil then return nil end
+            aug[r][c] = aug[r][c] / piv
         end -- 除算前 nil チェック
         for i = 1, n do
             if i ~= r then
-                local f = aug[i][r]; if f == nil then return nil end; for c = r, 2 * n do
-                    if aug[i][c] == nil or aug[r][c] == nil then return nil end; aug[i][c] = aug[i][c] - f * aug[r][c]
+                local f = aug[i][r]
+                if f == nil then return nil end
+                for c = r, 2 * n do
+                    if aug[i][c] == nil or aug[r][c] == nil then return nil end
+                    aug[i][c] = aug[i][c] - f * aug[r][c]
                 end
             end
         end
     end
-    local invM = zeros(n, n); for r = 1, n do
+    local invM = zeros(n, n)
+    for r = 1, n do
         for c = 1, n do
-            local v = aug[r][n + c]; if v == nil or v ~= v or v == math.huge or v == -math.huge then
+            local v = aug[r][n + c]
+            if v == nil or v ~= v or v == math.huge or v == -math.huge then
                 invM[r][c] = 0
             else
-                invM[r][c] =
-                    v
+                invM[r][c] = v
             end
         end
     end -- 結果チェック
@@ -204,24 +233,25 @@ function unpackTargetData(pack1, pack2)
     if pack1 == 0 and pack2 == 0 then
         return 0, 0, 0, -1
     end
+    local distance, azimuthRad, elevationRad, radarId, signList, i, j, radarIdMap, s, absPack1, absPack2, pack1Str, pack2Str, aziSignCodeRaw, e_str, distPart1
+    local eleSignCodeRaw, f_str, distPart2, aziSignIndex, eleSignIndex, aziFraction, eleFraction, aziSignValue, eleSignValue
 
-    local distance, azimuthRad, elevationRad, radarId
-    local signList = { [1] = -1, [2] = 1 } -- Index 1 -> 符号 -1, Index 2 -> 符号 +1
+    signList = { [1] = -1, [2] = 1 } -- Index 1 -> 符号 -1, Index 2 -> 符号 +1
 
     -- 1. レーダーIDのデコード (変更なし)
-    local i = (pack1 > 0) and 2 or 1
-    local j = (pack2 > 0) and 2 or 1
-    local radarIdMap = { { 1, 2 }, { 3, 4 } }
-    local s = radarIdMap[i][j]
+    i = (pack1 > 0) and 2 or 1
+    j = (pack2 > 0) and 2 or 1
+    radarIdMap = { { 1, 2 }, { 3, 4 } }
+    s = radarIdMap[i][j]
     radarId = s - 1
 
     -- 2. 絶対値を取得
-    local absPack1 = math.abs(pack1)
-    local absPack2 = math.abs(pack2)
+    absPack1 = math.abs(pack1)
+    absPack2 = math.abs(pack2)
 
     -- 3. 絶対値を直接文字列に変換し、その後で文字列としてゼロ埋め
-    local pack1Str = string.format("%.0f", absPack1) -- まず整数文字列に
-    local pack2Str = string.format("%.0f", absPack2)
+    pack1Str = string.format("%.0f", absPack1) -- まず整数文字列に
+    pack2Str = string.format("%.0f", absPack2)
 
     -- 文字列として右寄せゼロパディングで7桁を保証する
     -- string.format("%07d", tonumber(pack1Str)) よりも安全
@@ -229,29 +259,29 @@ function unpackTargetData(pack1, pack2)
     pack2Str = string.format("%7s", pack2Str):gsub(" ", "0")
 
     -- 4. 各パーツを抽出 (ここからは変更なし)
-    local aziSignCodeRaw = tonumber(string.sub(pack1Str, 1, 1)) -- 1桁目: 符号コード
-    local e_str = string.sub(pack1Str, 2, 5)                    -- 2-5桁目: 方位角小数部4桁
-    local distPart1 = string.sub(pack1Str, 6, 7)                -- 6-7桁目: 距離前半2桁
+    aziSignCodeRaw = tonumber(string.sub(pack1Str, 1, 1)) -- 1桁目: 符号コード
+    e_str = string.sub(pack1Str, 2, 5)                    -- 2-5桁目: 方位角小数部4桁
+    distPart1 = string.sub(pack1Str, 6, 7)                -- 6-7桁目: 距離前半2桁
 
-    local eleSignCodeRaw = tonumber(string.sub(pack2Str, 1, 1)) -- 1桁目: 符号コード
-    local f_str = string.sub(pack2Str, 2, 5)                    -- 2-5桁目: 仰角小数部4桁
-    local distPart2 = string.sub(pack2Str, 6, 7)                -- 6-7桁目: 距離後半/中央2桁
+    eleSignCodeRaw = tonumber(string.sub(pack2Str, 1, 1)) -- 1桁目: 符号コード
+    f_str = string.sub(pack2Str, 2, 5)                    -- 2-5桁目: 仰角小数部4桁
+    distPart2 = string.sub(pack2Str, 6, 7)                -- 6-7桁目: 距離後半/中央2桁
     -- 5. 符号インデックスの決定 (不正値対応)
-    local aziSignIndex = (aziSignCodeRaw == 1 or aziSignCodeRaw == 2) and aziSignCodeRaw
-    local eleSignIndex = (eleSignCodeRaw == 1 or eleSignCodeRaw == 2) and eleSignCodeRaw
+    aziSignIndex = (aziSignCodeRaw == 1 or aziSignCodeRaw == 2) and aziSignCodeRaw
+    eleSignIndex = (eleSignCodeRaw == 1 or eleSignCodeRaw == 2) and eleSignCodeRaw
 
     -- 6. 距離を復元
     distance = tonumber(distPart1 .. distPart2)
     if distance == nil then distance = 0 end
 
     -- 7. 角度を復元 (ラジアン単位)
-    local aziFraction = tonumber("0." .. e_str)
-    local eleFraction = tonumber("0." .. f_str)
+    aziFraction = tonumber("0." .. e_str)
+    eleFraction = tonumber("0." .. f_str)
     if aziFraction == nil then aziFraction = 0 end
     if eleFraction == nil then eleFraction = 0 end
 
-    local aziSignValue = signList[aziSignIndex]
-    local eleSignValue = signList[eleSignIndex]
+    aziSignValue = signList[aziSignIndex]
+    eleSignValue = signList[eleSignIndex]
 
     azimuthRad = aziFraction * aziSignValue * PI2
     elevationRad = eleFraction * eleSignValue * PI2
@@ -268,17 +298,19 @@ end
 -- 入力: target (目標テーブル), ownPos (自機位置テーブル {x,y,z})
 -- 出力: closingSpeed (スカラー値, m/s)
 function calculateClosingSpeed(target, ownPos)
+    local relativePosX, relativePosY, relativePosZ, targetVx, targetVy, targetVz, relativePosMagSq, relativePosMag, closingSpeed
     if not target or not target.X then return 0 end -- 安全チェック
-    local relativePosX = target.X[1][1] - ownPos.x
-    local relativePosY = target.X[3][1] - ownPos.y
-    local relativePosZ = target.X[5][1] - ownPos.z
-    local targetVx = target.X[2][1]; local targetVy = target.X[4][1]; local targetVz = target.X[6][1];
-    local relativePosMagSq = relativePosX ^ 2 + relativePosY ^ 2 + relativePosZ ^ 2
+    relativePosX = target.X[1][1] - ownPos.x
+    relativePosY = target.X[3][1] - ownPos.y
+    relativePosZ = target.X[5][1] - ownPos.z
+    targetVx = target.X[2][1]
+    targetVy = target.X[4][1]
+    targetVz = target.X[6][1]
+    relativePosMagSq = relativePosX ^ 2 + relativePosY ^ 2 + relativePosZ ^ 2
 
-    local relativePosMag = math.sqrt(relativePosMagSq);
+    relativePosMag = math.sqrt(relativePosMagSq)
     -- 接近速度 = -(相対位置ベクトル・目標速度ベクトル) / 相対距離
-    local closingSpeed = -(relativePosX * targetVx + relativePosY * targetVy + relativePosZ * targetVz) /
-        relativePosMag
+    closingSpeed = -(relativePosX * targetVx + relativePosY * targetVy + relativePosZ * targetVz) / relativePosMag
     return closingSpeed
 end
 
@@ -338,13 +370,14 @@ end
 -- 二つのクォータニオン q_a = {w, x, y, z}, q_b = {w, x, y, z} の積を計算する関数
 -- q_result = q_a * q_b
 function multiplyQuaternions(q_a, q_b)
-    local w1, x1, y1, z1 = q_a[1], q_a[2], q_a[3], q_a[4]
-    local w2, x2, y2, z2 = q_b[1], q_b[2], q_b[3], q_b[4]
+    local w1, x1, y1, z1, w2, x2, y2, z2, w_result, x_result, y_result, z_result
+    w1, x1, y1, z1 = q_a[1], q_a[2], q_a[3], q_a[4]
+    w2, x2, y2, z2 = q_b[1], q_b[2], q_b[3], q_b[4]
 
-    local w_result = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
-    local x_result = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
-    local y_result = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
-    local z_result = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    w_result = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x_result = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y_result = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z_result = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
 
     return { w_result, x_result, y_result, z_result }
 end
@@ -352,24 +385,25 @@ end
 -- ZYXオイラー角 (Roll: phi, Yaw: psi, Pitch: theta) からクォータニオン q = (w, x, y, z) を計算する関数
 -- 入力角度はラジアン単位
 function eulerZYX_to_quaternion(roll, yaw, pitch)
+    local half_roll, half_yaw, half_pitch, cr, sr, cy, sy, cp, sp, w, x, y, z
     -- オイラー角の半分を計算
-    local half_roll = roll * 0.5
-    local half_yaw = yaw * 0.5
-    local half_pitch = pitch * 0.5
+    half_roll = roll * 0.5
+    half_yaw = yaw * 0.5
+    half_pitch = pitch * 0.5
 
     -- 角度の半分のcosとsinを事前計算
-    local cr = math.cos(half_roll)
-    local sr = math.sin(half_roll)
-    local cy = math.cos(half_yaw)
-    local sy = math.sin(half_yaw)
-    local cp = math.cos(half_pitch)
-    local sp = math.sin(half_pitch)
+    cr = math.cos(half_roll)
+    sr = math.sin(half_roll)
+    cy = math.cos(half_yaw)
+    sy = math.sin(half_yaw)
+    cp = math.cos(half_pitch)
+    sp = math.sin(half_pitch)
 
     -- クォータニオンの成分を計算
-    local w = cr * cy * cp + sr * sy * sp
-    local x = cr * cy * sp - sr * sy * cp -- X成分
-    local y = cr * sy * cp + sr * cy * sp -- Y成分
-    local z = sr * cy * cp - cr * sy * sp -- Z成分
+    w = cr * cy * cp + sr * sy * sp
+    x = cr * cy * sp - sr * sy * cp -- X成分
+    y = cr * sy * cp + sr * cy * sp -- Y成分
+    z = sr * cy * cp - cr * sy * sp -- Z成分
 
     -- クォータニオンをテーブルとして返す (wが最初の要素)
     -- または {x=x, y=y, z=z, w=w} のような形式でも良い
@@ -378,20 +412,21 @@ end
 
 -- ベクトル v = {x, y, z} をクォータニオン q = {w, x, y, z} で回転させる関数 (標準版: p' = q p q*)
 function rotateVectorByQuaternion(vector, quaternion)
+    local px, py, pz, p, q, q_conj, p_prime
     -- ベクトルを純粋クォータニオン p = (0, vx, vy, vz) に変換
-    local px = vector[1] or vector.x or 0
-    local py = vector[2] or vector.y or 0
-    local pz = vector[3] or vector.z or 0
-    local p = { 0, px, py, pz }
+    px = vector[1] or vector.x or 0
+    py = vector[2] or vector.y or 0
+    pz = vector[3] or vector.z or 0
+    p = { 0, px, py, pz }
 
     -- 回転クォータニオン q
-    local q = quaternion
+    q = quaternion
 
     -- 回転クォータニオンの共役 q* = (w, -x, -y, -z) を計算
-    local q_conj = { q[1], -q[2], -q[3], -q[4] }
+    q_conj = { q[1], -q[2], -q[3], -q[4] }
 
     -- p' = q * p * q* を計算 (標準的な順序)
-    local p_prime = multiplyQuaternions(multiplyQuaternions(q, p), q_conj) -- ★ 標準の掛け算順序
+    p_prime = multiplyQuaternions(multiplyQuaternions(q, p), q_conj) -- ★ 標準の掛け算順序
 
     -- p' のベクトル部 {x, y, z} を回転後のベクトルとして返す
     return { p_prime[2], p_prime[3], p_prime[4] }
@@ -432,29 +467,34 @@ localToGlobalCoords: レーダーのローカル極座標をグローバル直�
 出力は Physics Sensor グローバル座標系 (X:東, Y:上, Z:北)
 ]]
 function localToGlobalCoords(dist, locAzi, locEle, rId, ownP)
+    local locX, locY, locZ, radarLocVec, rYOff, cy, sy, RotY, gX, gY, gZ, vehLocVec_rotated, rotation_quaternion, globalRelativeVector
     -- 1. レーダー基準ローカル直交座標
-    local locX = dist * math.cos(locEle) * math.sin(locAzi); local locY = dist * math.sin(locEle); local locZ = dist *
-        math.cos(locEle) * math.cos(locAzi);
-    local radarLocVec = { { locX }, { locY }, { locZ } };
+    locX = dist * math.cos(locEle) * math.sin(locAzi)
+    locY = dist * math.sin(locEle)
+    locZ = dist * math.cos(locEle) * math.cos(locAzi)
+    radarLocVec = { { locX }, { locY }, { locZ } }
     -- 2. ヨー回転適用 -> 車両前方基準ローカル座標へ
-    local rYOff = 0; if rId == 1 then rYOff = PI / 2 elseif rId == 2 then rYOff = PI elseif rId == 3 then rYOff = -PI / 2 end
-    local vehLocVec_rotated = radarLocVec -- ID 0 は回転不要
+    rYOff = 0
+    if rId == 1 then rYOff = PI / 2 elseif rId == 2 then rYOff = PI elseif rId == 3 then rYOff = -PI / 2 end
+    vehLocVec_rotated = radarLocVec -- ID 0 は回転不要
     if rYOff ~= 0 then
-        local cy = math.cos(rYOff); local sy = math.sin(rYOff); local RotY = { { cy, 0, sy }, { 0, 1, 0 }, { -sy, 0, cy } };
-        vehLocVec_rotated = mul(RotY, radarLocVec);
+        cy = math.cos(rYOff)
+        sy = math.sin(rYOff)
+        RotY = { { cy, 0, sy }, { 0, 1, 0 }, { -sy, 0, cy } }
+        vehLocVec_rotated = mul(RotY, radarLocVec)
     end
 
     vehLocVec_rotated[2][1] = vehLocVec_rotated[2][1] + 2.5 / (rId + 1) -- レーダーのY軸オフセット
     -- 5. 車両姿勢で回転 -> グローバルな相対ベクトルへ
     -- 2. オイラー角から回転クォータニオンを生成
-    local vehLocVec_rotated = { vehLocVec_rotated[1][1], vehLocVec_rotated[2][1], vehLocVec_rotated[3][1] }
-    local rotation_quaternion = eulerZYX_to_quaternion(ownP.roll, ownP.yaw, ownP.pitch)
-    local globalRelativeVector = rotateVectorByQuaternion(vehLocVec_rotated, rotation_quaternion)
-    --local globalRelativeVector = rotateVectorZYX(vehLocVec_rotated, ownP.pitch, ownP.yaw, ownP.roll);
+    vehLocVec_rotated = { vehLocVec_rotated[1][1], vehLocVec_rotated[2][1], vehLocVec_rotated[3][1] }
+    rotation_quaternion = eulerZYX_to_quaternion(ownP.roll, ownP.yaw, ownP.pitch)
+    globalRelativeVector = rotateVectorByQuaternion(vehLocVec_rotated, rotation_quaternion)
 
     -- 6. 物理センサーのグローバル位置を加算 -> 最終的な目標グローバル座標
-    local gX = globalRelativeVector[1] + ownP.x; local gY = globalRelativeVector[2] + ownP.y; local gZ =
-        globalRelativeVector[3] + ownP.z;
+    gX = globalRelativeVector[1] + ownP.x
+    gY = globalRelativeVector[2] + ownP.y
+    gZ = globalRelativeVector[3] + ownP.z
     return gX, gY, gZ
 end
 
@@ -468,30 +508,40 @@ getObservationJacobianAndPrediction: 観測予測値 h とヤコビ行列 H を�
 出力: H (3x6), h (3x1 {dist, ele, azi})
 ]]
 function getObservationJacobianAndPrediction(stateVector, ownPosition)
-    local targetX = stateVector[1][1]; local targetY = stateVector[3][1]; local targetZ = stateVector[5][1]
-    local relativeX = targetX - ownPosition.x
-    local relativeY = targetY - ownPosition.y -- Physics Sensor Y は Up
-    local relativeZ = targetZ - ownPosition.z -- Physics Sensor Z は North
+    local targetrX, targetrY, targetrZ, targetX, targetY, targetZ, relativeX, relativeY, relativeZ, r_sq, rh_sq, r, rh
+    local predictedDistance, predictedElevation, predictedAzimuth, H, h
+    targetX = stateVector[1][1]
+    targetY = stateVector[3][1]
+    targetZ = stateVector[5][1]
+    relativeX = targetX - ownPosition.x
+    relativeY = targetY - ownPosition.y -- Physics Sensor Y は Up
+    relativeZ = targetZ - ownPosition.z -- Physics Sensor Z は North
 
-    local r_sq = relativeX ^ 2 + relativeY ^ 2 + relativeZ ^ 2
-    local rh_sq = relativeX ^ 2 + relativeZ ^ 2 -- XZ平面 (East-North)
+    r_sq = relativeX ^ 2 + relativeY ^ 2 + relativeZ ^ 2
+    rh_sq = relativeX ^ 2 + relativeZ ^ 2 -- XZ平面 (East-North)
     if r_sq < 1e-9 then r_sq = 1e-9 end
     if rh_sq < 1e-9 then rh_sq = 1e-9 end
-    local r = math.sqrt(r_sq)
-    local rh = math.sqrt(rh_sq)
+    r = math.sqrt(r_sq)
+    rh = math.sqrt(rh_sq)
 
     -- 1. 観測予測値 h = [距離, 仰角(Y基準), 方位角(Z基準)]
-    local predictedDistance = r
-    local predictedElevation = math.asin(math.max(-1.0, math.min(1.0, relativeY / r)))
-    local predictedAzimuth = math.atan(relativeX, relativeZ)
-    local h = { { predictedDistance }, { predictedElevation }, { predictedAzimuth } }
+    predictedDistance = r
+    predictedElevation = math.asin(math.max(-1.0, math.min(1.0, relativeY / r)))
+    predictedAzimuth = math.atan(relativeX, relativeZ)
+    h = { { predictedDistance }, { predictedElevation }, { predictedAzimuth } }
 
     -- 2. 観測ヤコビ行列 H = dh/dX (3x6)
-    local H = zeros(3, NUM_STATES)
-    H[1][1] = relativeX / r; H[1][3] = relativeY / r; H[1][5] = relativeZ / r
-    H[2][1] = (-relativeX * relativeY) / (rh_sq * r); H[2][3] = rh / r_sq; H[2][5] = (-relativeZ * relativeY) /
+    H = zeros(3, NUM_STATES)
+    H[1][1] = relativeX / r
+    H[1][3] = relativeY / r
+    H[1][5] = relativeZ / r
+    H[2][1] = (-relativeX * relativeY) / (rh_sq * r)
+    H[2][3] = rh / r_sq
+    H[2][5] = (-relativeZ * relativeY) /
         (rh_sq * r)
-    H[3][1] = relativeZ / rh_sq; H[3][3] = 0; H[3][5] = -relativeX / rh_sq
+    H[3][1] = relativeZ / rh_sq
+    H[3][3] = 0
+    H[3][5] = -relativeX / rh_sq
     -- 速度項の偏微分はゼロ (H[row][2,4,6] = 0)
 
     return H, h
@@ -505,42 +555,48 @@ function extendedKalmanFilterUpdate(stateVector, covariance, observation, ownPos
         return (set - current + PI * 3) % PI2 - PI
     end
 
-    -- 1. 予測ステップ (Predict)
-    local F = MatrixCopy(identityMatrix6x6)
-    F[1][2] = dt; F[3][4] = dt; F[5][6] = dt
-    local X_predicted = mul(F, stateVector)
+    local F, X_predicted, P_predicted, Z, H, h, R, Y, S, S_inv, K, X_updated, P_updated, epsilon, dt2, dt3, dt4, Q_base, Q_adapted, uncertaintyIncreaseFactor, adaptiveFactor, I_minus_KH
 
-    local dt2 = dt * dt; local dt3 = dt2 * dt / 2; local dt4 = dt3 * dt / 2;
-    local Q_base = { { dt4, dt3, 0, 0, 0, 0 }, { dt3, dt2, 0, 0, 0, 0 }, { 0, 0, dt4, dt3, 0, 0 },
+    -- 1. 予測ステップ (Predict)
+    F = MatrixCopy(identityMatrix6x6)
+    F[1][2] = dt
+    F[3][4] = dt
+    F[5][6] = dt
+    X_predicted = mul(F, stateVector)
+
+    dt2 = dt * dt
+    dt3 = dt2 * dt / 2
+    dt4 = dt3 * dt / 2
+    Q_base = { { dt4, dt3, 0, 0, 0, 0 }, { dt3, dt2, 0, 0, 0, 0 }, { 0, 0, dt4, dt3, 0, 0 },
         { 0,   0,   dt3, dt2, 0, 0 }, { 0, 0, 0, 0, dt4, dt3 }, { 0, 0, 0, 0, dt3, dt2 } }
-    local adaptiveFactor = PROCESS_NOISE_BASE +
+    adaptiveFactor = PROCESS_NOISE_BASE +
         PROCESS_NOISE_ADAPTIVE_SCALE /
         (1 + math.exp(-(lastEpsilon - PROCESS_NOISE_EPSILON_THRESHOLD) * PROCESS_NOISE_EPSILON_SLOPE))
-    local Q_adapted = scalar(adaptiveFactor, Q_base)
+    Q_adapted = scalar(adaptiveFactor, Q_base)
 
-    local uncertaintyIncreaseFactor = PREDICTION_UNCERTAINTY_FACTOR_BASE ^ (2 * (dt * 60)) -- tick数換算で計算
-    local P_predicted = sum(scalar(uncertaintyIncreaseFactor, mul(F, covariance, T(F))), Q_adapted)
+    uncertaintyIncreaseFactor = PREDICTION_UNCERTAINTY_FACTOR_BASE ^ (2 * (dt * 60)) -- tick数換算で計算
+    P_predicted = sum(scalar(uncertaintyIncreaseFactor, mul(F, covariance, T(F))), Q_adapted)
 
     -- 2. 更新ステップ (Update)
-    local Z = { { observation.distance }, { observation.elevation }, { observation.azimuth } }
+    Z = { { observation.distance }, { observation.elevation }, { observation.azimuth } }
 
-    local H, h = getObservationJacobianAndPrediction(X_predicted, ownPosition)
-    local R = MatrixCopy(OBSERVATION_NOISE_MATRIX_TEMPLATE)
+    H, h = getObservationJacobianAndPrediction(X_predicted, ownPosition)
+    R = MatrixCopy(OBSERVATION_NOISE_MATRIX_TEMPLATE)
     R[1][1] = R[1][1] * (observation.distance ^ 2)       -- 距離の2乗に比例
-    local Y = zeros(3, 1)
+    Y = zeros(3, 1)
     Y[1][1] = Z[1][1] - h[1][1]                          -- 距離はそのまま引き算
     -- CalculateAngleDifference(予測角度, 観測角度) で角度差を計算
     Y[2][1] = CalculateAngleDifference(h[2][1], Z[2][1]) -- 仰角の差 (正規化済み)
     Y[3][1] = CalculateAngleDifference(h[3][1], Z[3][1]) -- 方位角の差 (正規化済み)
 
-    local S = sum(mul(H, P_predicted, T(H)), R)
-    local S_inv = inv(S)
+    S = sum(mul(H, P_predicted, T(H)), R)
+    S_inv = inv(S)
     if S_inv == nil then return stateVector, covariance, lastEpsilon end -- 逆行列計算失敗
-    local K = mul(P_predicted, T(H), S_inv)
-    local X_updated = sum(X_predicted, mul(K, Y))
-    local I_minus_KH = sub(identityMatrix6x6, mul(K, H))
-    local P_updated = sum(mul(I_minus_KH, P_predicted, T(I_minus_KH)), mul(K, R, T(K)))
-    local epsilon = mul(T(Y), S_inv, Y)[1][1]
+    K = mul(P_predicted, T(H), S_inv)
+    X_updated = sum(X_predicted, mul(K, Y))
+    I_minus_KH = sub(identityMatrix6x6, mul(K, H))
+    P_updated = sum(mul(I_minus_KH, P_predicted, T(I_minus_KH)), mul(K, R, T(K)))
+    epsilon = mul(T(Y), S_inv, Y)[1][1]
     return X_updated, P_updated, epsilon
 end
 
@@ -610,6 +666,7 @@ end
 -- メインループ: onTick
 --------------------------------------------------------------------------------
 function onTick()
+    local isDelayed1, isDelayed2
     for internalId, target in pairs(targetList) do
         target.isUpdated = false
     end
@@ -622,31 +679,31 @@ function onTick()
     physicsSensorData.pitch = inputNumber(28)
     physicsSensorData.yaw = inputNumber(29)
     physicsSensorData.roll = inputNumber(30)
-    local isDelayed1 = (inputNumber(31) == 1) -- RadarList1 (ID 0, 2) 遅延フラグ
-    local isDelayed2 = (inputNumber(32) == 1) -- RadarList2 (ID 1, 3) 遅延フラグ
+    isDelayed1 = (inputNumber(31) == 1) -- RadarList1 (ID 0, 2) 遅延フラグ
+    isDelayed2 = (inputNumber(32) == 1) -- RadarList2 (ID 1, 3) 遅延フラグ
 
-    local currentObservations = {}            -- このtickで有効な観測データリスト
+    local currentObservations = {}      -- このtickで有効な観測データリスト
 
     -- 2. 入力データ読み込み、展開、変換、Tick情報付与
     if (inputNumber(1) ~= 0 or inputNumber(13) ~= 0) then
         for i = 1, MAX_INPUT_TARGETS_RL1 + MAX_INPUT_TARGETS_RL2 do
-            local isDelayed
+            local isDelayed, pack1, pack2, dist, localAziRad, localEleRad, rId, gX, gY, gZ, globalElevation, globalAzimuth, observationTick
             if i > MAX_INPUT_TARGETS_RL1 then
                 isDelayed = isDelayed2
             else
                 isDelayed = isDelayed1
             end
-            local pack1 = inputNumber(i * 2 - 1)
-            local pack2 = inputNumber(i * 2)
+            pack1 = inputNumber(i * 2 - 1)
+            pack2 = inputNumber(i * 2)
 
             if pack1 ~= 0 or pack2 ~= 0 then
-                local dist, localAziRad, localEleRad, rId = unpackTargetData(pack1, pack2)
+                dist, localAziRad, localEleRad, rId = unpackTargetData(pack1, pack2)
                 if rId ~= -1 and dist > 0 then
-                    local gX, gY, gZ = localToGlobalCoords(dist, localAziRad, localEleRad, rId, physicsSensorData)
-                    local globalElevation = math.asin((gY - physicsSensorData.y) / dist)
-                    local globalAzimuth = math.atan(gX - physicsSensorData.x, gZ - physicsSensorData.z)
+                    gX, gY, gZ = localToGlobalCoords(dist, localAziRad, localEleRad, rId, physicsSensorData)
+                    globalElevation = math.asin((gY - physicsSensorData.y) / dist)
+                    globalAzimuth = math.atan(gX - physicsSensorData.x, gZ - physicsSensorData.z)
                     -- 観測Tickを決定 (遅延フラグを考慮)
-                    local observationTick = isDelayed and (currentTick - 1) or currentTick
+                    observationTick = isDelayed and (currentTick - 1) or currentTick
                     table.insert(currentObservations, {
                         distance = dist,
                         azimuth = globalAzimuth,
@@ -665,17 +722,19 @@ function onTick()
     local assignedObservationIndices = {} -- Keeps track of which observation was assigned
     if #currentObservations > 0 then
         for internalId, currentTarget in pairs(targetList) do
-            local bestMatchObsIndex = -1
-            local minEpsilon = DATA_ASSOCIATION_THRESHOLD + 1
-            local matchedState, matchedCovariance, matchedEpsilon, matchedObsTick
+            local bestMatchObsIndex, bestMatchObsIndex, minEpsilon, matchedState, matchedCovariance, matchedEpsilon, matchedObsTick
+            local observation, dt_ticks, dt_sec, X_post, P_post, epsilon, currentClosingSpeed
+
+            bestMatchObsIndex = -1
+            minEpsilon = DATA_ASSOCIATION_THRESHOLD + 1
 
             for j = 1, #currentObservations do
                 if not assignedObservationIndices[j] then
-                    local observation = currentObservations[j]
-                    local dt_ticks = observation.obsTick - currentTarget.lastTick
+                    observation = currentObservations[j]
+                    dt_ticks = observation.obsTick - currentTarget.lastTick
                     if dt_ticks > 0 then
-                        local dt_sec = dt_ticks / 60.0
-                        local X_post, P_post, epsilon = extendedKalmanFilterUpdate(currentTarget.X, currentTarget.P,
+                        dt_sec = dt_ticks / 60.0
+                        X_post, P_post, epsilon = extendedKalmanFilterUpdate(currentTarget.X, currentTarget.P,
                             observation, physicsSensorData, dt_sec, currentTarget.epsilon)
                         if epsilon < minEpsilon then
                             minEpsilon = epsilon
@@ -701,7 +760,7 @@ function onTick()
                 targetList[internalId].identification_count = targetList[internalId].identification_count + 1
                 targetList[internalId].isUpdated = true
                 -- 接近速度を計算して記録
-                local currentClosingSpeed = calculateClosingSpeed(targetList[internalId], physicsSensorData)
+                currentClosingSpeed = calculateClosingSpeed(targetList[internalId], physicsSensorData)
                 table.insert(targetList[internalId].recent_closing_speeds, currentClosingSpeed)
                 -- リストが指定サイズを超えたら古いものを削除
                 if #targetList[internalId].recent_closing_speeds > HOSTILE_RECENT_UPDATES_THRESHOLD then
@@ -717,9 +776,10 @@ function onTick()
     -- ★ 4. 目標リスト更新ループ (Output ID 管理と削除判定) ★
     local targetIdsToDelete = {}
     for internalId, target in pairs(targetList) do
+        local isHostileNow, ticksSinceLastUpdate, isTimeout, closingSpeed, isLeaving
         -- 4.1 敵対判定実行 & Output ID 管理
         checkHostileCondition(target) -- target.is_hostile が更新される可能性
-        local isHostileNow = target.is_hostile
+        isHostileNow = target.is_hostile
 
         if isHostileNow then
             -- 敵対状態なら Output ID 割り当てを試行 (すでに持っていれば assignOutputId は何もしない)
@@ -730,11 +790,10 @@ function onTick()
         end
 
         -- 4.2 タイムアウト・離反判定
-        local ticksSinceLastUpdate = currentTick - target.lastTick
-        local isTimeout = ticksSinceLastUpdate >= TARGET_TIMEOUT_TICKS
-        local closingSpeed = calculateClosingSpeed(target, physicsSensorData)
-        local isLeaving = (closingSpeed < TARGET_IS_LEAVING_THRESHOLD)
-
+        ticksSinceLastUpdate = currentTick - target.lastTick
+        isTimeout = ticksSinceLastUpdate >= TARGET_TIMEOUT_TICKS
+        closingSpeed = calculateClosingSpeed(target, physicsSensorData)
+        isLeaving = (closingSpeed < TARGET_IS_LEAVING_THRESHOLD)
         if isTimeout or isLeaving then
             table.insert(targetIdsToDelete, internalId)
             -- ★ 削除対象になったら Output ID を解放
@@ -753,14 +812,15 @@ function onTick()
     -- 5. 新規目標の登録
     for j = 1, #currentObservations do
         if not assignedObservationIndices[j] then -- 観測が既存のターゲットに割り当てられていない場合
+            local newObs, X_init, P_init, init_pos_var_factor, pos_var_ele, pos_var_azi, newInternalId
             local newObs = currentObservations[j]
             -- 状態ベクトル(X)と共分散行列(P)の初期化
-            local X_init = { { newObs.globalX }, { 0 }, { newObs.globalY }, { 0 }, { newObs.globalZ }, { 0 } }
-            local P_init = zeros(NUM_STATES, NUM_STATES)
-            local init_pos_var_factor = 10
-            -- local pos_var_dist = OBSERVATION_NOISE_MATRIX_TEMPLATE[1][1] * init_pos_var_factor * (newObs.distance ^ 2)
-            local pos_var_ele = OBSERVATION_NOISE_MATRIX_TEMPLATE[2][2] * init_pos_var_factor
-            local pos_var_azi = OBSERVATION_NOISE_MATRIX_TEMPLATE[3][3] * init_pos_var_factor
+            X_init = { { newObs.globalX }, { 0 }, { newObs.globalY }, { 0 }, { newObs.globalZ }, { 0 } }
+            P_init = zeros(NUM_STATES, NUM_STATES)
+            init_pos_var_factor = 10
+            -- pos_var_dist = OBSERVATION_NOISE_MATRIX_TEMPLATE[1][1] * init_pos_var_factor * (newObs.distance ^ 2)
+            pos_var_ele = OBSERVATION_NOISE_MATRIX_TEMPLATE[2][2] * init_pos_var_factor
+            pos_var_azi = OBSERVATION_NOISE_MATRIX_TEMPLATE[3][3] * init_pos_var_factor
             -- 単純化された初期位置の分散 - より良い方法が存在するが、より複雑な計算を必要とする
             P_init[1][1] = pos_var_azi -- プレースホルダーの分散割り当て
             P_init[3][3] = pos_var_ele
@@ -770,7 +830,7 @@ function onTick()
             P_init[6][6] = INITIAL_VELOCITY_VARIANCE
 
             -- targetListに新しいターゲット・エントリーを作成する
-            local newInternalId = nextInternalId
+            newInternalId = nextInternalId
             targetList[newInternalId] = {
                 internalId = newInternalId, -- 内部IDを保存する
                 outputId = nil,             -- ★ 出力IDはnilから始まる
@@ -801,9 +861,9 @@ function onTick()
     for internalId, target in pairs(targetList) do
         -- ★ ターゲットに出力IDが割り当てられているかチェックする
         if target and target.outputId ~= nil then
+            local predX, predY, predZ, dt_pred_sec, baseChannel
             -- Calculate predicted position for the current tick
-            local predX, predY, predZ
-            local dt_pred_sec = (currentTick - target.lastTick) / 60.0
+            dt_pred_sec = (currentTick - target.lastTick + LOGIC_DELAY) / 60 -- ロジック遅延を考慮して先読みさせる
             -- Ensure dt is non-negative; if target just updated, dt is 0
             dt_pred_sec = math.max(0, dt_pred_sec)
 
@@ -812,7 +872,7 @@ function onTick()
             predZ = target.X[5][1] + target.X[6][1] * dt_pred_sec
 
             -- Calculate the base channel using the Output ID
-            local baseChannel = (target.outputId - 1) * 3
+            baseChannel = (target.outputId - 1) * 3
             -- Check if baseChannel is within limits (sanity check)
             if baseChannel + 3 <= MAX_TRACKED_TARGETS * 3 then
                 -- Output predicted coordinates to the fixed channels
