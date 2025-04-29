@@ -26,6 +26,7 @@
 - オンオフ 1: 発射信号 (Fire) - 1Tick ON
 - オンオフ 2: 状態表示フラグ (Searching以外 ON)
 - オンオフ 3: VLSハッチ制御信号
+- オンオフ 4: データリンク有効フラグ(tracking状態かつデータリンク更新あり)
 - オンオフ 11-20: 共有バス(出力) - 目標担当フラグ (自分含む)
 - オンオフ 21: このFCS Searching フラグ
 - オンオフ 22: このFCS Locked/Opening フラグ
@@ -222,7 +223,7 @@ function onTick()
                         canFire = true
                     end
                     --debug.log("triggerDelayed : " .. tostring(isTriggerDelayed))
-                    -- 発射実行 (通常 または 高速)
+                    -- 発射実行
                     if canFire and inputBool(assignedOutputId) then
                         --debug.log("Fire!")
                         outputBool(1, true)
@@ -314,6 +315,6 @@ function onTick()
     -- 4.3 状態表示フラグ - searching 以外で ON
     local isActiveState = (lockOnStatus ~= "searching")
     outputBool(2, isActiveState)
-
+    outputBool(4, inputBool(assignedOutputId) and lockOnStatus == "tracking")
     -- (データリンク、ハッチは処理済み)
 end

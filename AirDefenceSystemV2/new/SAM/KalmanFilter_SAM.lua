@@ -12,6 +12,7 @@ KalmanFilter_SAM.lua (v0.3 - 新コーディングルール適用: nilチェッ�
 - フィルター結果の出力はデバッグ用に行う。
 
 入力 (コンポジット信号):
+- オンオフ1: データリンク要求フラグ(追跡中の目標と有効なデータリンクがかけ離れている場合に受信する)
 - 数値 1-4: レーダー目標1 (距離, 方位角(回転単位), 仰角(回転単位), 経過時間)
 - 数値 5-8: レーダー目標2 ...
 - ...
@@ -26,6 +27,9 @@ KalmanFilter_SAM.lua (v0.3 - 新コーディングルール適用: nilチェッ�
 - 数値 27: データリンク目標座標 Y
 - 数値 28: データリンク目標座標 Z
 - 数値 29: 別のLuaブロックで計算したデータリンク目標との距離 ^ 2
+- 数値 30: 自機X軸速度(パススルー)
+- 数値 31: 自機Y軸速度(パススルー)
+- 数値 32: 自機Z軸速度(パススルー)
 
 出力 (コンポジット信号 - デバッグ用):
 - オンオフ 1: トラッキング成功フラグ (isTracking)
@@ -52,18 +56,18 @@ MAX_RADAR_TARGETS = 6 -- 処理するレーダー目標の最大数
 NUM_STATES = 6        -- EKF状態数 (x, vx, y, vy, z, vz)
 
 -- EKF パラメータ (プロパティから読み込む想定)
-DATA_ASSOCIATION_EPSILON_THRESHOLD = property.getNumber("D_ASOC_EPS") -- データアソシエーションのε閾値
-TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")            -- 目標ロスト判定のTick数 (約2秒)
-INIT_MAX_DISTANCE = property.getNumber("INIT_MAX_DIST")               -- 初期化時のデータリンク座標との最大許容距離(m)
-PROCESS_NOISE_BASE = property.getNumber("P_BASE")
-PROCESS_NOISE_ADAPTIVE_SCALE = property.getNumber("P_ADPT")
-PROCESS_NOISE_EPSILON_THRESHOLD = property.getNumber("P_NOISE_EPS_THRS")
-PROCESS_NOISE_EPSILON_SLOPE = property.getNumber("P_NOISE_EPS_SLOPE")
-PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT")
+DATA_ASSOCIATION_EPSILON_THRESHOLD = property.getNumber("D_ASOC_EPS")            -- データアソシエーションのε閾値
+TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")                       -- 目標ロスト判定のTick数 (約2秒)
+INIT_MAX_DISTANCE = property.getNumber("INIT_MAX_DIST")                          -- 初期化時のデータリンク座標との最大許容距離(m)
+PROCESS_NOISE_BASE = property.getNumber("P_BASE")                                -- プロセスノイズの大きさを調整
+PROCESS_NOISE_ADAPTIVE_SCALE = property.getNumber("P_ADPT")                      --プロセスノイズの適応的調整。観測と予測の差が大きいほどプロセスノイズが増える。
+PROCESS_NOISE_EPSILON_THRESHOLD = property.getNumber("P_NOISE_EPS_THRS")         -- P_ADPTによるスケーリングを開始するεの閾値。εがこれを超えると適応的調整が入り始める。
+PROCESS_NOISE_EPSILON_SLOPE = property.getNumber("P_NOISE_EPS_SLOPE")            -- プロセスノイズ適応調整のε傾き。これが大きいほどプロセスノイズの増加が急になる。
+PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") -- 観測が無い間に予測の信頼を下げる係数。値が大きいほど観測がない間に予測を信頼しなくなる。
 RADAR_EFFECTIVE_RANGE_SQ = (property.getNumber("RadarEffectiveRange") - 100) ^ 2 -- 確実に目標をとらえるために閾値を100mマイナス
 LOGIC_DELAY = property.getNumber("LOGIC_DELAY")
-R0_DIST_VAR_FACTOR = (0.02 ^ 2) / 12
-R0_ANGLE_VAR = ((2e-3 * PI2) ^ 2) / 12
+R0_DIST_VAR_FACTOR = 3.3333                                                      --(0.02 ^ 2) / 12(文字数対策のため直接計算)
+R0_ANGLE_VAR = 1.3159                                                            --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
 OBSERVATION_NOISE_MATRIX_TEMPLATE = { { R0_DIST_VAR_FACTOR, 0, 0 }, { 0, R0_ANGLE_VAR, 0 }, { 0, 0, R0_ANGLE_VAR } }
 INITIAL_VELOCITY_VARIANCE = (100 ^ 2)
 
@@ -465,7 +469,7 @@ function extendedKalmanFilterUpdate(currentTarget, observation, ownPosition)
     -- 関数冒頭でローカル変数を宣言
     local covariance, lastEpsilon, dt_sec, F, X_predicted, dt2, dt3, dt4, Q_base, adaptiveFactor, Q_adapted
     local uncertaintyIncreaseFactor, P_pred_term1, P_predicted, Z, H, h, R_matrix, Y, S_term1, S, S_inv, K_term1, K, KY_term, X_updated
-    local KH_term, I_minus_KH, P_up_term1, P_up_term2, P_updated, epsilon, epsilon_matrix
+    local KH_term, I_minus_KH, P_up_term1, P_up_term2, P_updated, epsilon, epsilon_matrix, stateVector
     -- nilチェックは原則削除
     stateVector = currentTarget.X
     covariance = currentTarget.P
@@ -603,23 +607,19 @@ end
 --------------------------------------------------------------------------------
 function onTick()
     -- 関数冒頭でローカル変数を宣言
-    local ownGlobalPos, ownPitch, ownYaw, ownRoll, ownOrientation, dataLinkTargetGlobal, isDataLinkValid, currentObservations, isRadarDetecting
-    local baseChannel, dist, localAziRot, localEleRot, localAziRad, localEleRad, localX, localY, localZ, targetLocalPosVec, targetGlobal
-    local relativeGlobalVec, distCheck, globalElevation, globalAzimuth, associatedObservation, minInitDistSq, bestInitObs, dx, dy, dz, distSq
-    local minEpsilon, bestMatchObsIndex, tempState, tempCovar, dt_pred_sec, F_pred, X_assoc_pred
-    local epsilon_try, success_try, X_up, P_up, eps_up, success_update, ticksSinceLastSeen, predictedX, dataLinkTargetDistanceSq, isRadarEffectiveRange
+    local distSq, success_try, X_up, P_up, eps_up, success_update, ticksSinceLastSeen, predictedX, dataLinkTargetDistanceSq, isRadarEffectiveRange, isDataLinkInitRequired, minEpsilon, bestMatchObsIndex, tempState, tempCovar, dt_pred_sec, F_pred, X_assoc_pred, epsilon_try, relativeGlobalVec, distCheck, globalElevation, globalAzimuth, associatedObservation, minInitDistSq, bestInitObs, dx, dy, dz, distSqownGlobalPos, ownEuler, ownVector, ownOrientation, dataLinkTargetGlobal, isDataLinkValid, currentObservations, isRadarDetecting, baseChannel, dist, localAziRad, localEleRad, localX, localY, localZ, targetLocalPosVec, targetGlobal
 
     currentTick = currentTick + 1
     isTracking = false -- Tick開始時にリセット
 
     -- 1. 入力読み込み
+    isDataLinkInitRequired = input.getBool(1)
     -- 自機情報 (試験用)
     ownGlobalPos = { x = input.getNumber(8), y = input.getNumber(12), z = input.getNumber(16) }
-    ownPitch = input.getNumber(20)
-    ownYaw = input.getNumber(24)
-    ownRoll = input.getNumber(25)
+    ownEuler = { Pitch = input.getNumber(20), Yaw = input.getNumber(24), Roll = input.getNumber(25) }
+    ownVector = { input.getNumber(30), input.getNumber(31), input.getNumber(32) }
     -- 自機姿勢をクォータニオンに変換
-    ownOrientation = eulerZYX_to_quaternion(ownRoll, ownYaw, ownPitch)
+    ownOrientation = eulerZYX_to_quaternion(ownEuler.Roll, ownEuler.Yaw, ownEuler.Pitch)
     -- nilチェックは原則削除 (エラー発生時は単位クォータニオンで代替)
     if ownOrientation == nil then ownOrientation = { 1, 0, 0, 0 } end
 
@@ -641,12 +641,9 @@ function onTick()
             dist = input.getNumber(baseChannel) -- 距離
             if dist > 0 then
                 isRadarDetecting = true
-                localAziRot = input.getNumber(baseChannel + 1) -- 方位角(回転単位)
-                localEleRot = input.getNumber(baseChannel + 2) -- 仰角(回転単位)
+                localAziRad = input.getNumber(baseChannel + 1) * PI2 -- 方位角(回転単位)
+                localEleRad = input.getNumber(baseChannel + 2) * PI2 -- 仰角(回転単位)
                 -- 経過時間は読み飛ばす (baseChannel + 3)
-
-                localAziRad = localAziRot * PI2
-                localEleRad = localEleRot * PI2
 
                 -- ローカル極座標からローカル直交座標へ
                 localX = dist * math.cos(localEleRad) * math.sin(localAziRad)
@@ -687,8 +684,8 @@ function onTick()
     associatedObservation = nil -- このTickで trackedTarget に紐付けられた観測
 
     if isRadarDetecting and #currentObservations > 0 then
-        if trackedTarget == nil then
-            -- === トラックが存在しない場合: データリンク座標に最も近い観測で初期化 ===
+        if trackedTarget == nil or isDataLinkInitRequired then
+            -- === トラックが存在しない場合、もしくはデータリンクを要求された時: データリンク座標に最も近い観測で初期化 ===
             if isDataLinkValid then
                 minInitDistSq = INIT_MAX_DISTANCE ^ 2 -- 初期化時の最大許容距離(m)^2
                 bestInitObs = nil
