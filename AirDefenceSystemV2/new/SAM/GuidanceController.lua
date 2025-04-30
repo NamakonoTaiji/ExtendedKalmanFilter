@@ -55,12 +55,24 @@ SIMPLE_TRACK_GAIN = property.getNumber("SimpleTrackGain") or 1.0
 PROXIMITY_DISTANCE = property.getNumber("ProximityDistance") or 5.0
 MAX_CONTROL = property.getNumber("MaxControl") or 1.0
 PN_GUIDANCE_EPSILON_THRESHOLD = property.getNumber("PN_GUIDANCE_EPSILON_THRESHOLD")
-LOGIC_DELAY = property.getNumber("LOGIC_DELAY") + 1
+LOGIC_DELAY = 5
 -- グローバル変数 (状態保持用)
--- (このシンプルな例では不要かもしれないが、必要に応じて追加)
+local oldDataLinkPosVec = { 0, 0, 0 }
 
 
 -- ヘルパー関数群
+function vectorNormalize(v)
+    local mag, x, y, z = vectorMagnitude(v)
+    if mag < 1e-9 then
+        return { 0, 0, 0 }
+    else
+        x = v[1] or v.x or 0
+        y = v[2] or v.y or 0
+        z = v[3] or v.z or 0
+        return { x / mag, y / mag, z / mag }
+    end
+end
+
 function vectorMagnitude(v)
     local x, y, z
     x = v[1] or v.x or 0
@@ -217,7 +229,7 @@ function onTick()
     local targetPosX, targetPosY, targetPosZ, targetVelX, targetVelY, dataLinkX, dataLinkY, dataLinkZ, dataLinkTargetPosVec, targetVelZ, targetEpsilon, isTracking
     local ownPosX, ownPosY, ownPosZ, ownVelX, ownVelY, ownVelZ, ownPitch, ownYaw, ownRoll
     local ownOrientation, ownPosVec, ownVelVec, targetPosVec, targetVelVec
-    local pitchControl, yawControl, proximityFuseTrigger
+    local pitchControl, yawControl, proximityFuseTrigger, dataLinkVelVec
     local R_vec, V_vec, R_mag, Vc, LOS_Rate_vector, Accel_cmd_global, Accel_cmd_local
     local targetLocal, horizontalDistance, currentLocalAzimuth, currentLocalElevation
 
@@ -251,6 +263,10 @@ function onTick()
     ownPosVec = { ownPosX, ownPosY, ownPosZ }
     targetPosVec = { targetPosX, targetPosY, targetPosZ }
     targetVelVec = { targetVelX, targetVelY, targetVelZ }
+    dataLinkVelVec = { 60 * (dataLinkTargetPosVec[1] - oldDataLinkPosVec[1]),
+        60 * (dataLinkTargetPosVec[2] - oldDataLinkPosVec[2]),
+        60 * (dataLinkTargetPosVec[3] - oldDataLinkPosVec[3]) }
+    oldDataLinkPosVec = dataLinkTargetPosVec
 
     -- ↓↓↓ 修正箇所 ↓↓↓
     local ownVelLocalX = input.getNumber(16)                            -- ローカル速度X読み取り
@@ -277,38 +293,37 @@ function onTick()
         R_vec = vectorSub(targetPosVec, ownPosVec)
         V_vec = vectorSub(targetVelVec, ownVelVec)
         R_mag = vectorMagnitude(R_vec)
-        debug.log("R_vecX: " ..
-            tostring(R_vec[1]) .. ", R_vecY: " .. tostring(R_vec[2]) .. ", R_vecZ: " .. tostring(R_vec[3]))
-        debug.log("V_vecX: " ..
-            tostring(V_vec[1]) .. ", V_vecY: " .. tostring(V_vec[2]) .. ", V_vecZ: " .. tostring(V_vec[3]))
-        debug.log("R_mag: " .. tostring(R_mag))
-        if R_mag > 1e-6 then -- ゼロ除算回避 (最小限のチェック)
-            Vc = -vectorDot(R_vec, V_vec) / R_mag
-            debug.log("Vc: " .. tostring(Vc))
-            LOS_Rate_vector = vectorScalarMul(1.0 / (R_mag ^ 2), vectorCross(R_vec, V_vec))
-            debug.log("LOS_Rate_vectorX: " ..
-                tostring(LOS_Rate_vector[1]) ..
-                ", LOS_Rate_vectorY: " ..
-                tostring(LOS_Rate_vector[2]) .. ", LOS_Rate_vectorZ: " .. tostring(LOS_Rate_vector[3]))
-            Accel_cmd_global = vectorScalarMul(NAVIGATION_GAIN, vectorCross(LOS_Rate_vector, ownVelVec))
-            debug.log("Accel_cmd_globalX: " ..
-                tostring(Accel_cmd_global[1]) ..
-                ", Accel_cmd_globalY: " ..
-                tostring(Accel_cmd_global[2]) .. ", Accel_cmd_globalZ: " .. tostring(Accel_cmd_global[3]))
-            Accel_cmd_local = rotateVectorByInverseQuaternion(Accel_cmd_global, ownOrientation)
-            debug.log("Accel_cmd_localX: " ..
-                tostring(Accel_cmd_local[1]) ..
-                ", Accel_cmd_localY: " ..
-                tostring(Accel_cmd_local[2]) .. ", Accel_cmd_localZ: " .. tostring(Accel_cmd_local[3]))
 
-            -- ローカル加速度からフィン制御量へ
+        if R_mag > 1e-6 then -- ゼロ除算回避 (最小限のチェック)
+            -- 1. 視線方向の単位ベクトル R_hat を計算
+            local R_hat = vectorNormalize(R_vec)
+            if R_hat == nil then R_hat = { 0, 0, 0 } end -- Normalize失敗時はゼロベクトル
+
+            -- 2. Vc と Ω を計算 (変更なし)
+            Vc = -vectorDot(R_vec, V_vec) / R_mag
+            LOS_Rate_vector = vectorScalarMul(1.0 / (R_mag ^ 2), vectorCross(R_vec, V_vec))
+            if LOS_Rate_vector == nil then LOS_Rate_vector = { 0, 0, 0 } end -- 外積失敗時はゼロベクトル
+            -- 3. 外積 Ω x R_hat を計算
+            local Omega_cross_Rhat = vectorCross(LOS_Rate_vector, R_hat)
+            if Omega_cross_Rhat == nil then Omega_cross_Rhat = { 0, 0, 0 } end -- 外積失敗時はゼロベクトル
+
+            -- 4. グローバル加速度指令 A_cmd_global を計算
+            Accel_cmd_global = vectorScalarMul(NAVIGATION_GAIN * Vc, Omega_cross_Rhat)
+            if Accel_cmd_global == nil then Accel_cmd_global = { 0, 0, 0 } end -- 計算失敗時はゼロベクトル
+
+            -- 5. ローカル加速度指令 A_cmd_local へ変換 (変更なし)
+            Accel_cmd_local = rotateVectorByInverseQuaternion(Accel_cmd_global, ownOrientation)
+            if Accel_cmd_local == nil then Accel_cmd_local = { 0, 0, 0 } end -- 変換失敗時はゼロベクトル
+
+            -- 6. ローカル加速度からフィン制御量へ (変更なし)
             pitchControl = Accel_cmd_local[2] * FIN_GAIN -- Local Y -> Pitch
             yawControl = Accel_cmd_local[1] * FIN_GAIN   -- Local X -> Yaw
 
-            -- 近接信管判定
-            if R_mag - DT * Vc * LOGIC_DELAY < PROXIMITY_DISTANCE then
+            -- 7. 近接信管判定 (変更なし)
+            if R_mag - (Vc * DT * LOGIC_DELAY) < PROXIMITY_DISTANCE then
                 proximityFuseTrigger = true
             end
+            debug.log("dist: " .. R_mag - (Vc * DT * LOGIC_DELAY) .. " Vc: " .. Vc)
         else
             -- 距離がほぼゼロの場合の処理（フェイルセーフ）
             pitchControl = 0
@@ -352,6 +367,44 @@ function onTick()
         proximityFuseTrigger = false -- 中間誘導では作動しない
     end
 
+    --[[
+            -- === 中間/慣性誘導 (単純追尾) ===
+        R_vec = vectorSub(dataLinkTargetPosVec, ownPosVec)
+        V_vec = vectorSub(dataLinkVelVec, ownVelVec)
+        R_mag = vectorMagnitude(R_vec)
+
+        if R_mag > 1e-6 then -- ゼロ除算回避 (最小限のチェック)
+            -- 1. 視線方向の単位ベクトル R_hat を計算
+            local R_hat = vectorNormalize(R_vec)
+            if R_hat == nil then R_hat = { 0, 0, 0 } end -- Normalize失敗時はゼロベクトル
+
+            -- 2. Vc と Ω を計算 (変更なし)
+            Vc = -vectorDot(R_vec, V_vec) / R_mag
+            LOS_Rate_vector = vectorScalarMul(1.0 / (R_mag ^ 2), vectorCross(R_vec, V_vec))
+            if LOS_Rate_vector == nil then LOS_Rate_vector = { 0, 0, 0 } end -- 外積失敗時はゼロベクトル
+            -- 3. 外積 Ω x R_hat を計算
+            local Omega_cross_Rhat = vectorCross(LOS_Rate_vector, R_hat)
+            if Omega_cross_Rhat == nil then Omega_cross_Rhat = { 0, 0, 0 } end -- 外積失敗時はゼロベクトル
+
+            -- 4. グローバル加速度指令 A_cmd_global を計算
+            Accel_cmd_global = vectorScalarMul(NAVIGATION_GAIN * Vc, Omega_cross_Rhat)
+            if Accel_cmd_global == nil then Accel_cmd_global = { 0, 0, 0 } end -- 計算失敗時はゼロベクトル
+
+            -- 5. ローカル加速度指令 A_cmd_local へ変換 (変更なし)
+            Accel_cmd_local = rotateVectorByInverseQuaternion(Accel_cmd_global, ownOrientation)
+            if Accel_cmd_local == nil then Accel_cmd_local = { 0, 0, 0 } end -- 変換失敗時はゼロベクトル
+
+            -- 6. ローカル加速度からフィン制御量へ (変更なし)
+            pitchControl = Accel_cmd_local[2] * FIN_GAIN -- Local Y -> Pitch
+            yawControl = Accel_cmd_local[1] * FIN_GAIN   -- Local X -> Yaw
+        else
+            -- フィルターからの位置情報が無効な場合
+            pitchControl = 0
+            yawControl = 0
+        end
+        proximityFuseTrigger = false -- 中間誘導では作動しない
+    end
+    ]]
     -- 5. 制御量制限
     pitchControl = math.max(-MAX_CONTROL, math.min(MAX_CONTROL, pitchControl or 0)) -- nilガードを追加
     yawControl = math.max(-MAX_CONTROL, math.min(MAX_CONTROL, yawControl or 0))     -- nilガードを追加

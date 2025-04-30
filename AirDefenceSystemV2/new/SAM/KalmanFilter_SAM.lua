@@ -13,6 +13,7 @@ KalmanFilter_SAM.lua (v0.3 - 新コーディングルール適用: nilチェッ�
 
 入力 (コンポジット信号):
 - オンオフ1: データリンク要求フラグ(追跡中の目標と有効なデータリンクがかけ離れている場合に受信する)
+- オンオフ 2: 発射フラグ
 - 数値 1-4: レーダー目標1 (距離, 方位角(回転単位), 仰角(回転単位), 経過時間)
 - 数値 5-8: レーダー目標2 ...
 - ...
@@ -33,6 +34,7 @@ KalmanFilter_SAM.lua (v0.3 - 新コーディングルール適用: nilチェッ�
 
 出力 (コンポジット信号 - デバッグ用):
 - オンオフ 1: トラッキング成功フラグ (isTracking)
+- オンオフ 2: 発射フラグ
 - 数値 1: 推定目標座標 X
 - 数値 2: 推定目標座標 Y
 - 数値 3: 推定目標座標 Z
@@ -818,6 +820,7 @@ function onTick()
 
     -- 4. 出力 (デバッグ用)
     output.setBool(1, isTracking)                                                             -- トラッキング成功フラグ
+    output.setBool(2, input.getBool(2))                                                       -- 発射したか否か
     if trackedTarget ~= nil and trackedTarget.X ~= nil then                                   -- Xのnilチェックは残す
         -- Xの各要素が存在するかはチェックしない (nilチェック原則禁止のため)
         output.setNumber(1, trackedTarget.X[1][1] + trackedTarget.X[2][1] * DT * LOGIC_DELAY) -- 推定 X
