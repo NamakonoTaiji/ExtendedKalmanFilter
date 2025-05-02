@@ -6,7 +6,7 @@ local outputNumber = output.setNumber
 -- 定数
 local PI = math.pi
 local PI2 = PI * 2
-local MAX_TARGETS_PER_RADAR = 4                       -- このシステムが同時に扱える最大目標数 (仕様 [source: 5])
+local MAX_TARGETS_PER_RADAR = 8                       -- このシステムが同時に扱える最大目標数 (仕様 [source: 5])
 local MAX_OUTPUT_CHANNELS = MAX_TARGETS_PER_RADAR * 2 -- 最大出力チャンネル数 (pack1, pack2)
 local MIN_DETECT_DISTANCE = property.getNumber("Min Dist")
 local FRONT_OFFSET = 1

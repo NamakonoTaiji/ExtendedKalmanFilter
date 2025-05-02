@@ -20,7 +20,8 @@
 - オンオフ 23: 共有バス(入力) - 前のFCS Tracking フラグ
 - オンオフ 24: 共有バス(入力) - 前のFCS Idle フラグ
 - オンオフ 30: ハッチ開放判定フラグ
-- オンオフ 31: 外部発射トリガー
+- オンオフ 31: 前のFCS発射フラグ
+- オンオフ 32: 外部発射トリガー
 
 出力 (単一コンポジット):
 - オンオフ 1: 発射信号 (Fire) - 1Tick ON
@@ -103,7 +104,7 @@ function onTick()
     for i = 11, 20 + 3 do outputBool(i, false) end
 
     -- 1. 入力読み込み
-    local missileSignal = inputNumber(31) -- 要確認
+    local missileSignal = inputNumber(31)
     local kfTargetsExist = {}
     local assignedFlagsInput = {}
     local assignedFlagsOutput = {}

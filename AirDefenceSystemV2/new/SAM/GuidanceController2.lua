@@ -16,28 +16,28 @@ GuidanceController.lua (v0.2 - 初期誘導フェーズ追加)
 - 近接速度はプラスが接近、マイナスが離脱
 ================================================================================
 ]]
-local PI, PI2, DT, NAVIGATION_GAIN, FIN_GAIN, SIMPLE_TRACK_GAIN, PROXIMITY_DISTANCE, MAX_CONTROL, PN_GUIDANCE_EPSILON_THRESHOLD, FUSE_PROM_DURATION_TICKS
-local INITIAL_GUIDANCE_TICKS, GUIDANCE_START_ALTITUDE, INITIAL_GUIDANCE_DURATION_SECONDS, FUSE_PROM_DURATION_TICKS
+local PI, PI2, DT, NAVIGATION_GAIN, FIN_GAIN, SIMPLE_TRACK_GAIN, PROXIMITY_DISTANCE, MAX_CONTROL, PN_GUIDANCE_EPSILON_THRESHOLD
+local INITIAL_GUIDANCE_TICKS, GUIDANCE_START_ALTITUDE, INITIAL_GUIDANCE_DURATION_SECONDS, FUSE_PROXIMITY_DURATION_TICKS, VT_FUSE_SAMPLING_TICKS
 -- 定数
 PI = math.pi
 PI2 = PI * 2
 DT = 1 / 60
 
 -- プロパティ読み込み
-NAVIGATION_GAIN = property.getNumber("N") or 3.5
-FIN_GAIN = property.getNumber("FinGain") or 1.0
-SIMPLE_TRACK_GAIN = property.getNumber("SimpleTrackGain") or 1.0
-PROXIMITY_DISTANCE = property.getNumber("ProximityDistance") or 5.0
-MAX_CONTROL = property.getNumber("MaxControl") or 1.0
-PN_GUIDANCE_EPSILON_THRESHOLD = property.getNumber("PN_GUIDANCE_EPSILON_THRESHOLD") or 20          -- 例: 閾値20
-INITIAL_GUIDANCE_DURATION_SECONDS = property.getNumber("INITIAL_GUIDANCE_DURATION_SECONDS") or 5.0 -- 初期誘導時間(秒)
-INITIAL_GUIDANCE_TICKS = INITIAL_GUIDANCE_DURATION_SECONDS * 60                                    -- Tick数に変換
-FUSE_PROM_DURATION_TICKS = property.getNumber("FUSE_PROM_DURATION_TICKS")                          -- 必要に応じて調整
-GUIDANCE_START_ALTITUDE = property.getNumber("GUIDANCE_START_ALTITUDE")                            -- 誘導開始高度
-
+NAVIGATION_GAIN = property.getNumber("N")                                                   -- 航法定数
+FIN_GAIN = property.getNumber("FinGain")                                                    -- 比例航法の動翼の強さ係数
+SIMPLE_TRACK_GAIN = property.getNumber("SimpleTrackGain")                                   -- 単追尾の動翼の強さ係数
+PROXIMITY_DISTANCE = property.getNumber("ProximityDistance")                                -- 信管動作距離
+MAX_CONTROL = property.getNumber("MaxControl")                                              -- 動翼への出力の上限
+PN_GUIDANCE_EPSILON_THRESHOLD = property.getNumber("PN_GUIDANCE_EPSILON_THRESHOLD")         -- 例: 閾値20
+INITIAL_GUIDANCE_DURATION_SECONDS = property.getNumber("INITIAL_GUIDANCE_DURATION_SECONDS") -- 初期誘導時間(秒)
+INITIAL_GUIDANCE_TICKS = INITIAL_GUIDANCE_DURATION_SECONDS * 60                             -- Tick数に変換
+FUSE_PROXIMITY_DURATION_TICKS = property.getNumber("FUSE_PROM_DURATION_TICKS")              -- 必要に応じて調整
+GUIDANCE_START_ALTITUDE = property.getNumber("GUIDANCE_START_ALTITUDE")                     -- 誘導開始高度
+VT_FUSE_SAMPLING_TICKS = property.getNumber("VT_FUSE_SAMPLE_TICKS")                         -- VT信管近接速度計算で、直近何ティックのデータを平均化するか
 -- グローバル変数
-local launchTickCounter = 0           -- 発射後のTickカウンター
-local oldDataLinkPosVec = { 0, 0, 0 } -- データリンク速度計算用
+local launchTickCounter = 0                                                                 -- 発射後のTickカウンター
+local oldDataLinkPosVec = { 0, 0, 0 }                                                       -- データリンク速度計算用
 local VcAverage = 0
 local usePnWithFilterOutput = false
 local targetPosX, targetPosY, targetPosZ, targetVelX, targetVelY, targetVelZ = 0, 0, 0, 0, 0, 0
@@ -195,7 +195,7 @@ end
 
 function VcAverageCalculator(Vc)
     local VcAverage = 0
-    if #VcArry > 60 then
+    if #VcArry > VT_FUSE_SAMPLING_TICKS then
         table.remove(VcArry, 1)
     end
     table.insert(VcArry, Vc)
@@ -238,11 +238,15 @@ function onTick()
             targetPosX = targetPosX + targetVelX
             targetPosY = targetPosY + targetVelY
             targetPosZ = targetPosZ + targetVelZ
+            debug.log("No Target Found")
         end
+        debug.log("isTracking: " .. tostring(isTracking))
+        debug.log("targetPosX: " .. targetPosX .. " targetPosY: " .. targetPosY .. " targetPosZ: " .. targetPosZ)
+        debug.log("targetVelX: " .. targetVelX .. " targetVelY: " .. targetVelY .. " targetVelZ: " .. targetVelZ)
         targetEpsilon = input.getNumber(32)
 
         dataLinkX = input.getNumber(7)
-        dataLinkY = input.getNumber(8)
+        dataLinkY = math.max(input.getNumber(8), 100) -- 中間誘導で海面に突っ込まないようにデータリンク目標高度の下限を100に設定
         dataLinkZ = input.getNumber(9)
         dataLinkTargetPosVec = { dataLinkX, dataLinkY, dataLinkZ }
 
@@ -324,50 +328,51 @@ function onTick()
             else
                 -- === 通常誘導フェーズ (比例航法) ===
                 -- Kalman Filterからの情報が有効かチェック
-                -- 一度終末誘導に入ったら中間誘導には戻らない
-                local isUsePnWithFilterOutputActivate = isTracking and targetEpsilon < PN_GUIDANCE_EPSILON_THRESHOLD
-                if isUsePnWithFilterOutputActivate then
-                    usePnWithFilterOutput = true
-                end
+                local distanceSq = (targetPosVec[1] - ownPosVec[1]) ^ 2 + (targetPosVec[2] - ownPosVec[2]) ^ 2 +
+                    (targetPosVec[3] - ownPosVec[3]) ^ 2
+                local usePnWithFilterOutput = isTracking and targetEpsilon < PN_GUIDANCE_EPSILON_THRESHOLD and
+                    targetEpsilon ~= 0
 
-                if usePnWithFilterOutput then
-                    debug.log("PN")
+                --至近距離まで近接したら強制終末誘導
+                if usePnWithFilterOutput or distanceSq < 500 ^ 2 then
+                    debug.log("ARH")
                     -- Kalman Filterの推定値を使う
                     currentTargetPosVec = targetPosVec
                     currentTargetVelVec = targetVelVec
                 else
-                    debug.log("DL_PN")
+                    debug.log("DL")
                     -- Kalman Filterが無効 or Epsilon大 -> データリンク情報を目標とする
                     currentTargetPosVec = dataLinkTargetPosVec
                     currentTargetVelVec = dataLinkVelVec
-                    -- データリンクが無効なら誘導停止
-                    if (dataLinkX == 0 and dataLinkY == 0 and dataLinkZ == 0) then
-                        currentTargetPosVec = { 0, 0, 0 } -- 誘導目標なし
-                    end
                 end
 
                 -- 目標位置があればPN計算実行
                 if not (currentTargetPosVec[1] == 0 and currentTargetPosVec[2] == 0 and currentTargetPosVec[3] == 0) then
+                    debug.log("PN")
                     R_vec = vectorSub(currentTargetPosVec, ownPosVec)
                     -- ↓↓↓ 目標速度は場合分けした currentTargetVelVec を使う ↓↓↓
                     V_vec = vectorSub(currentTargetVelVec, ownVelVec)
                     R_mag = vectorMagnitude(R_vec)
-
+                    debug.log("ownV_mag: " .. vectorMagnitude(ownVelVec))
                     if R_mag > 1e-6 then -- ゼロ除算回避
                         R_hat = vectorNormalize(R_vec)
                         Vc = -vectorDot(R_vec, V_vec) / R_mag
                         LOS_Rate_vector = vectorScalarMul(1.0 / (R_mag ^ 2), vectorCross(R_vec, V_vec))
                         Omega_cross_Rhat = vectorCross(LOS_Rate_vector, R_hat)
-                        Accel_cmd_global = vectorScalarMul(NAVIGATION_GAIN, vectorCross(LOS_Rate_vector, ownVelVec)) -- 近接速度を使わない方が安定する可能性が高い
-                        --Accel_cmd_global = vectorScalarMul(NAVIGATION_GAIN * Vc, Omega_cross_Rhat)
+                        --Accel_cmd_global = vectorScalarMul(NAVIGATION_GAIN, vectorCross(LOS_Rate_vector, ownVelVec)) -- 近接速度を使わない方が安定する可能性が高い
+                        Accel_cmd_global = vectorScalarMul(NAVIGATION_GAIN * Vc, Omega_cross_Rhat)
                         Accel_cmd_local = rotateVectorByInverseQuaternion(Accel_cmd_global, ownOrientation)
 
                         -- nil チェックを省略しているので、計算失敗時は以降の行でエラーになる可能性あり
                         pitchControl = Accel_cmd_local[2] * FIN_GAIN
                         yawControl = Accel_cmd_local[1] * FIN_GAIN
-
-                        VcAverage = VcAverageCalculator(Vc)
-                        if R_mag - (VcAverage * DT * FUSE_PROM_DURATION_TICKS) < PROXIMITY_DISTANCE then
+                        if isTracking then
+                            VcAverage = VcAverageCalculator(Vc)
+                        end
+                        debug.log("VcAVG: " ..
+                            VcAverage .. " dist: " .. R_mag - (VcAverage * DT * FUSE_PROXIMITY_DURATION_TICKS))
+                        debug.log("ownSpeed: " .. math.sqrt(ownVelVec[1] ^ 2 + ownVelVec[2] ^ 2 + ownVelVec[3] ^ 2))
+                        if R_mag - (VcAverage * DT * FUSE_PROXIMITY_DURATION_TICKS) < PROXIMITY_DISTANCE then
                             proximityFuseTrigger = true
                         end
                     else

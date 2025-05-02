@@ -13,7 +13,8 @@ KalmanFilter_SAM.lua (v0.3 - 新コーディングルール適用: nilチェッ�
 
 入力 (コンポジット信号):
 - オンオフ1: データリンク要求フラグ(追跡中の目標と有効なデータリンクがかけ離れている場合に受信する)
-- オンオフ 2: 発射フラグ
+- オンオフ2: レーダー圏内フラグ
+- オンオフ 3: 発射フラグ
 - 数値 1-4: レーダー目標1 (距離, 方位角(回転単位), 仰角(回転単位), 経過時間)
 - 数値 5-8: レーダー目標2 ...
 - ...
@@ -74,16 +75,15 @@ DATA_ASSOCIATION_EPSILON_THRESHOLD = property.getNumber("D_ASOC_EPS")           
 TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")                       -- 目標ロスト判定のTick数 (約2秒)
 INIT_MAX_DISTANCE = property.getNumber("INIT_MAX_DIST")                          -- 初期化時のデータリンク座標との最大許容距離(m)
 PROCESS_NOISE_BASE = property.getNumber("P_BASE")                                -- プロセスノイズの大きさを調整
-PROCESS_NOISE_ADAPTIVE_SCALE = property.getNumber("P_ADPT")                      --プロセスノイズの適応的調整。観測と予測の差が大きいほどプロセスノイズが増える。
+PROCESS_NOISE_ADAPTIVE_SCALE = property.getNumber("P_ADPT")                      -- プロセスノイズの適応的調整。観測と予測の差が大きいほどプロセスノイズが増える。
 PROCESS_NOISE_EPSILON_THRESHOLD = property.getNumber("P_NOISE_EPS_THRS")         -- P_ADPTによるスケーリングを開始するεの閾値。εがこれを超えると適応的調整が入り始める。
 PROCESS_NOISE_EPSILON_SLOPE = property.getNumber("P_NOISE_EPS_SLOPE")            -- プロセスノイズ適応調整のε傾き。これが大きいほどプロセスノイズの増加が急になる。
 PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") -- 観測が無い間に予測の信頼を下げる係数。値が大きいほど観測がない間に予測を信頼しなくなる。
-RADAR_EFFECTIVE_RANGE_SQ = (property.getNumber("RadarEffectiveRange") - 100) ^ 2 -- 確実に目標をとらえるために閾値を100mマイナス
 LOGIC_DELAY = property.getNumber("LOGIC_DELAY")
 R0_DIST_VAR_FACTOR = 3.3333                                                      --(0.02 ^ 2) / 12(文字数対策のため直接計算)
 R0_ANGLE_VAR = 1.3159                                                            --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
 OBSERVATION_NOISE_MATRIX_TEMPLATE = { { R0_DIST_VAR_FACTOR, 0, 0 }, { 0, R0_ANGLE_VAR, 0 }, { 0, 0, R0_ANGLE_VAR } }
-INITIAL_VELOCITY_VARIANCE = (100 ^ 2)
+INITIAL_VELOCITY_VARIANCE = (1000 ^ 2)
 
 -- グローバル変数
 trackedTarget = nil -- { X, P, epsilon, lastTick, lastSeenTick } 追跡中の単一目標の状態
@@ -627,6 +627,8 @@ function onTick()
 
     -- 1. 入力読み込み
     isDataLinkInitRequired = input.getBool(1)
+    isRadarEffectiveRange = input.getBool(2)
+    isDataLinkUpdateStopped = input.getBool(4)
     -- 自機情報 (試験用)
     ownGlobalPos = { x = input.getNumber(8), y = input.getNumber(12), z = input.getNumber(16) }
     ownEuler = { Pitch = input.getNumber(20), Yaw = input.getNumber(24), Roll = input.getNumber(25) }
@@ -638,9 +640,6 @@ function onTick()
 
     -- データリンク目標座標 (VLSFCSから)
     dataLinkTargetGlobal = { x = input.getNumber(26), y = input.getNumber(27), z = input.getNumber(28) }
-    dataLinkTargetDistanceSq = input.getNumber(29)
-    isRadarEffectiveRange = dataLinkTargetDistanceSq < RADAR_EFFECTIVE_RANGE_SQ -- データリンク目標がレーダー有効範囲内か
-    -- nilチェックは原則削除
     -- データリンク座標が (0,0,0) でないことを確認して有効性を判断
     isDataLinkValid = not (dataLinkTargetGlobal.x == 0 or dataLinkTargetGlobal.y == 0 or dataLinkTargetGlobal.z == 0)
 
@@ -700,7 +699,12 @@ function onTick()
         if trackedTarget == nil or isDataLinkInitRequired then
             -- === トラックが存在しない場合、もしくはデータリンクを要求された時: データリンク座標に最も近い観測で初期化 ===
             if isDataLinkValid then
-                minInitDistSq = INIT_MAX_DISTANCE ^ 2 -- 初期化時の最大許容距離(m)^2
+                if isDataLinkUpdateStopped then
+                    minInitDistSq = math.huge()
+                else
+                    minInitDistSq = INIT_MAX_DISTANCE ^ 2 -- 初期化時の最大許容距離(m)^2
+                end
+
                 bestInitObs = nil
                 for _, obs in ipairs(currentObservations) do
                     dx = obs.globalX - dataLinkTargetGlobal.x
@@ -820,7 +824,7 @@ function onTick()
 
     -- 4. 出力 (デバッグ用)
     output.setBool(1, isTracking)                                                             -- トラッキング成功フラグ
-    output.setBool(2, input.getBool(2))                                                       -- 発射したか否か
+    output.setBool(2, input.getBool(3))                                                       -- 発射したか否か
     if trackedTarget ~= nil and trackedTarget.X ~= nil then                                   -- Xのnilチェックは残す
         -- Xの各要素が存在するかはチェックしない (nilチェック原則禁止のため)
         output.setNumber(1, trackedTarget.X[1][1] + trackedTarget.X[2][1] * DT * LOGIC_DELAY) -- 推定 X
