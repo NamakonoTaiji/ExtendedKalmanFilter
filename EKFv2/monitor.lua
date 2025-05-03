@@ -5,8 +5,8 @@
 ]]
 
 -- ショートハンド
-local iN = input.getNumber; local iB = input.getBool; local S = screen; local M = math
-local sin, cos, pi, asin, atan, sqrt, tan = M.sin, M.cos, M.pi, M.asin, M.atan, M.sqrt, M.tan
+local iN = input.getNumber; local iB = input.getBool; local S = screen; local math = math
+local sin, cos, pi, asin, atan, sqrt, tan = math.sin, math.cos, math.pi, math.asin, math.atan, math.sqrt, math.tan
 local SF = string.format; local DT = S.drawText; local SC = S.setColor
 
 -- 定数
@@ -180,16 +180,29 @@ end
 --#################################################################
 function onDraw()
     -- (描画ロジックは変更なし)
-    local w = S.getWidth(); local h = S.getHeight(); local cw = w / 2; local ch = h / 2
-    local fov = (cameraZoomLevel + 1) / 2; local fovRad = -2.175 * fov + 2.2; if fovRad <= 0 then fovRad = pi / 2 end
-    local rw = (cw) / M.tan(fovRad / 2); local rh = (ch) / M.tan(fovRad / 2)
-    SC(255, 255, 255, 100); S.drawLine(cw, 0, cw, h); S.drawLine(0, ch, w, ch); SC(0, 255, 0, 200)
+    local w = S.getWidth()
+    local h = S.getHeight()
+    local cw = w / 2
+    local ch = h / 2
+    local fov = (cameraZoomLevel + 1) / 2
+    local fovRad = -2.175 * fov + 2.2
+    if fovRad <= 0 then fovRad = pi / 2 end
+    local rw = (cw) / math.tan(fovRad / 2)
+    local rh = (ch) / math.tan(fovRad / 2)
+    SC(255, 255, 255, 100)
+    S.drawLine(cw, 0, cw, h)
+    S.drawLine(0, ch, w, ch)
+    SC(0, 255, 0, 200)
     for i = 1, #plotData do
-        local target = plotData[i]; if target.active then
-            local tan_azim = M.tan(target.azim); local tan_elev = M.tan(target.elev); local echoX = cw +
-                rw * tan_azim * (3 / 5); local echoY = ch - rh * tan_elev; SC(0, 255, 0, 200); S.drawCircle(
-                M.floor(echoX + 0.5), M.floor(echoY + 0.5), 3); DT(M.floor(echoX + 0.5), M.floor(echoY - 8 + 0.5),
-                target.id)
+        local target = plotData[i]
+        if target.active then
+            local tan_azim = math.tan(target.azim)
+            local tan_elev = math.tan(target.elev)
+            local echoX = cw + rw * tan_azim * (3 / 5)
+            local echoY = ch - rh * tan_elev
+            SC(0, 255, 0, 200)
+            S.drawCircle(math.floor(echoX + 0.5), math.floor(echoY + 0.5), 3)
+            DT(math.floor(echoX + 0.5), math.floor(echoY - 8 + 0.5), target.id)
         end
     end
 end

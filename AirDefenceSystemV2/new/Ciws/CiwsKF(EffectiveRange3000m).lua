@@ -629,7 +629,7 @@ function onTick()
     isDataLinkInitRequired = input.getBool(1)
     isRadarEffectiveRange = input.getBool(2)
     isDataLinkUpdateStopped = input.getBool(4)
-    -- 自機情報 (試験用)
+    -- 自機情報
     ownGlobalPos = { x = input.getNumber(8), y = input.getNumber(12), z = input.getNumber(16) }
     ownEuler = { Pitch = input.getNumber(20), Yaw = input.getNumber(24), Roll = input.getNumber(25) }
     ownVector = { x = input.getNumber(30), y = input.getNumber(31), z = input.getNumber(32) }
@@ -809,12 +809,12 @@ function onTick()
                 if predictedX then
                     trackedTarget.X = predictedX
                     -- Pも更新するべきだが、簡略化のため省略
-                    trackedTarget.lastTick = currentTick     -- 予測ステップを実行したTickに更新
+                    trackedTarget.lastTick = currentTick -- 予測ステップを実行したTickに更新
                 else
                     trackedTarget = nil
                 end
             else
-                trackedTarget = nil     -- 安全のため破棄
+                trackedTarget = nil -- 安全のため破棄
             end
         end
     end

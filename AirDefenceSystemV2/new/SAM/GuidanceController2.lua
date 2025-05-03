@@ -16,7 +16,7 @@ GuidanceController.lua (v0.2 - 初期誘導フェーズ追加)
 - 近接速度はプラスが接近、マイナスが離脱
 ================================================================================
 ]]
-local PI, PI2, DT, NAVIGATION_GAIN, FIN_GAIN, SIMPLE_TRACK_GAIN, PROXIMITY_DISTANCE, MAX_CONTROL, PN_GUIDANCE_EPSILON_THRESHOLD
+local PI, PI2, DT, NAVIGATION_GAIN, FIN_GAIN, SIMPLE_TRACK_GAIN, PROXIMITY_DISTANCE, MAX_CONTROL, PN_GUIDANCE_EPSILON_THRESHOLD, RADAR_EFFECTIVE_RANGE
 local INITIAL_GUIDANCE_TICKS, GUIDANCE_START_ALTITUDE, INITIAL_GUIDANCE_DURATION_SECONDS, FUSE_PROXIMITY_DURATION_TICKS, VT_FUSE_SAMPLING_TICKS
 -- 定数
 PI = math.pi
@@ -24,6 +24,7 @@ PI2 = PI * 2
 DT = 1 / 60
 
 -- プロパティ読み込み
+RADAR_EFFECTIVE_RANGE = property.getNumber("RadarEffectiveRange")
 NAVIGATION_GAIN = property.getNumber("N")                                                   -- 航法定数
 FIN_GAIN = property.getNumber("FinGain")                                                    -- 比例航法の動翼の強さ係数
 SIMPLE_TRACK_GAIN = property.getNumber("SimpleTrackGain")                                   -- 単追尾の動翼の強さ係数
@@ -39,7 +40,7 @@ VT_FUSE_SAMPLING_TICKS = property.getNumber("VT_FUSE_SAMPLE_TICKS")             
 local launchTickCounter = 0                                                                 -- 発射後のTickカウンター
 local oldDataLinkPosVec = { 0, 0, 0 }                                                       -- データリンク速度計算用
 local VcAverage = 0
-local usePnWithFilterOutput = false
+local proximityFuseTrigger = false
 local targetPosX, targetPosY, targetPosZ, targetVelX, targetVelY, targetVelZ = 0, 0, 0, 0, 0, 0
 local VcArry = {}
 local guidanceStart = false
@@ -213,16 +214,13 @@ function onTick()
     local isLaunch = input.getBool(2)
     if isLaunch then
         -- 関数冒頭でローカル変数を宣言
-        local dataLinkX, dataLinkY, dataLinkZ, dataLinkTargetPosVec, targetEpsilon, isTracking
+        local dataLinkX, dataLinkY, dataLinkZ, dataLinkTargetPosVec, targetEpsilon, isTracking, distance
         local ownPosX, ownPosY, ownPosZ, ownPitch, ownYaw, ownRoll
         local ownOrientation, ownPosVec, ownVelVec, targetPosVec, targetVelVec
-        local pitchControl, yawControl, proximityFuseTrigger, dataLinkVelVec
+        local pitchControl, yawControl, dataLinkVelVec
         local R_vec, V_vec, R_mag, Vc, LOS_Rate_vector, Accel_cmd_global, Accel_cmd_local
         local targetLocal, horizontalDistance, currentLocalAzimuth, currentLocalElevation, currentTargetPosVec, currentTargetVelVec
         local R_hat, Omega_cross_Rhat -- PN計算用変数
-
-        -- Tickカウンター更新
-        launchTickCounter = launchTickCounter + 1
 
         -- 1. 入力読み取り
         isTracking = input.getBool(1) -- KalmanFilterからのフラグを使用
@@ -238,11 +236,11 @@ function onTick()
             targetPosX = targetPosX + targetVelX
             targetPosY = targetPosY + targetVelY
             targetPosZ = targetPosZ + targetVelZ
-            debug.log("No Target Found")
+            --debug.log("No Target Found")
         end
-        debug.log("isTracking: " .. tostring(isTracking))
-        debug.log("targetPosX: " .. targetPosX .. " targetPosY: " .. targetPosY .. " targetPosZ: " .. targetPosZ)
-        debug.log("targetVelX: " .. targetVelX .. " targetVelY: " .. targetVelY .. " targetVelZ: " .. targetVelZ)
+        --debug.log("isTracking: " .. tostring(isTracking))
+        --debug.log("targetPosX: " .. targetPosX .. " targetPosY: " .. targetPosY .. " targetPosZ: " .. targetPosZ)
+        --debug.log("targetVelX: " .. targetVelX .. " targetVelY: " .. targetVelY .. " targetVelZ: " .. targetVelZ)
         targetEpsilon = input.getNumber(32)
 
         dataLinkX = input.getNumber(7)
@@ -261,6 +259,8 @@ function onTick()
             guidanceStart = true
         end
         if guidanceStart then
+            -- Tickカウンター更新
+            launchTickCounter = launchTickCounter + 1
             -- 2. 姿勢管理
             ownOrientation = eulerZYX_to_quaternion(ownRoll, ownYaw, ownPitch) -- 自機姿勢(クォータニオン)
             if ownOrientation == nil then ownOrientation = { 1, 0, 0, 0 } end  -- エラー時は単位クォータニオン
@@ -284,13 +284,13 @@ function onTick()
             if ownVelVec == nil then ownVelVec = { 0, 0, 0 } end                 -- 変換失敗時はゼロベクトル
 
             -- 4. 誘導計算と近接信管
-            pitchControl = 0             -- 初期化
-            yawControl = 0               -- 初期化
-            proximityFuseTrigger = false -- 初期化
+            pitchControl = 0 -- 初期化
+            yawControl = 0   -- 初期化
 
             -- === 誘導モード決定 ===
             if launchTickCounter < INITIAL_GUIDANCE_TICKS then
-                debug.log("PPN")
+                --if distance < RADAR_EFFECTIVE_RANGE - 100 then
+                --debug.log("PPN")
                 -- === 初期誘導フェーズ (単純追尾) ===
                 if not (dataLinkX == 0 and dataLinkY == 0 and dataLinkZ == 0) then
                     targetPosVec = dataLinkTargetPosVec -- データリンク座標を目標とする
@@ -335,12 +335,12 @@ function onTick()
 
                 --至近距離まで近接したら強制終末誘導
                 if usePnWithFilterOutput or distanceSq < 500 ^ 2 then
-                    debug.log("ARH")
+                    --debug.log("ARH")
                     -- Kalman Filterの推定値を使う
                     currentTargetPosVec = targetPosVec
                     currentTargetVelVec = targetVelVec
                 else
-                    debug.log("DL")
+                    --debug.log("DL")
                     -- Kalman Filterが無効 or Epsilon大 -> データリンク情報を目標とする
                     currentTargetPosVec = dataLinkTargetPosVec
                     currentTargetVelVec = dataLinkVelVec
@@ -348,12 +348,12 @@ function onTick()
 
                 -- 目標位置があればPN計算実行
                 if not (currentTargetPosVec[1] == 0 and currentTargetPosVec[2] == 0 and currentTargetPosVec[3] == 0) then
-                    debug.log("PN")
+                    --debug.log("PN")
                     R_vec = vectorSub(currentTargetPosVec, ownPosVec)
                     -- ↓↓↓ 目標速度は場合分けした currentTargetVelVec を使う ↓↓↓
                     V_vec = vectorSub(currentTargetVelVec, ownVelVec)
                     R_mag = vectorMagnitude(R_vec)
-                    debug.log("ownV_mag: " .. vectorMagnitude(ownVelVec))
+                    --debug.log("ownV_mag: " .. vectorMagnitude(ownVelVec))
                     if R_mag > 1e-6 then -- ゼロ除算回避
                         R_hat = vectorNormalize(R_vec)
                         Vc = -vectorDot(R_vec, V_vec) / R_mag
@@ -366,12 +366,16 @@ function onTick()
                         -- nil チェックを省略しているので、計算失敗時は以降の行でエラーになる可能性あり
                         pitchControl = Accel_cmd_local[2] * FIN_GAIN
                         yawControl = Accel_cmd_local[1] * FIN_GAIN
-                        if isTracking then
-                            VcAverage = VcAverageCalculator(Vc)
+
+                        VcAverage = VcAverageCalculator(Vc)
+
+                        -- 近接速度がマイナスの場合は自爆
+                        if VcAverage < 0 and #VcArry > 10 then
+                            proximityFuseTrigger = true
                         end
-                        debug.log("VcAVG: " ..
-                            VcAverage .. " dist: " .. R_mag - (VcAverage * DT * FUSE_PROXIMITY_DURATION_TICKS))
-                        debug.log("ownSpeed: " .. math.sqrt(ownVelVec[1] ^ 2 + ownVelVec[2] ^ 2 + ownVelVec[3] ^ 2))
+                        --[[debug.log("VcAVG: " ..
+                            VcAverage .. " dist: " .. R_mag - (VcAverage * DT * FUSE_PROXIMITY_DURATION_TICKS))]]
+                        --debug.log("ownSpeed: " .. math.sqrt(ownVelVec[1] ^ 2 + ownVelVec[2] ^ 2 + ownVelVec[3] ^ 2))
                         if R_mag - (VcAverage * DT * FUSE_PROXIMITY_DURATION_TICKS) < PROXIMITY_DISTANCE then
                             proximityFuseTrigger = true
                         end

@@ -54,13 +54,13 @@ PI2 = PI * 2
 MAX_INPUT_TARGETS_RL1 = 6                                     -- RadarList1からの最大目標数
 MAX_INPUT_TARGETS_RL2 = 6                                     -- RadarList2からの最大目標数
 MAX_TRACKED_TARGETS = 10                                      -- 同時に追跡・出力できる最大目標数
-LOGIC_DELAY = 8 + property.getNumber("n")                     -- 暫定ロジック遅延 1ステップ前のデータが送られてくるので探知間隔も足す必要があるかもしれない。
+LOGIC_DELAY = 2 + property.getNumber("n")                     -- 暫定ロジック遅延 1ステップ前のデータが送られてくるので探知間隔も足す必要があるかもしれない。
 -- EKF パラメータ
 NUM_STATES = 6                                                -- 状態変数の数 (x, vx, y, vy, z, vz)
 DATA_ASSOCIATION_THRESHOLD = property.getNumber("D_ASOC")     -- データアソシエーションの閾値 (epsilon)
 TARGET_TIMEOUT_TICKS = property.getNumber("T_OUT")            -- 目標が更新されない場合のタイムアウトtick数 (約1.17秒)
 TARGET_IS_LEAVING_THRESHOLD = property.getNumber("TGT_LVING") -- 目標が離反していると判断する閾値 (接近速度 < -1 m/s ?)
-INITIAL_VELOCITY_VARIANCE = (300 ^ 2)                         -- 新規目標の初期速度分散 (大きい値に設定)
+INITIAL_VELOCITY_VARIANCE = (300 ^ 2 / 3 * 3)                 -- 新規目標の初期速度分散 (大きい値に設定)
 
 -- 観測ノイズ共分散行列 R (テンプレート) - レーダーの精度に基づく
 -- オリジナルコードの R0 [source: 40] を参考に設定。
@@ -667,6 +667,7 @@ end
 --------------------------------------------------------------------------------
 function onTick()
     local isDelayed1, isDelayed2
+    debug.log("tgtList: " .. #targetList)
     for internalId, target in pairs(targetList) do
         target.isUpdated = false
     end
@@ -722,7 +723,7 @@ function onTick()
     local assignedObservationIndices = {} -- Keeps track of which observation was assigned
     if #currentObservations > 0 then
         for internalId, currentTarget in pairs(targetList) do
-            local bestMatchObsIndex, bestMatchObsIndex, minEpsilon, matchedState, matchedCovariance, matchedEpsilon, matchedObsTick
+            local bestMatchObsIndex, minEpsilon, matchedState, matchedCovariance, matchedEpsilon, matchedObsTick
             local observation, dt_ticks, dt_sec, X_post, P_post, epsilon, currentClosingSpeed
 
             bestMatchObsIndex = -1
@@ -736,7 +737,9 @@ function onTick()
                         dt_sec = dt_ticks / 60.0
                         X_post, P_post, epsilon = extendedKalmanFilterUpdate(currentTarget.X, currentTarget.P,
                             observation, physicsSensorData, dt_sec, currentTarget.epsilon)
+                        debug.log("eps: " .. epsilon)
                         if epsilon < minEpsilon then
+                            debug.log("eps < minEps")
                             minEpsilon = epsilon
                             bestMatchObsIndex = j
                             matchedState = X_post
@@ -746,10 +749,11 @@ function onTick()
                         end
                     end
                 end
+                debug.log("bestMatch:" .. bestMatchObsIndex)
             end
-
             -- ★更新: 最良マッチが見つかった場合の処理
             if bestMatchObsIndex ~= -1 and minEpsilon <= DATA_ASSOCIATION_THRESHOLD then
+                debug.log("assoc")
                 -- EKF状態更新
                 targetList[internalId].X = matchedState
                 targetList[internalId].P = matchedCovariance
@@ -769,6 +773,8 @@ function onTick()
 
                 -- 敵対判定実行
                 assignedObservationIndices[bestMatchObsIndex] = true
+            else
+                debug.log("D_ASOC FAIL" .. "bestMatchIndex : " .. bestMatchObsIndex)
             end
         end
     end
@@ -795,6 +801,7 @@ function onTick()
         closingSpeed = calculateClosingSpeed(target, physicsSensorData)
         isLeaving = (closingSpeed < TARGET_IS_LEAVING_THRESHOLD)
         if isTimeout or isLeaving then
+            debug.log("timeOut: " .. tostring(isTimeout) .. " leaving: " .. closingSpeed .. " id: " .. internalId)
             table.insert(targetIdsToDelete, internalId)
             -- ★ 削除対象になったら Output ID を解放
             releaseOutputId(target)
@@ -812,7 +819,7 @@ function onTick()
     -- 5. 新規目標の登録
     for j = 1, #currentObservations do
         if not assignedObservationIndices[j] then -- 観測が既存のターゲットに割り当てられていない場合
-            local newObs, X_init, P_init, init_pos_var_factor, pos_var_ele, pos_var_azi, newInternalId
+            local X_init, P_init, init_pos_var_factor, pos_var_ele, pos_var_azi, newInternalId
             local newObs = currentObservations[j]
             -- 状態ベクトル(X)と共分散行列(P)の初期化
             X_init = { { newObs.globalX }, { 0 }, { newObs.globalY }, { 0 }, { newObs.globalZ }, { 0 } }

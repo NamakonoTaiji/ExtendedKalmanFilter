@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>SAMDocument.md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<h1 id="sam-%E5%9C%B0%E5%AF%BE%E7%A9%BA%E3%83%9F%E3%82%B5%E3%82%A4%E3%83%AB-%E3%82%B7%E3%82%B9%E3%83%86%E3%83%A0-lua-%E3%82%B9%E3%82%AF%E3%83%AA%E3%83%97%E3%83%88%E4%BB%95%E6%A7%98%E6%9B%B8">SAM (地対空ミサイル) システム Lua スクリプト仕様書</h1>
+<h2 id="1-%E6%A6%82%E8%A6%81">1. 概要</h2>
+<p>このドキュメントは、Stormworks で開発中の SAM (Surface-to-Air Missile) システムを制御する 2 つの Lua スクリプト、<code>KalmanFilter_SAM.lua</code> と <code>GuidanceController2.lua</code> の仕様について記述します。</p>
+<ul>
+<li><strong><code>KalmanFilter_SAM.lua</code>:</strong> ミサイルに搭載されたレーダーからの観測値と、発射母機からのデータリンク情報を統合し、拡張カルマンフィルター (EKF) を用いて目標のグローバル座標系における位置と速度を推定します。</li>
+<li><strong><code>GuidanceController2.lua</code>:</strong> <code>KalmanFilter_SAM.lua</code> からの目標情報とミサイル自身のセンサー情報に基づき、誘導計算（初期誘導：単純追尾、通常誘導：比例航法）を行い、フィン制御信号と近接信管信号を出力します。</li>
+</ul>
+<p>これら 2 つのスクリプトは連携して動作し、目標への誘導を実現します。</p>
+<h2 id="2-kalmanfiltersamlua-v04-%E7%9B%B8%E5%BD%93">2. <code>KalmanFilter_SAM.lua</code> (v0.4 相当)</h2>
+<h3 id="21-%E6%A9%9F%E8%83%BD">2.1. 機能</h3>
+<ul>
+<li>ミサイル搭載レーダーからの目標観測値（最大 6 目標）を処理します。</li>
+<li>データリンクからの目標座標情報を受け取ります。</li>
+<li>データリンク座標または追跡中の目標の予測位置を基準として、レーダー観測値とのデータアソシエーション（対応付け）を行います。
+<ul>
+<li>トラックが存在しない場合、またはデータリンク要求フラグがオンの場合、データリンク座標に最も近い観測値でフィルターを初期化します。</li>
+<li>トラックが存在する場合、予測位置に対して EKF 更新を試算し、誤差指標 (ε) が最小かつ閾値以下の観測値を対応付けます。</li>
+</ul>
+</li>
+<li>拡張カルマンフィルター (EKF) を使用して、対応付けられた観測値に基づき目標の状態（グローバル位置および速度）を推定・更新します。状態ベクトルは $[x, v_x, y, v_y, z, v_z]^T$ です。</li>
+<li>一定時間観測が途絶えた目標の追跡を中断（ロスト処理）します。</li>
+<li>推定した目標の状態や、<code>GuidanceController2.lua</code> で必要となる各種情報をパススルーして出力します。</li>
+</ul>
+<h3 id="22-%E5%85%A5%E5%8A%9B-%E3%82%B3%E3%83%B3%E3%83%9D%E3%82%B8%E3%83%83%E3%83%88%E4%BF%A1%E5%8F%B7">2.2. 入力 (コンポジット信号)</h3>
+<ul>
+<li><strong>オンオフ:</strong>
+<ul>
+<li><code>1</code>: データリンク要求フラグ (追跡中の目標と有効なデータリンクがかけ離れている場合に受信)</li>
+<li><code>2</code>: レーダー有効範囲フラグ (目標がレーダーの有効範囲内にいるか)</li>
+<li><code>3</code>: 発射フラグ (ミサイルが発射されたか)</li>
+<li><code>4</code>: データリンク更新停止フラグ</li>
+</ul>
+</li>
+<li><strong>数値:</strong>
+<ul>
+<li><code>1-4</code>: レーダー目標 1 (距離[m], 方位角[回転単位], 仰角[回転単位], 経過時間[Tick])</li>
+<li><code>5-8</code>: レーダー目標 2 ...</li>
+<li><code>9-12</code>: レーダー目標 3 ...</li>
+<li><code>13-16</code>: レーダー目標 4 ...</li>
+<li><code>17-20</code>: レーダー目標 5 ...</li>
+<li><code>21-24</code>: レーダー目標 6 ...</li>
+<li><code>8</code>: 自機グローバル位置 X [m]</li>
+<li><code>12</code>: 自機グローバル位置 Y [m]</li>
+<li><code>16</code>: 自機グローバル位置 Z [m]</li>
+<li><code>20</code>: 自機オイラー角 Pitch [rad]</li>
+<li><code>24</code>: 自機オイラー角 Yaw [rad]</li>
+<li><code>25</code>: 自機オイラー角 Roll [rad]</li>
+<li><code>26</code>: データリンク目標座標 X [m]</li>
+<li><code>27</code>: データリンク目標座標 Y [m]</li>
+<li><code>28</code>: データリンク目標座標 Z [m]</li>
+<li><code>29</code>: (外部計算) データリンク目標との距離の 2 乗 [m^2]</li>
+<li><code>30</code>: 自機 X 軸速度 (ローカル) [m/s] (パススルー用)</li>
+<li><code>31</code>: 自機 Y 軸速度 (ローカル) [m/s] (パススルー用)</li>
+<li><code>32</code>: 自機 Z 軸速度 (ローカル) [m/s] (パススルー用)</li>
+</ul>
+</li>
+</ul>
+<h3 id="23-%E5%87%BA%E5%8A%9B-%E3%82%B3%E3%83%B3%E3%83%9D%E3%82%B8%E3%83%83%E3%83%88%E4%BF%A1%E5%8F%B7">2.3. 出力 (コンポジット信号)</h3>
+<ul>
+<li><strong>オンオフ:</strong>
+<ul>
+<li><code>1</code>: トラッキング成功フラグ (<code>isTracking</code>) - EKF が有効な観測で更新された場合に True</li>
+<li><code>2</code>: 発射フラグ (入力 ch3 のパススルー)</li>
+</ul>
+</li>
+<li><strong>数値:</strong>
+<ul>
+<li><code>1</code>: 推定目標座標 X [m] (Logic Delay 考慮済み)</li>
+<li><code>2</code>: 推定目標座標 Y [m] (Logic Delay 考慮済み)</li>
+<li><code>3</code>: 推定目標座標 Z [m] (Logic Delay 考慮済み)</li>
+<li><code>4</code>: 推定目標速度 Vx [m/s]</li>
+<li><code>5</code>: 推定目標速度 Vy [m/s]</li>
+<li><code>6</code>: 推定目標速度 Vz [m/s]</li>
+<li><code>7</code>: データリンク座標 X [m] (入力 ch26 のパススルー)</li>
+<li><code>8</code>: データリンク座標 Y [m] (入力 ch27 のパススルー)</li>
+<li><code>9</code>: データリンク座標 Z [m] (入力 ch28 のパススルー)</li>
+<li><code>10</code>: 自機グローバル位置 X [m] (入力 ch8 のパススルー)</li>
+<li><code>11</code>: 自機グローバル位置 Y [m] (入力 ch12 のパススルー)</li>
+<li><code>12</code>: 自機グローバル位置 Z [m] (入力 ch16 のパススルー)</li>
+<li><code>13</code>: 自機オイラー角 Pitch [rad] (入力 ch20 のパススルー)</li>
+<li><code>14</code>: 自機オイラー角 Yaw [rad] (入力 ch24 のパススルー)</li>
+<li><code>15</code>: 自機オイラー角 Roll [rad] (入力 ch25 のパススルー)</li>
+<li><code>16</code>: 自機 X 軸速度 (ローカル) [m/s] (入力 ch30 のパススルー)</li>
+<li><code>17</code>: 自機 Y 軸速度 (ローカル) [m/s] (入力 ch31 のパススルー)</li>
+<li><code>18</code>: 自機 Z 軸速度 (ローカル) [m/s] (入力 ch32 のパススルー)</li>
+<li><code>32</code>: 最新のイプシロン ε (誤差指標)</li>
+</ul>
+</li>
+</ul>
+<h3 id="24-%E3%83%97%E3%83%AD%E3%83%91%E3%83%86%E3%82%A3">2.4. プロパティ</h3>
+<ul>
+<li><code>D_ASOC_EPS</code>: データアソシエーションで使用する誤差指標 ε の最大許容値。</li>
+<li><code>T_LOST</code>: 目標が更新されない場合にロストと判断するまでの Tick 数。</li>
+<li><code>INIT_MAX_DIST</code>: フィルター初期化時に、データリンク座標とレーダー観測値がこの距離 [m] 以上離れていたら初期化しない。</li>
+<li><code>P_BASE</code>: プロセスノイズの基本係数。</li>
+<li><code>P_ADPT</code>: プロセスノイズの適応的スケーリング係数。</li>
+<li><code>P_NOISE_EPS_THRS</code>: プロセスノイズの適応調整を開始する ε の閾値。</li>
+<li><code>P_NOISE_EPS_SLOPE</code>: プロセスノイズの適応調整の傾き（ε に対する変化率）。</li>
+<li><code>PRED_UNCERTAINTY_FACT</code>: 予測誤差共分散の不確かさ増加係数の底（時間経過に対する予測信頼度の低下率）。</li>
+<li><code>LOGIC_DELAY</code>: 推定位置を出力する際の遅延補償 Tick 数。</li>
+</ul>
+<h3 id="25-%E4%B8%BB%E8%A6%81%E3%83%AD%E3%82%B8%E3%83%83%E3%82%AF">2.5. 主要ロジック</h3>
+<ol>
+<li><strong>入力読み込み:</strong> 各種センサー情報、データリンク情報、レーダー情報を読み込みます。</li>
+<li><strong>レーダー観測処理:</strong> レーダーが有効範囲内 (<code>isRadarEffectiveRange</code>) の場合、最大 <code>MAX_RADAR_TARGETS</code> 個の観測データを読み込み、<code>localToGlobalCoords</code> を用いてローカル極座標からグローバル直交座標・グローバル角度（方位角・仰角）に変換し、<code>currentObservations</code> テーブルに格納します。</li>
+<li><strong>データアソシエーションと EKF:</strong>
+<ul>
+<li>レーダー探知があり、観測データが存在する場合に実行します。</li>
+<li><code>trackedTarget</code> が存在しない、またはデータリンク再初期化要求 (<code>isDataLinkInitRequired</code>) がある場合：データリンク座標に最も近い観測データ (<code>bestInitObs</code>) を探し、<code>INIT_MAX_DISTANCE</code> 内であれば <code>initializeFilterState</code> でフィルターを初期化します。</li>
+<li><code>trackedTarget</code> が存在する場合：現在の状態から次の Tick の状態を予測 (<code>X_assoc_pred</code>) し、全ての <code>currentObservations</code> で EKF 更新を試算して誤差指標 ε を計算します。ε が最小かつ <code>DATA_ASSOCIATION_EPSILON_THRESHOLD</code> 以下の観測データ (<code>associatedObservation</code>) を選択します。</li>
+<li>最良のマッチが見つかった場合：<code>extendedKalmanFilterUpdate</code> を実行して <code>trackedTarget</code> の状態 (X, P, epsilon, lastTick, lastSeenTick) を更新し、<code>isTracking</code> を true にします。更新に失敗した場合はトラックを破棄します。</li>
+<li>アソシエーションに失敗した場合は <code>isTracking</code> を false にします。</li>
+</ul>
+</li>
+<li><strong>目標ロスト判定:</strong> <code>isTracking</code> が false で、かつ最後に観測が紐付けられてから (<code>lastSeenTick</code>) 一定時間 (<code>TARGET_LOST_THRESHOLD_TICKS</code>) が経過した場合、<code>trackedTarget</code> を <code>nil</code> にして追跡を中断します。ロストするまでは予測ステップのみ実行して状態を維持します。</li>
+<li><strong>出力処理:</strong>
+<ul>
+<li><code>isTracking</code> フラグを出力します。</li>
+<li><code>trackedTarget</code> が存在する場合、<code>LOGIC_DELAY</code> Tick 分の未来位置を予測して出力チャンネル 1-3 に、現在の推定速度をチャンネル 4-6 に、最新の ε をチャンネル 32 に出力します。</li>
+<li>トラックがない場合は対応するチャンネルに 0 を出力します。</li>
+<li><code>GuidanceController2.lua</code> で必要な各種入力データ（データリンク座標、自機位置・姿勢・速度）をそのままパススルー出力します (ch7-18)。</li>
+</ul>
+</li>
+</ol>
+<h3 id="26-%E5%89%8D%E6%8F%90%E3%83%BB%E6%B3%A8%E6%84%8F%E7%82%B9">2.6. 前提・注意点</h3>
+<ul>
+<li><strong>座標系:</strong> Stormworks の Physics Sensor 座標系 (X:東, Y:上, Z:北, 左手系) を基準とします。</li>
+<li><strong><code>inv</code> 関数の実装:</strong> 行列の逆行列を計算する <code>inv</code> 関数が別途実装されている必要があります。</li>
+<li><strong>EKF パラメータ:</strong> 各種 EKF パラメータはプロパティから設定する必要があり、目標の特性やセンサー精度に合わせて調整が必要です。</li>
+<li><strong>初期化:</strong> データリンク要求フラグやデータリンク更新停止フラグに基づいた初期化ロジックが追加されています。</li>
+</ul>
+<h2 id="3-guidancecontroller2lua-v02-%E7%9B%B8%E5%BD%93">3. <code>GuidanceController2.lua</code> (v0.2 相当)</h2>
+<h3 id="31-%E6%A9%9F%E8%83%BD">3.1. 機能</h3>
+<ul>
+<li><code>KalmanFilter_SAM.lua</code> からの目標情報（推定位置・速度）とミサイル自身のセンサー情報（位置・速度・姿勢）を入力として受け取ります。</li>
+<li>発射後の初期誘導フェーズ（一定時間）では、データリンク座標に基づいた<strong>単純追尾</strong>を行います。</li>
+<li>通常誘導フェーズでは、<strong>比例航法 (Proportional Navigation, PN)</strong> を使用して目標を追尾します。
+<ul>
+<li>目標情報のソースは、Kalman Filter の追跡状況 (<code>isTracking</code> フラグと <code>targetEpsilon</code>) に応じて切り替えます（フィルター有効時は推定値、無効時はデータリンク座標と差分速度）。</li>
+<li>比例航法の加速度指令は、$A_{cmd} = N \times V_c \times (\Omega \times \hat{R})$ に基づいて計算されます。</li>
+</ul>
+</li>
+<li>ミサイル自身の姿勢を<strong>クォータニオン</strong>で管理します。</li>
+<li>計算されたローカル座標系での加速度指令に基づき、ヨーおよびピッチ方向のフィン制御信号を出力します。</li>
+<li>終末誘導フェーズにおいて、目標との推定距離と接近速度に基づき<strong>近接信管</strong>の起動信号を出力します。</li>
+</ul>
+<h3 id="32-%E5%85%A5%E5%8A%9B-%E3%82%B3%E3%83%B3%E3%83%9D%E3%82%B8%E3%83%83%E3%83%88%E4%BF%A1%E5%8F%B7">3.2. 入力 (コンポジット信号)</h3>
+<ul>
+<li><strong>オンオフ:</strong>
+<ul>
+<li><code>1</code>: トラッキング成功フラグ (<code>isTracking</code> from KalmanFilter_SAM)</li>
+<li><code>2</code>: 発射フラグ (<code>isLaunch</code> from external source or KalmanFilter_SAM)</li>
+</ul>
+</li>
+<li><strong>数値:</strong>
+<ul>
+<li><code>1</code>: 推定目標座標 X (<code>targetPosX</code> from KalmanFilter_SAM)</li>
+<li><code>2</code>: 推定目標座標 Y (<code>targetPosY</code> from KalmanFilter_SAM)</li>
+<li><code>3</code>: 推定目標座標 Z (<code>targetPosZ</code> from KalmanFilter_SAM)</li>
+<li><code>4</code>: 推定目標速度 Vx (<code>targetVelX</code> from KalmanFilter_SAM)</li>
+<li><code>5</code>: 推定目標速度 Vy (<code>targetVelY</code> from KalmanFilter_SAM)</li>
+<li><code>6</code>: 推定目標速度 Vz (<code>targetVelZ</code> from KalmanFilter_SAM)</li>
+<li><code>7</code>: データリンク目標座標 X (<code>dataLinkX</code> from KalmanFilter_SAM)</li>
+<li><code>8</code>: データリンク目標座標 Y (<code>dataLinkY</code> from KalmanFilter_SAM, 下限 100m)</li>
+<li><code>9</code>: データリンク目標座標 Z (<code>dataLinkZ</code> from KalmanFilter_SAM)</li>
+<li><code>10</code>: 自機グローバル位置 X (<code>ownPosX</code> from KalmanFilter_SAM)</li>
+<li><code>11</code>: 自機グローバル位置 Y (<code>ownPosY</code> from KalmanFilter_SAM)</li>
+<li><code>12</code>: 自機グローバル位置 Z (<code>ownPosZ</code> from KalmanFilter_SAM)</li>
+<li><code>13</code>: 自機オイラー角 Pitch (<code>ownPitch</code> from KalmanFilter_SAM)</li>
+<li><code>14</code>: 自機オイラー角 Yaw (<code>ownYaw</code> from KalmanFilter_SAM)</li>
+<li><code>15</code>: 自機オイラー角 Roll (<code>ownRoll</code> from KalmanFilter_SAM)</li>
+<li><code>16</code>: 自機ローカル速度 Vx (<code>ownVelLocalX</code> from KalmanFilter_SAM)</li>
+<li><code>17</code>: 自機ローカル速度 Vy (<code>ownVelLocalY</code> from KalmanFilter_SAM)</li>
+<li><code>18</code>: 自機ローカル速度 Vz (<code>ownVelLocalZ</code> from KalmanFilter_SAM)</li>
+<li><code>32</code>: イプシロン ε (<code>targetEpsilon</code> from KalmanFilter_SAM)</li>
+</ul>
+</li>
+</ul>
+<h3 id="33-%E5%87%BA%E5%8A%9B-%E3%82%B3%E3%83%B3%E3%83%9D%E3%82%B8%E3%83%83%E3%83%88%E4%BF%A1%E5%8F%B7">3.3. 出力 (コンポジット信号)</h3>
+<ul>
+<li><strong>オンオフ:</strong>
+<ul>
+<li><code>1</code>: 近接信管起動信号 (<code>proximityFuseTrigger</code>)</li>
+</ul>
+</li>
+<li><strong>数値:</strong>
+<ul>
+<li><code>1</code>: ヨー制御信号 (<code>yawControl</code>) - プラスが右旋回</li>
+<li><code>2</code>: ピッチ制御信号 (<code>pitchControl</code>) - プラスがピッチアップ</li>
+</ul>
+</li>
+</ul>
+<h3 id="34-%E3%83%97%E3%83%AD%E3%83%91%E3%83%86%E3%82%A3">3.4. プロパティ</h3>
+<ul>
+<li><code>N</code>: 航法ゲイン (比例航法用)。</li>
+<li><code>FinGain</code>: フィン制御ゲイン（比例航法におけるローカル加速度指令からフィン指令値への変換係数）。</li>
+<li><code>SimpleTrackGain</code>: 単純追尾ゲイン（初期誘導における角度偏差からフィン指令値への変換係数）。</li>
+<li><code>ProximityDistance</code>: 近接信管の作動距離 [m]。</li>
+<li><code>MaxControl</code>: フィン制御出力の最大/最小値（例: 1.0 で ±1 に制限）。</li>
+<li><code>PN_GUIDANCE_EPSILON_THRESHOLD</code>: 比例航法で Kalman Filter の推定値を使用するための ε の閾値。これより大きい場合はデータリンク情報を使用。</li>
+<li><code>INITIAL_GUIDANCE_DURATION_SECONDS</code>: 発射後に初期誘導（単純追尾）を行う時間 [秒]。</li>
+<li><code>FUSE_PROM_DURATION_TICKS</code>: 近接信管の距離予測に使用する時間 [Tick]。</li>
+<li><code>GUIDANCE_START_ALTITUDE</code>: ミサイルがこの高度 [m] を超えたら誘導を開始する。</li>
+<li><code>VT_FUSE_SAMPLE_TICKS</code>: 近接信管の接近速度計算に使用する過去データの Tick 数。</li>
+</ul>
+<h3 id="35-%E4%B8%BB%E8%A6%81%E3%83%AD%E3%82%B8%E3%83%83%E3%82%AF">3.5. 主要ロジック</h3>
+<ol>
+<li><strong>起動と Tick カウント:</strong> 発射フラグ (<code>isLaunch</code>) が True になったら Tick カウント (<code>launchTickCounter</code>) を開始します。</li>
+<li><strong>入力読み取り:</strong> <code>KalmanFilter_SAM</code> からのパススルー情報を含む各種データを読み込みます。データリンク目標 Y 座標には下限値 (100m) が設定されます。</li>
+<li><strong>誘導開始判定:</strong> 自機高度 (<code>ownPosY</code>) が <code>GUIDANCE_START_ALTITUDE</code> を超えたら <code>guidanceStart</code> フラグを True にし、誘導計算を開始します。</li>
+<li><strong>姿勢管理:</strong> 自機オイラー角から <code>eulerZYX_to_quaternion</code> を用いて現在の姿勢クォータニオン <code>ownOrientation</code> を計算します。</li>
+<li><strong>変数準備:</strong> 自機位置、目標位置、目標速度などをベクトル形式で準備します。自機速度はローカル座標で読み取り、<code>rotateVectorByQuaternion</code> を使ってグローバル座標 <code>ownVelVec</code> に変換します。データリンク座標の差分からデータリンク速度 <code>dataLinkVelVec</code> も計算します（通常誘導の PN では現在未使用）。</li>
+<li><strong>誘導モード分岐:</strong> <code>launchTickCounter</code> が <code>INITIAL_GUIDANCE_TICKS</code> 未満かどうかで処理を分岐します。
+<ul>
+<li><strong>初期誘導フェーズ (<code>launchTickCounter &lt; INITIAL_GUIDANCE_TICKS</code>):</strong>
+<ul>
+<li>データリンク座標 <code>dataLinkTargetPosVec</code> を目標とします。</li>
+<li><code>globalToLocalCoords</code> で目標のローカル座標 <code>targetLocal</code> を計算します。</li>
+<li><code>math.atan</code> を用いてローカルな方位角・仰角を計算し、<code>SIMPLE_TRACK_GAIN</code> を掛けて <code>yawControl</code>, <code>pitchControl</code> を決定します（単純追尾）。</li>
+<li>データリンクが無効な場合は直進します。</li>
+<li>近接信管は作動しません。</li>
+</ul>
+</li>
+<li><strong>通常誘導フェーズ (<code>launchTickCounter &gt;= INITIAL_GUIDANCE_TICKS</code>):</strong>
+<ul>
+<li>Kalman Filter が有効か (<code>isTracking</code> と <code>targetEpsilon</code>)、または目標との距離が近いか (<code>distanceSq &lt; 500^2</code>) によって、比例航法に使用する目標情報 (<code>currentTargetPosVec</code>, <code>currentTargetVelVec</code>) を選択します。
+<ul>
+<li>有効な場合: Kalman Filter の推定値を使用します。</li>
+<li>無効な場合: データリンク座標とデータリンク差分速度 (<code>dataLinkVelVec</code>) を使用します。（コードでは <code>currentTargetVelVec = dataLinkVelVec</code> となっています）</li>
+</ul>
+</li>
+<li>選択された目標情報が存在する場合、比例航法計算を実行します。
+<ul>
+<li>相対位置 $R_{vec}$、相対速度 $V_{vec}$、距離 $R_{mag}$ を計算します。</li>
+<li>視線単位ベクトル $\hat{R}$、接近速度 $V_c$、LOS レートベクトル $\Omega$ を計算します。</li>
+<li>外積 $\Omega \times \hat{R}$ を計算します。</li>
+<li>グローバル加速度指令 $A_{cmd_global} = N \times V_c \times (\Omega \times \hat{R})$ を計算します。</li>
+<li><code>rotateVectorByInverseQuaternion</code> でローカル加速度指令 $A_{cmd_local}$ に変換します。</li>
+<li>$A_{cmd_local}$ の X, Y 成分と <code>FIN_GAIN</code> から <code>yawControl</code>, <code>pitchControl</code> を決定します。</li>
+</ul>
+</li>
+<li>近接信管判定: Kalman Filter 有効時、または近距離強制終末誘導時に実行。<code>VcAverageCalculator</code> で計算した平均接近速度に基づき、<code>FUSE_PROXIMITY_DURATION_TICKS</code> 後の予測距離が <code>PROXIMITY_DISTANCE</code> 未満なら <code>proximityFuseTrigger</code> を True にします。</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><strong>制御量制限:</strong> 計算された <code>yawControl</code>, <code>pitchControl</code> を <code>MAX_CONTROL</code> で制限します。</li>
+<li><strong>出力:</strong> <code>proximityFuseTrigger</code>, <code>yawControl</code>, <code>pitchControl</code> を出力します。</li>
+</ol>
+<h3 id="36-%E5%89%8D%E6%8F%90%E3%83%BB%E6%B3%A8%E6%84%8F%E7%82%B9">3.6. 前提・注意点</h3>
+<ul>
+<li><strong>ヘルパー関数:</strong> ベクトル演算、クォータニオン演算、座標変換関数が別途定義されている必要があります。</li>
+<li><strong>ゲイン調整:</strong> <code>NAVIGATION_GAIN</code>, <code>FIN_GAIN</code>, <code>SIMPLE_TRACK_GAIN</code> はミサイルの特性に合わせて調整が必要です。</li>
+<li><strong>データリンク無効時:</strong> 通常誘導フェーズで Kalman Filter が無効かつデータリンクも無効な場合の PN 計算の挙動（目標速度をどう扱うか）は注意が必要です。</li>
+<li><strong>近接信管:</strong> 平均接近速度 <code>VcAverageCalculator</code> を使用した距離予測に基づいています。</li>
+</ul>
+<h2 id="4-%E5%BA%A7%E6%A8%99%E7%B3%BB">4. 座標系</h2>
+<ul>
+<li><strong>グローバル座標系:</strong> Stormworks Physics Sensor 座標系 (左手系: +X:東, +Y:上, +Z:北) を基準とします。Kalman Filter の状態推定や比例航法の $A_{cmd_global}$ はこの座標系です。</li>
+<li><strong>ローカル座標系:</strong> ミサイル本体の座標系 (左手系: +X:右, +Y:上, +Z:前) を基準とします。Physics Sensor の速度入力や、フィン制御のための $A_{cmd_local}$ はこの座標系です。</li>
+</ul>
+
+</body>
+</html>

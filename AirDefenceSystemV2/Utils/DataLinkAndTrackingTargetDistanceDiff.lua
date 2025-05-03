@@ -26,7 +26,7 @@ function onTick()
         dataLinkUpdateTimer = dataLinkUpdateTimer + 1
     end
     local isDataLinkStopped = false
-    if dataLinkUpdateTimer > 90 then
+    if dataLinkUpdateTimer > 120 then
         isDataLinkStopped = true
     end
     output.setBool(3, isDataLinkStopped) -- データリンクの更新が停止しているか監視
