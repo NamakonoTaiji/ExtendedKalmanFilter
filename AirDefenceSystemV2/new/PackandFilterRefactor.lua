@@ -9,7 +9,6 @@ local ipairs = ipairs
 local inputNumber = input.getNumber
 local inputBool = input.getBool
 local outputNumber = output.setNumber
-local propertyNumber = property.getNumber
 
 -- 定数
 local PI = M.pi
@@ -23,12 +22,11 @@ local RADAR_ID = 0 -- 0:Front, 1:Right, 2:Back, 3:Left
 -- ★★★ 設定ここまで ★★★
 
 -- グローバル変数 (マイクロコントローラー内部の状態を保持)
-local targetMaxData = {} -- 各目標の最大値を記録するテーブル { distance, azimuth, elevation }
-local targetMinData = {} -- 各目標の最小値を記録するテーブル { distance, azimuth, elevation }
+local targetMaxData = {}    -- 各目標の最大値を記録するテーブル { distance, azimuth, elevation }
+local targetMinData = {}    -- 各目標の最小値を記録するテーブル { distance, azimuth, elevation }
+local outputTargetData = {} -- 出力用のデータを記憶する配列
 -- filterTickCounter は不要 (レーダー出力の経過時間tick(ch4)で判断するため)
 
--- 設定値 (プロパティから取得)
-local filterDuration = propertyNumber("n") -- 範囲中間値フィルターの期間 (tick)
 
 -- 初期化処理: targetMaxData と targetMinData テーブルを初期化
 for i = 1, MAX_TARGETS_PER_RADAR do
@@ -137,7 +135,9 @@ end
    記録した最大/最小値から範囲中間値を計算し、packTargetData 関数で圧縮して出力する。
 --------------------------------------------------------------------------------
 ]]
+tempCounter = 0
 function onTick()
+    tempCounter = tempCounter + 1
     -- 出力チャンネルをクリア (毎tickクリアする方が安全)
     for i = 1, MAX_OUTPUT_CHANNELS do
         outputNumber(i, 0)
@@ -149,36 +149,50 @@ function onTick()
 
     -- 1. 探知更新タイミング (経過tickが0になった瞬間) の処理
     if currentRadarTick == 0 then
+        outputTargetData = {}
         -- 前のフィルター期間の結果を出力するタイミング
         local outputCount = 0
+        local midDistance, midAzimuth, midElevation
         for i = 1, MAX_TARGETS_PER_RADAR do
             -- 前の期間 (tick 0 から n-1) に記録された最大/最小値を使用
             if targetMaxData[i].distance > MIN_DETECT_DISTANCE then -- 前の期間に一度でも検出された目標か？
                 -- 範囲中間値を計算
-                local midDistance = (targetMaxData[i].distance + targetMinData[i].distance) / 2
-                local midAzimuth = (targetMaxData[i].azimuth + targetMinData[i].azimuth) / 2
-                local midElevation = (targetMaxData[i].elevation + targetMinData[i].elevation) / 2
+                midDistance = (targetMaxData[i].distance + targetMinData[i].distance) / 2
+                midAzimuth = (targetMaxData[i].azimuth + targetMinData[i].azimuth) / 2
+                midElevation = (targetMaxData[i].elevation + targetMinData[i].elevation) / 2
 
-                -- 出力チャンネル数上限をチェックしつつ、パックして出力
-                if outputCount < MAX_TARGETS_PER_RADAR then
-                    local pack1, pack2 = packTargetData(midDistance, midAzimuth, midElevation)
-                    outputNumber(outputCount * 2 + 1, pack1)
-                    outputNumber(outputCount * 2 + 2, pack2)
-                    outputCount = outputCount + 1
-                else
-                    -- 出力上限に達したらループを抜ける (Safety break)
-                    break
-                end
+                local pack1, pack2 = packTargetData(midDistance, midAzimuth, midElevation)
+                table.insert(outputTargetData,
+                    { pack1 = pack1, pack2 = pack2 })
             end
         end
 
+        --debug.log("#outputTargetData " .. #outputTargetData)
         -- 新しいフィルター期間のために、最大/最小値テーブルをリセット
         for i = 1, MAX_TARGETS_PER_RADAR do
             targetMaxData[i] = { distance = 0, azimuth = -1, elevation = -1 }
             targetMinData[i] = { distance = 9999999, azimuth = 1, elevation = 1 }
         end
     end
-
+    -- フィルターしたデータの出力(探知間隔更新時は1~4目標)
+    if currentRadarTick == 0 then
+        local outputCount = 0
+        for i = 1, math.min(#outputTargetData, 4) do
+            --debug.log("ch" .. (outputCount * 2 + 1) .. " , " .. (outputCount * 2 + 2) .. "tempCounter: " .. tempCounter)
+            outputNumber(outputCount * 2 + 1, outputTargetData[i].pack1)
+            outputNumber(outputCount * 2 + 2, outputTargetData[i].pack2)
+            outputCount = outputCount + 1
+        end
+    elseif currentRadarTick == 1 then
+        -- 探知間隔1tick目は5~8目標を出力
+        local outputCount = 0
+        for i = 5, math.min(#outputTargetData, 8) do
+            --debug.log("ch" .. (outputCount * 2 + 1) .. " , " .. (outputCount * 2 + 2) .. "tempCounter: " .. tempCounter)
+            outputNumber(outputCount * 2 + 1, outputTargetData[i].pack1)
+            outputNumber(outputCount * 2 + 2, outputTargetData[i].pack2)
+            outputCount = outputCount + 1
+        end
+    end
     -- 2. フィルター期間中の処理 (経過tick 0 から n-1 まで)
     -- ※ フィルター期間 `filterDuration` とレーダーの探知間隔が一致している前提
     --    もし異なる場合、この期間判定ロジックの見直しが必要

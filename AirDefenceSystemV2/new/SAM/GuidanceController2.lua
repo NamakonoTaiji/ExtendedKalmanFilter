@@ -335,12 +335,12 @@ function onTick()
 
                 --至近距離まで近接したら強制終末誘導
                 if usePnWithFilterOutput or distanceSq < 500 ^ 2 then
-                    --debug.log("ARH")
+                    debug.log("ARH")
                     -- Kalman Filterの推定値を使う
                     currentTargetPosVec = targetPosVec
                     currentTargetVelVec = targetVelVec
                 else
-                    --debug.log("DL")
+                    debug.log("DL")
                     -- Kalman Filterが無効 or Epsilon大 -> データリンク情報を目標とする
                     currentTargetPosVec = dataLinkTargetPosVec
                     currentTargetVelVec = dataLinkVelVec
@@ -372,6 +372,7 @@ function onTick()
                         -- 近接速度がマイナスの場合は自爆
                         if VcAverage < 0 and #VcArry > 10 then
                             proximityFuseTrigger = true
+                            debug.log("self distribution")
                         end
                         --[[debug.log("VcAVG: " ..
                             VcAverage .. " dist: " .. R_mag - (VcAverage * DT * FUSE_PROXIMITY_DURATION_TICKS))]]

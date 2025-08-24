@@ -667,7 +667,7 @@ end
 --------------------------------------------------------------------------------
 function onTick()
     local isDelayed1, isDelayed2
-    debug.log("tgtList: " .. #targetList)
+    --debug.log("tgtList: " .. #targetList)
     for internalId, target in pairs(targetList) do
         target.isUpdated = false
     end
@@ -737,9 +737,9 @@ function onTick()
                         dt_sec = dt_ticks / 60.0
                         X_post, P_post, epsilon = extendedKalmanFilterUpdate(currentTarget.X, currentTarget.P,
                             observation, physicsSensorData, dt_sec, currentTarget.epsilon)
-                        debug.log("eps: " .. epsilon)
+                        --debug.log("eps: " .. epsilon)
                         if epsilon < minEpsilon then
-                            debug.log("eps < minEps")
+                            --debug.log("eps < minEps")
                             minEpsilon = epsilon
                             bestMatchObsIndex = j
                             matchedState = X_post
@@ -749,11 +749,11 @@ function onTick()
                         end
                     end
                 end
-                debug.log("bestMatch:" .. bestMatchObsIndex)
+                --debug.log("bestMatch:" .. bestMatchObsIndex)
             end
             -- ★更新: 最良マッチが見つかった場合の処理
             if bestMatchObsIndex ~= -1 and minEpsilon <= DATA_ASSOCIATION_THRESHOLD then
-                debug.log("assoc")
+                --debug.log("assoc")
                 -- EKF状態更新
                 targetList[internalId].X = matchedState
                 targetList[internalId].P = matchedCovariance
@@ -774,7 +774,7 @@ function onTick()
                 -- 敵対判定実行
                 assignedObservationIndices[bestMatchObsIndex] = true
             else
-                debug.log("D_ASOC FAIL" .. "bestMatchIndex : " .. bestMatchObsIndex)
+                --debug.log("D_ASOC FAIL" .. "bestMatchIndex : " .. bestMatchObsIndex)
             end
         end
     end
@@ -801,7 +801,7 @@ function onTick()
         closingSpeed = calculateClosingSpeed(target, physicsSensorData)
         isLeaving = (closingSpeed < TARGET_IS_LEAVING_THRESHOLD)
         if isTimeout or isLeaving then
-            debug.log("timeOut: " .. tostring(isTimeout) .. " leaving: " .. closingSpeed .. " id: " .. internalId)
+            --debug.log("timeOut: " .. tostring(isTimeout) .. " leaving: " .. closingSpeed .. " id: " .. internalId)
             table.insert(targetIdsToDelete, internalId)
             -- ★ 削除対象になったら Output ID を解放
             releaseOutputId(target)
