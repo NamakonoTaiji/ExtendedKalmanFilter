@@ -135,9 +135,8 @@ end
    記録した最大/最小値から範囲中間値を計算し、packTargetData 関数で圧縮して出力する。
 --------------------------------------------------------------------------------
 ]]
-tempCounter = 0
+
 function onTick()
-    tempCounter = tempCounter + 1
     -- 出力チャンネルをクリア (毎tickクリアする方が安全)
     for i = 1, MAX_OUTPUT_CHANNELS do
         outputNumber(i, 0)
