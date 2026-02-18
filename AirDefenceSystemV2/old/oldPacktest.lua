@@ -37,7 +37,7 @@ function sign(a)
     if a < 0 then
         sgn = 1
     end
-    return tostring(sgn), math.abs(a)
+    return tostring(sgn), math["math.abs"](a)
 end
 
 function VariableUnpack(a, b)
@@ -54,8 +54,8 @@ function VariableUnpack(a, b)
         j = 2
     end
     s = list[i][j]
-    a = string.format("%7f", math.abs(a))
-    b = string.format("%7f", math.abs(b))
+    a = string.format("%7f", math["math.abs"](a))
+    b = string.format("%7f", math["math.abs"](b))
     d = tonumber(a:sub(6, 7) .. b:sub(6, -1))
     eabs = tonumber("0." .. a:sub(2, 5))
     fabs = tonumber("0." .. b:sub(2, 5))
@@ -68,5 +68,5 @@ end
 x1, x2 = Pack(100, 0.1, 0.05)
 print(x1, x2)
 
-d, e, f, s = VariableUnpack(x1, x2)
-print("distance:" .. d, "azimuth:" .. e, "elevation:" .. f, "id:" .. s)
+d, EXP, f, s = VariableUnpack(x1, x2)
+print("distance:" .. d, "azimuth:" .. EXP, "elevation:" .. f, "id:" .. s)

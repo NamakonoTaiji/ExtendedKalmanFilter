@@ -1,5 +1,5 @@
 inputNumber = input.getNumber
-oN = output.setNumber
+output.setNumber = output.setNumber
 PI = math.pi
 PI2 = PI * 2
 c = 0
@@ -167,8 +167,8 @@ function ValiableUnpack(a, b)
         j = 2
     end
     s = list[i][j]
-    a = string.format("%7f", math.abs(a))
-    b = string.format("%7f", math.abs(b))
+    a = string.format("%7f", math["math.abs"](a))
+    b = string.format("%7f", math["math.abs"](b))
     d = tonumber(a:sub(6, 7) .. b:sub(6, -1))
     eabs = tonumber("0." .. a:sub(2, 5))
     fabs = tonumber("0." .. b:sub(2, 5))
@@ -213,35 +213,35 @@ function onTick()
         for i = 1, #targetList do ---targetListに何か入ってる場合はDatasと比較して同定
             epsilonMin = math.huge
             for j = 1, #Datas do  ---DatasとtargetList[i]の距離を比較する
-                dt = (targetList[i].t - Datas[j].c) / 60
+                DT = (targetList[i].t - Datas[j].c) / 60
                 F = MatrixCopy(I)
                 for k = 1, 3 do
-                    F[2 * k - 1][2 * k] = dt
+                    F[2 * k - 1][2 * k] = DT
                 end
-                Qlist = { dt ^ 2, dt ^ 4 / 4 }
+                Qlist = { DT ^ 2, DT ^ 4 / 4 }
                 Q = zeros(6, 6)
                 for k = 1, 6 do
                     Q[k][k] = Qlist[k % 2 + 1]
-                    Q[k][k + k % 2 * 2 - 1] = dt ^ 3 / 2
+                    Q[k][k + k % 2 * 2 - 1] = DT ^ 3 / 2
                 end
                 obsZ = { { Datas[j].dist }, { Datas[j].ele }, { Datas[j].azi } }
                 X = MatrixCopy(targetList[i].X)
                 P = MatrixCopy(targetList[i].P)
                 R = MatrixCopy(R0)
                 R[1][1] = R[1][1] * obsZ[1][1] ^ 2
-                X, P, epsilon = KF(F, Q, R, obsZ, X, P, I, phyX, phyY, phyZ, targetList[i].epsilon,
+                X, P, EPSILON = KF(F, Q, R, obsZ, X, P, I, phyX, phyY, phyZ, targetList[i].epsilon,
                     targetList[i].t - Datas[j].c)
-                if epsilon < epsilonMin then
-                    epsilonMin = epsilon
+                if EPSILON < epsilonMin then
+                    epsilonMin = EPSILON
                     matchingID = j
                     matchingX = MatrixCopy(X)
                     matchingP = MatrixCopy(P)
-                    matchingEpsilon = epsilon
+                    matchingEpsilon = EPSILON
                 end
             end
             if matchingEpsilon <= 100 then                                                                           ---閾値以内ならtargetList[i]をDatas[j]で更新
                 --same target update
-                targetList[i] = { t = Datas[matchingID].c, X = matchingX, P = matchingP, epsilon = matchingEpsilon } ---targetList[i]を更新
+                targetList[i] = { t = Datas[matchingID].c, X = matchingX, P = matchingP, EPSILON = matchingEpsilon } ---targetList[i]を更新
                 table.remove(Datas, matchingID)                                                                      ---更新に使われたDatas[j]は消す
             end
             if #Datas == 0 then                                                                                      ---比較に使うDatasがなくなったらループを出る
@@ -284,14 +284,14 @@ function onTick()
         end
     end
     for i = 1, 32 do
-        oN(i, 0)
+        output.setNumber(i, 0)
     end
 
     for i = 1, #targetList do
         if targetList[i].epsilon ~= 1 then
-            oN(i * 3 - 2, targetList[i].X[1][1] + targetList[i].X[2][1] * targetList[i].t / 60)
-            oN(i * 3 - 1, targetList[i].X[3][1] + targetList[i].X[4][1] * targetList[i].t / 60)
-            oN(i * 3, targetList[i].X[5][1] + targetList[i].X[6][1] * targetList[i].t / 60)
+            output.setNumber(i * 3 - 2, targetList[i].X[1][1] + targetList[i].X[2][1] * targetList[i].t / 60)
+            output.setNumber(i * 3 - 1, targetList[i].X[3][1] + targetList[i].X[4][1] * targetList[i].t / 60)
+            output.setNumber(i * 3, targetList[i].X[5][1] + targetList[i].X[6][1] * targetList[i].t / 60)
         end
     end
 end

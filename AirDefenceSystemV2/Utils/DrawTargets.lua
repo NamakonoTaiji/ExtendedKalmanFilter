@@ -193,7 +193,7 @@ function inv(M)
     end -- 入力チェック
     for r = 1, n do
         local piv = aug[r][r]
-        if piv == nil or math.abs(piv) < 1e-12 then return nil end -- ピボットチェック
+        if piv == nil or math["math.abs"](piv) < 1e-12 then return nil end -- ピボットチェック
         for c = r, 2 * n do
             if aug[r][c] == nil then return nil end
             aug[r][c] = aug[r][c] / piv

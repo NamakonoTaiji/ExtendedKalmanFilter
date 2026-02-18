@@ -1,91 +1,91 @@
-iN=input.getNumber
-iB=input.getBool
-oN=output.setNumber
-oB=output.setBool
-DT=screen.drawText
-SF=string.format
-pN=property.getNumber
-M=math
-pi=M.pi
-pi2=pi*2
-sin,cos=M.sin,M.cos
-maxSamp=-1
-maxSampIO=0
-minData=M.huge
-maxData=0
-maxAzimuth=0
-minAzimuth=9
-maxElev=0
-minElev=9
-outputR=0
-outputA=0
-outputE=0
-phyX,phyY,phyZ,eulerX,eulerY,eulerZ=0,0,0,0,0,0
+input.getNumber = input.getNumber
+input.getBool = input.getBool
+output.setNumber = output.setNumber
+output.setBool = output.setBool
+screen.drawText = screen.drawText
+string.format = string.format
+property.getNumber = property.getNumber
+math = math
+PI = math.pi
+PI2 = PI * 2
+sin, cos = math.sin, math.cos
+maxSamp = -1
+maxSampIO = 0
+minData = math.huge
+maxData = 0
+maxAzimuth = 0
+minAzimuth = 9
+maxElev = 0
+minElev = 9
+outputR = 0
+outputA = 0
+outputE = 0
+phyX, phyY, phyZ, eulerX, eulerY, eulerZ = 0, 0, 0, 0, 0, 0
 function onTick()
-    range=iN(1)
-    azimuth=iN(2)
-    elev=iN(3)
-    
-    isDetect=iB(1)
+    range = input.getNumber(1)
+    azimuth = input.getNumber(2)
+    elev = input.getNumber(3)
+
+    isDetect = input.getBool(1)
     if not isDetect then
-        maxData=0
-        minData=M.huge
-        maxAzimuth=-9
-        minAzimuth=9
-        maxElev=-9
-        minElev=9
-        maxSampIO=0
-        maxSamp=-1
+        maxData = 0
+        minData = math.huge
+        maxAzimuth = -9
+        minAzimuth = 9
+        maxElev = -9
+        minElev = 9
+        maxSampIO = 0
+        maxSamp = -1
     end
 
     if isDetect then
-    	if maxSamp>=iN(4) then
-        	maxSampIO=1
-    	end
-        maxSamp=M.max(maxSamp,iN(4))
-        if iN(4)==0 then
-            phyX=iN(8)
-            phyY=iN(12)
-            phyZ=iN(16)
-            eulerX=iN(20)
-            eulerY=iN(24)
-            eulerZ=iN(28)
-            maxData=0
-            minData=M.huge
-            maxAzimuth=-9
-            minAzimuth=9
-            maxElev=-9
-            minElev=9
+        if maxSamp >= input.getNumber(4) then
+            maxSampIO = 1
         end
-        
-        maxData=M.max(range,maxData)
-        minData=M.min(range,minData)
-        maxAzimuth=M.max(azimuth,maxAzimuth)
-        minAzimuth=M.min(azimuth,minAzimuth)
-        maxElev=M.max(elev,maxElev)
-        minElev=M.min(elev,minElev)
-    
-        outputR=(maxData+minData)/2
-        outputA=(maxAzimuth+minAzimuth)/2
-        outputE=(maxElev+minElev)/2
+        maxSamp = math.max(maxSamp, input.getNumber(4))
+        if input.getNumber(4) == 0 then
+            phyX = input.getNumber(8)
+            phyY = input.getNumber(12)
+            phyZ = input.getNumber(16)
+            eulerX = input.getNumber(20)
+            eulerY = input.getNumber(24)
+            eulerZ = input.getNumber(28)
+            maxData = 0
+            minData = math.huge
+            maxAzimuth = -9
+            minAzimuth = 9
+            maxElev = -9
+            minElev = 9
+        end
+
+        maxData = math.max(range, maxData)
+        minData = math.min(range, minData)
+        maxAzimuth = math.max(azimuth, maxAzimuth)
+        minAzimuth = math.min(azimuth, minAzimuth)
+        maxElev = math.max(elev, maxElev)
+        minElev = math.min(elev, minElev)
+
+        outputR = (maxData + minData) / 2
+        outputA = (maxAzimuth + minAzimuth) / 2
+        outputE = (maxElev + minElev) / 2
     end
-    oN(1,phyX)
-    oN(2,phyY)
-    oN(3,phyZ)
-    oN(4,eulerX)
-    oN(5,eulerY)
-    oN(6,eulerZ)
-    oN(20,outputR)
-    oN(18,outputA)
-    oN(19,outputE)
-    oN(24,(maxSamp+1)*maxSampIO)
-	oB(1,iB(1))
+    output.setNumber(1, phyX)
+    output.setNumber(2, phyY)
+    output.setNumber(3, phyZ)
+    output.setNumber(4, eulerX)
+    output.setNumber(5, eulerY)
+    output.setNumber(6, eulerZ)
+    output.setNumber(20, outputR)
+    output.setNumber(18, outputA)
+    output.setNumber(19, outputE)
+    output.setNumber(24, (maxSamp + 1) * maxSampIO)
+    output.setBool(1, input.getBool(1))
 end
 
 function clamp(v, min, max)
-    return M.min(M.max(v, min), max)
+    return math.min(math.max(v, min), max)
 end
 
 function STRF(v)
-    return SF("%1.3f",v)
+    return string.format("%1.3f", v)
 end

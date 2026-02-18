@@ -66,14 +66,14 @@ KalmanFilter_SAM.lua (v0.3 - 新コーディングルール適用: nilチェッ�
 -- 定数
 PI = math.pi
 PI2 = PI * 2
-DT = 1 / 60           -- EKF更新の時間ステップ (秒)
-MAX_RADAR_TARGETS = 6 -- 処理するレーダー目標の最大数
-NUM_STATES = 6        -- EKF状態数 (x, vx, y, vy, z, vz)
+screen.drawText = 1 / 60 -- EKF更新の時間ステップ (秒)
+MAX_RADAR_TARGETS = 6    -- 処理するレーダー目標の最大数
+NUM_STATES = 6           -- EKF状態数 (x, vx, y, vy, z, vz)
 
 -- EKF パラメータ (プロパティから読み込む想定)
 DATA_ASSOCIATION_EPSILON_THRESHOLD = property.getNumber("D_ASOC_EPS")            -- データアソシエーションのε閾値
 TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")                       -- 目標ロスト判定のTick数 (約2秒)
-INIT_MAX_DISTANCE = property.getNumber("INIT_MAX_DIST")                          -- 初期化時のデータリンク座標との最大許容距離(m)
+INIT_MAX_DISTANCE_DIFF = property.getNumber("INIT_MAX_DIST")                     -- 初期化時のデータリンク座標との最大許容距離(m)
 PROCESS_NOISE_BASE = property.getNumber("P_BASE")                                -- プロセスノイズの大きさを調整
 PROCESS_NOISE_ADAPTIVE_SCALE = property.getNumber("P_ADPT")                      -- プロセスノイズの適応的調整。観測と予測の差が大きいほどプロセスノイズが増える。
 PROCESS_NOISE_EPSILON_THRESHOLD = property.getNumber("P_NOISE_EPS_THRS")         -- P_ADPTによるスケーリングを開始するεの閾値。εがこれを超えると適応的調整が入り始める。
@@ -91,7 +91,7 @@ currentTick = 0
 isTracking = false  -- 現在有効な追跡を行っているか
 
 -- 単位行列
-identityMatrix6x6 = { { 1, 0, 0, 0, 0, 0 }, { 0, 1, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0 }, { 0, 0, 0, 1, 0, 0 }, { 0, 0, 0, 0, 1, 0 }, { 0, 0, 0, 0, 0, 1 } }
+identityMatrix9x9 = { { 1, 0, 0, 0, 0, 0 }, { 0, 1, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0 }, { 0, 0, 0, 1, 0, 0 }, { 0, 0, 0, 0, 1, 0 }, { 0, 0, 0, 0, 0, 1 } }
 
 --------------------------------------------------------------------------------
 -- ベクトル演算ヘルパー関数
@@ -274,7 +274,7 @@ function inv(M)
     end -- 入力チェック
     for r = 1, n do
         local piv = aug[r][r]
-        if piv == nil or math.abs(piv) < 1e-12 then return nil end -- ピボットチェック
+        if piv == nil or math["math.abs"](piv) < 1e-12 then return nil end -- ピボットチェック
         for c = r, 2 * n do
             if aug[r][c] == nil then return nil end
             aug[r][c] = aug[r][c] / piv
@@ -490,8 +490,8 @@ function extendedKalmanFilterUpdate(currentTarget, observation, ownPosition)
     lastEpsilon = currentTarget.epsilon or 1.0
 
     -- === 1. 予測ステップ ===
-    dt_sec = DT -- 固定時間ステップ
-    F = MatrixCopy(identityMatrix6x6);
+    dt_sec = screen.drawText -- 固定時間ステップ
+    F = MatrixCopy(identityMatrix9x9);
     -- nilチェックは原則削除
     F[1][2] = dt_sec
     F[3][4] = dt_sec
@@ -564,7 +564,7 @@ function extendedKalmanFilterUpdate(currentTarget, observation, ownPosition)
     -- 共分散 P の更新 (Joseph form): P_up = (I - K*H)*P_pred*(I - K*H)^T + K*R*K^T
     KH_term = mul(K, H)
     -- nilチェックは原則削除
-    I_minus_KH = sub(identityMatrix6x6, KH_term)
+    I_minus_KH = sub(identityMatrix9x9, KH_term)
     -- nilチェックは原則削除
     P_up_term1 = mul(I_minus_KH, P_predicted, T(I_minus_KH))
     P_up_term2 = mul(K, R_matrix, T(K))
@@ -702,7 +702,7 @@ function onTick()
                 if isDataLinkUpdateStopped then
                     minInitDistSq = math.huge()
                 else
-                    minInitDistSq = INIT_MAX_DISTANCE ^ 2 -- 初期化時の最大許容距離(m)^2
+                    minInitDistSq = INIT_MAX_DISTANCE_DIFF ^ 2 -- 初期化時の最大許容距離(m)^2
                 end
 
                 bestInitObs = nil
@@ -736,9 +736,9 @@ function onTick()
             -- nilチェックは原則削除
 
             -- 予測ステップ (アソシエーション試算用、状態は変更しない)
-            dt_pred_sec = (currentTick - trackedTarget.lastTick) * DT
+            dt_pred_sec = (currentTick - trackedTarget.lastTick) * screen.drawText
             if dt_pred_sec < 0 then dt_pred_sec = 0 end
-            F_pred = MatrixCopy(identityMatrix6x6);
+            F_pred = MatrixCopy(identityMatrix9x9);
             -- nilチェックは原則削除
             F_pred[1][2] = dt_pred_sec
             F_pred[3][4] = dt_pred_sec
@@ -797,9 +797,9 @@ function onTick()
         -- 予測ステップのみ実行して状態を維持 (Inertial相当)
         -- lastTick nil チェック
         if trackedTarget.lastTick == nil then trackedTarget.lastTick = currentTick end
-        dt_pred_sec = (currentTick - trackedTarget.lastTick) * DT
+        dt_pred_sec = (currentTick - trackedTarget.lastTick) * screen.drawText
         if dt_pred_sec > 0 then
-            F_pred = MatrixCopy(identityMatrix6x6)
+            F_pred = MatrixCopy(identityMatrix9x9)
             -- nilチェックは原則削除
             if F_pred ~= nil then
                 F_pred[1][2] = dt_pred_sec
@@ -820,17 +820,17 @@ function onTick()
     end
 
     -- 4. 出力 (デバッグ用)
-    output.setBool(1, isTracking)                                                             -- トラッキング成功フラグ
-    output.setBool(2, input.getBool(3))                                                       -- 発射したか否か
-    if trackedTarget ~= nil and trackedTarget.X ~= nil then                                   -- Xのnilチェックは残す
+    output.setBool(1, isTracking)                                                                          -- トラッキング成功フラグ
+    output.setBool(2, input.getBool(3))                                                                    -- 発射したか否か
+    if trackedTarget ~= nil and trackedTarget.X ~= nil then                                                -- Xのnilチェックは残す
         -- Xの各要素が存在するかはチェックしない (nilチェック原則禁止のため)
-        output.setNumber(1, trackedTarget.X[1][1] + trackedTarget.X[2][1] * DT * LOGIC_DELAY) -- 推定 X
-        output.setNumber(2, trackedTarget.X[3][1] + trackedTarget.X[4][1] * DT * LOGIC_DELAY) -- 推定 Y
-        output.setNumber(3, trackedTarget.X[5][1] + trackedTarget.X[6][1] * DT * LOGIC_DELAY) -- 推定 Z
-        output.setNumber(4, trackedTarget.X[2][1])                                            -- 推定 Vx
-        output.setNumber(5, trackedTarget.X[4][1])                                            -- 推定 Vy
-        output.setNumber(6, trackedTarget.X[6][1])                                            -- 推定 Vz
-        output.setNumber(32, trackedTarget.epsilon or 0)                                      -- 最新のε (nilなら0)
+        output.setNumber(1, trackedTarget.X[1][1] + trackedTarget.X[2][1] * screen.drawText * LOGIC_DELAY) -- 推定 X
+        output.setNumber(2, trackedTarget.X[3][1] + trackedTarget.X[4][1] * screen.drawText * LOGIC_DELAY) -- 推定 Y
+        output.setNumber(3, trackedTarget.X[5][1] + trackedTarget.X[6][1] * screen.drawText * LOGIC_DELAY) -- 推定 Z
+        output.setNumber(4, trackedTarget.X[2][1])                                                         -- 推定 Vx
+        output.setNumber(5, trackedTarget.X[4][1])                                                         -- 推定 Vy
+        output.setNumber(6, trackedTarget.X[6][1])                                                         -- 推定 Vz
+        output.setNumber(32, trackedTarget.epsilon or 0)                                                   -- 最新のε (nilなら0)
     else
         -- トラックがない場合は0を出力
         for i = 1, 6 do

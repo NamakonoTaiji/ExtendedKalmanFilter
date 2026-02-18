@@ -86,9 +86,9 @@ local function packTargetData(distance, azimuth, elevation)
 
     -- 2. 角度の符号と小数部4桁文字列 (変更なし)
     aziSignCode = getSignCode(azimuth)
-    local absAzimuth = math.abs(azimuth) + 0.00005
+    local absAzimuth = math["math.abs"](azimuth) + 0.00005
     eleSignCode = getSignCode(elevation)
-    local absElevation = math.abs(elevation) + 0.00005
+    local absElevation = math["math.abs"](elevation) + 0.00005
     local aziFormatted = string.format("%f", absAzimuth)
     local eleFormatted = string.format("%f", absElevation)
     local aziDotPos = string.find(aziFormatted, "%.")
@@ -199,7 +199,7 @@ function onTick()
     --    もし異なる場合、この期間判定ロジックの見直しが必要
     -- if currentRadarTick < filterDuration then -- この条件は必ずしも正しくない
     -- レーダーからの各目標の検出状態を確認し、検出中なら最大/最小値を更新
-    for i = 1, MAX_TARGETS_PER_RADAR do
+    for i = MAX_TARGETS_PER_RADAR, 1, -1 do
         if inputBool(i) then -- 目標i を検出中か？
             local currentDistance = inputNumber(i * 4 - 3)
             local currentAzimuth = inputNumber(i * 4 - 2)

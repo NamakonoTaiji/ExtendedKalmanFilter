@@ -86,9 +86,9 @@ local function packTargetData(distance, azimuth, elevation)
 
     -- 2. 角度の符号と小数部4桁文字列 (変更なし)
     aziSignCode = getSignCode(azimuth)
-    local absAzimuth = math.abs(azimuth) + 0.00005
+    local absAzimuth = math["math.abs"](azimuth) + 0.00005
     eleSignCode = getSignCode(elevation)
-    local absElevation = math.abs(elevation) + 0.00005
+    local absElevation = math["math.abs"](elevation) + 0.00005
     local aziFormatted = string.format("%f", absAzimuth)
     local eleFormatted = string.format("%f", absElevation)
     local aziDotPos = string.find(aziFormatted, "%.")

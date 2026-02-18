@@ -1,10 +1,10 @@
-iN = input.getNumber
-iB = input.getBool
-oN = output.setNumber
-oB = output.setBool
-M = math
-pi = M.pi
-pi2 = pi * 2
+input.getNumber = input.getNumber
+input.getBool = input.getBool
+output.setNumber = output.setNumber
+output.setBool = output.setBool
+math = math
+PI = math.pi
+PI2 = PI * 2
 n = property.getNumber("n")
 
 targetN = 6
@@ -51,17 +51,17 @@ function sign(a)
     if a < 0 then
         sgn = 1
     end
-    return tostring(sgn), math.abs(a)
+    return tostring(sgn), math["math.abs"](a)
 end
 
 function onTick()
     for i = 1, 6 do
-        oN(i * 2 - 1, 0)
-        oN(i * 2, 0)
+        output.setNumber(i * 2 - 1, 0)
+        output.setNumber(i * 2, 0)
     end
-    isDetect = iB(1)
+    isDetect = input.getBool(1)
     if isDetect then
-        if iN(4) == 0 then
+        if input.getNumber(4) == 0 then
             for i = 1, 6 do
                 maxDatas[i] = { dis = 0, azi = -1, ele = -1 }
             end
@@ -72,33 +72,41 @@ function onTick()
         end
 
         for i = 1, 6 do
-            if iB(i) then
+            if input.getBool(i) then
                 local Rdis, Razi, Rele
-                Rdis = iN(i * 4 - 3)
-                Razi = iN(i * 4 - 2)
-                Rele = iN(i * 4 - 1)
-                maxDatas[i] = { dis = M.max(Rdis, maxDatas[i].dis), azi = M.max(Razi, maxDatas[i].azi), ele = M.max(Rele,
-                    maxDatas[i].ele) }
-                minDatas[i] = { dis = M.min(Rdis, minDatas[i].dis), azi = M.min(Razi, minDatas[i].azi), ele = M.min(Rele,
-                    minDatas[i].ele) }
+                Rdis = input.getNumber(i * 4 - 3)
+                Razi = input.getNumber(i * 4 - 2)
+                Rele = input.getNumber(i * 4 - 1)
+                maxDatas[i] = {
+                    dis = math.max(Rdis, maxDatas[i].dis),
+                    azi = math.max(Razi, maxDatas[i].azi),
+                    ele = math.max(Rele,
+                        maxDatas[i].ele)
+                }
+                minDatas[i] = {
+                    dis = math.min(Rdis, minDatas[i].dis),
+                    azi = math.min(Razi, minDatas[i].azi),
+                    ele = math.min(Rele,
+                        minDatas[i].ele)
+                }
             end
         end
 
-        if iN(4) + 1 == n then
+        if input.getNumber(4) + 1 == n then
             for i = #maxDatas, 1, -1 do
                 if maxDatas[i].dis == 0 then
                     table.remove(maxDatas, i)
                 end
             end
-            for i = 1, M.min(6, #maxDatas) do
-                if iB(i) then
+            for i = 1, math.min(6, #maxDatas) do
+                if input.getBool(i) then
                     outputR = (maxDatas[i].dis + minDatas[i].dis) / 2
                     outputA = (maxDatas[i].azi + minDatas[i].azi) / 2
                     outputE = (maxDatas[i].ele + minDatas[i].ele) / 2
                     if outputR > 100 then
                         pack1, pack2 = Pack(outputR, outputA, outputE)
-                        oN(i * 2 - 1, -pack1) --[[Radar1: -- Radar2: -+ Radar3: +- Radar4 ++]]
-                        oN(i * 2, -pack2)
+                        output.setNumber(i * 2 - 1, -pack1) --[[Radar1: -- Radar2: -+ Radar3: +- Radar4 ++]]
+                        output.setNumber(i * 2, -pack2)
                     end
                 end
             end

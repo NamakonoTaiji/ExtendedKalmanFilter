@@ -54,11 +54,11 @@ Pack関数内で角度の符号をエンコードするために使用。
 
 圧縮仕様 (元のコード [source: 70-72] からの解析):
 1. 距離 `distance` の桁数を判定。
-   - 1000m以上 (>=3桁) の場合: `q=0`, 距離を四捨五入(?)し、整数部5桁の文字列 `d` を生成。
-   - 1000m未満 (<3桁) の場合: `q=1`, 距離を四捨五入(?)し、整数部4桁(0埋め)の文字列 `d` を生成。
+   - 1000m以上 (>=3桁) の場合: `q=0`, 距離を四捨五入し、整数部5桁の文字列 `d` を生成。
+   - 1000m未満 (<3桁) の場合: `q=1`, 距離を四捨五入し、整数部4桁(0埋め)の文字列 `d` を生成。
 2. 方位角 `azimuth` の符号 `bsgn` (1 or 2) と絶対値 `babs` を取得。
 3. 仰角 `elevation` の符号 `csgn` (1 or 2) と絶対値 `cabs` を取得。
-4. `babs` と `cabs` を小数点以下4桁で丸め(?)、その4桁の数字列 `e`, `f` を取得。
+4. `babs` と `cabs` を小数点以下4桁で丸め、その4桁の数字列 `e`, `f` を取得。
 5. `pack1_val = bsgn .. e .. dの前半2桁` を数値化。
 6. `pack2_val = csgn .. f .. dの後半2桁(q=1)または3桁(q=0)` を数値化。
 7. `RADAR_ID` に基づいて `pack1_val`, `pack2_val` の符号を決定して返す。
@@ -83,9 +83,9 @@ local function packTargetData(distance, azimuth, elevation)
 
     -- 2. 角度の符号と小数部4桁文字列 (変更なし)
     aziSignCode = getSignCode(azimuth)
-    local absAzimuth = math.abs(azimuth) + 0.00005
+    local absAzimuth = math["math.abs"](azimuth) + 0.00005
     eleSignCode = getSignCode(elevation)
-    local absElevation = math.abs(elevation) + 0.00005
+    local absElevation = math["math.abs"](elevation) + 0.00005
     local aziFormatted = string.format("%f", absAzimuth)
     local eleFormatted = string.format("%f", absElevation)
     local aziDotPos = string.find(aziFormatted, "%.")
@@ -197,7 +197,7 @@ function onTick()
     --    もし異なる場合、この期間判定ロジックの見直しが必要
     -- if currentRadarTick < filterDuration then -- この条件は必ずしも正しくない
     -- レーダーからの各目標の検出状態を確認し、検出中なら最大/最小値を更新
-    for i = 1, MAX_TARGETS_PER_RADAR do
+    for i = MAX_TARGETS_PER_RADAR, 1, -1 do
         if inputBool(i) then -- 目標i を検出中か？
             local currentDistance = inputNumber(i * 4 - 3)
             local currentAzimuth = inputNumber(i * 4 - 2)

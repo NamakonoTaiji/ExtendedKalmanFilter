@@ -88,7 +88,7 @@ HOSTILE_RECENT_UPDATES_THRESHOLD = property.getNumber("TGT_RECENT_UPDATE") -- �
 
 
 -- 単位行列 I (6x6)
-identityMatrix6x6 = { { 1, 0, 0, 0, 0, 0 }, { 0, 1, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0 }, { 0, 0, 0, 1, 0, 0 }, { 0, 0, 0, 0, 1, 0 }, { 0, 0, 0, 0, 0, 1 } }
+identityMatrix9x9 = { { 1, 0, 0, 0, 0, 0 }, { 0, 1, 0, 0, 0, 0 }, { 0, 0, 1, 0, 0, 0 }, { 0, 0, 0, 1, 0, 0 }, { 0, 0, 0, 0, 1, 0 }, { 0, 0, 0, 0, 0, 1 } }
 
 -- グローバル変数 (状態保持)
 targetList = {}                                                           -- 追跡中の目標リスト { id, lastTick, X=stateVector, P=covarianceMatrix, epsilon=lastEpsilon }
@@ -193,7 +193,7 @@ function inv(M)
     end -- 入力チェック
     for r = 1, n do
         local piv = aug[r][r]
-        if piv == nil or math.abs(piv) < 1e-12 then return nil end -- ピボットチェック
+        if piv == nil or math["math.abs"](piv) < 1e-12 then return nil end -- ピボットチェック
         for c = r, 2 * n do
             if aug[r][c] == nil then return nil end
             aug[r][c] = aug[r][c] / piv
@@ -246,8 +246,8 @@ function unpackTargetData(pack1, pack2)
     radarId = s - 1
 
     -- 2. 絶対値を取得
-    absPack1 = math.abs(pack1)
-    absPack2 = math.abs(pack2)
+    absPack1 = math["math.abs"](pack1)
+    absPack2 = math["math.abs"](pack2)
 
     -- 3. 絶対値を直接文字列に変換し、その後で文字列としてゼロ埋め
     pack1Str = string.format("%.0f", absPack1) -- まず整数文字列に
@@ -558,7 +558,7 @@ function extendedKalmanFilterUpdate(stateVector, covariance, observation, ownPos
     local F, X_predicted, P_predicted, Z, H, h, R, Y, S, S_inv, K, X_updated, P_updated, epsilon, dt2, dt3, dt4, Q_base, Q_adapted, uncertaintyIncreaseFactor, adaptiveFactor, I_minus_KH
 
     -- 1. 予測ステップ (Predict)
-    F = MatrixCopy(identityMatrix6x6)
+    F = MatrixCopy(identityMatrix9x9)
     F[1][2] = dt
     F[3][4] = dt
     F[5][6] = dt
@@ -594,7 +594,7 @@ function extendedKalmanFilterUpdate(stateVector, covariance, observation, ownPos
     if S_inv == nil then return stateVector, covariance, lastEpsilon end -- 逆行列計算失敗
     K = mul(P_predicted, T(H), S_inv)
     X_updated = sum(X_predicted, mul(K, Y))
-    I_minus_KH = sub(identityMatrix6x6, mul(K, H))
+    I_minus_KH = sub(identityMatrix9x9, mul(K, H))
     P_updated = sum(mul(I_minus_KH, P_predicted, T(I_minus_KH)), mul(K, R, T(K)))
     epsilon = mul(T(Y), S_inv, Y)[1][1]
     return X_updated, P_updated, epsilon

@@ -1,7 +1,7 @@
 inputNumber = input.getNumber
 inputBool = input.getBool
-oN = output.setNumber
-oB = output.setBool
+output.setNumber = output.setNumber
+output.setBool = output.setBool
 math = math
 PI = math.pi
 PI2 = PI * 2
@@ -51,13 +51,13 @@ function sign(a)
     if a < 0 then
         sgn = 1
     end
-    return tostring(sgn), math.abs(a)
+    return tostring(sgn), math["math.abs"](a)
 end
 
 function onTick()
     for i = 1, 6 do
-        oN(i * 2 - 1, 0)
-        oN(i * 2, 0)
+        output.setNumber(i * 2 - 1, 0)
+        output.setNumber(i * 2, 0)
     end
     isDetect = inputBool(1)
     if isDetect then
@@ -105,8 +105,8 @@ function onTick()
                     outputE = (maxDatas[i].ele + minDatas[i].ele) / 2
                     if outputR > 100 then
                         pack1, pack2 = Pack(outputR, outputA, outputE)
-                        oN(i * 2 - 1, -pack1) --[[Radar1: -- Radar2: -+ Radar3: +- Radar4 ++]]
-                        oN(i * 2, -pack2)
+                        output.setNumber(i * 2 - 1, -pack1) --[[Radar1: -- Radar2: -+ Radar3: +- Radar4 ++]]
+                        output.setNumber(i * 2, -pack2)
                     end
                 end
             end
