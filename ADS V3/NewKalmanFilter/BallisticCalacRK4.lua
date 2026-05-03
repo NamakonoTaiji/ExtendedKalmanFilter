@@ -1,5 +1,5 @@
 --[[
-    弾道計算器スクリプト (RK4版)
+    弾道計算器スクリプト (高度による重力・空気抵抗変化対応版)
 ]]
 
 -- Cannon Parameters
@@ -41,11 +41,12 @@ PI = math.pi
 PI2 = PI * 2
 DT = 1 / 60
 V0 = Param[INDEX][1] / 60 -- (m/tick)
-K = Param[INDEX][2]       -- Drag Coefficient (Linear)
+K = Param[INDEX][2]       -- Drag Coefficient (Base)
 LIFESPAN = Param[INDEX][3]
 WIND_FACTOR = Param[INDEX][4]
-GRAVITY_ACC = 30 / 60 ^ 2            -- (m/tick^2)
-GRAVITY_VEC = { 0, -GRAVITY_ACC, 0 } -- Gravity Vector
+
+-- 重力定数 (海面高度 30m/s^2)
+GRAVITY_BASE = 30 / 60 ^ 2 -- (m/tick^2)
 
 errCount = 60
 
@@ -101,14 +102,42 @@ function localToGlobal(localPos, objPos, objQuat)
 end
 
 --------------------------------------------------------------------------------
+-- 環境計算関数 (高度依存の重力・空気密度)
+--------------------------------------------------------------------------------
+function getAtmosphere(y)
+    -- y: altitude in meters
+    local h = math.max(0, y)
+
+    -- 1. Gravity: g(h) = 30 * exp(-h/6000)
+    -- CSV解析結果よりスケールハイトは約6000m
+    local g_acc = GRAVITY_BASE * math.exp(-h / 6000)
+
+    -- 2. Air Density Factor: (1 - h/44330)^5.256
+    -- CSV解析結果 (標準大気モデル)
+    local rho = 0
+    if h < 44330 then
+        rho = (1 - h / 44330) ^ 5.256
+    end
+
+    return g_acc, rho
+end
+
+--------------------------------------------------------------------------------
 -- 数値計算 (RK4) コアロジック
 --------------------------------------------------------------------------------
 
--- 加速度計算関数 (運動方程式)
--- Pos: {x,y,z}, Vel: {x,y,z}, Env: {gravity, drag, windVec, windFactor}
-function getAcceleration(vel, env)
-    -- 線形空気抵抗: F_drag = -k * (V - V_wind)
-    -- Stormworksの抵抗は速度ベクトルに対して掛かる
+-- 加速度計算関数
+-- pos: {x,y,z} (relative to initial), vel: {x,y,z}
+-- env: {y0 (absolute start altitude), base_drag, windVec, windFactor}
+function getAcceleration(pos, vel, env)
+    -- 現在の絶対高度
+    local current_alt = env.y0 + pos[2]
+
+    -- 環境パラメータ取得
+    local g_curr, rho_curr = getAtmosphere(current_alt)
+    local drag_curr = env.base_drag * rho_curr
+
+    -- 風の影響
     local wx = env.windVec.x * env.windFactor
     local wy = env.windVec.y * env.windFactor
     local wz = env.windVec.z * env.windFactor
@@ -117,10 +146,10 @@ function getAcceleration(vel, env)
     local rvy = vel[2] - wy
     local rvz = vel[3] - wz
 
-    -- 加速度 = 重力 - 抵抗係数 * 相対速度
-    local ax = env.gravity[1] - env.drag * rvx
-    local ay = env.gravity[2] - env.drag * rvy
-    local az = env.gravity[3] - env.drag * rvz
+    -- 加速度 = 重力(下向き) - 抵抗 * 相対速度
+    local ax = -drag_curr * rvx
+    local ay = -g_curr - drag_curr * rvy
+    local az = -drag_curr * rvz
 
     return { ax, ay, az }
 end
@@ -128,26 +157,29 @@ end
 -- ルンゲ＝クッタ法による1ステップ積分
 function rk4Step(pos, vel, dt, env)
     -- k1
-    local a1 = getAcceleration(vel, env)
+    local a1 = getAcceleration(pos, vel, env)
     local v1 = { vel[1], vel[2], vel[3] }
 
     -- k2
+    local p2 = { pos[1] + v1[1] * dt * 0.5, pos[2] + v1[2] * dt * 0.5, pos[3] + v1[3] * dt * 0.5 }
     local v2 = { vel[1] + a1[1] * dt * 0.5, vel[2] + a1[2] * dt * 0.5, vel[3] + a1[3] * dt * 0.5 }
-    local a2 = getAcceleration(v2, env)
+    local a2 = getAcceleration(p2, v2, env)
 
     -- k3
+    local p3 = { pos[1] + v2[1] * dt * 0.5, pos[2] + v2[2] * dt * 0.5, pos[3] + v2[3] * dt * 0.5 }
     local v3 = { vel[1] + a2[1] * dt * 0.5, vel[2] + a2[2] * dt * 0.5, vel[3] + a2[3] * dt * 0.5 }
-    local a3 = getAcceleration(v3, env)
+    local a3 = getAcceleration(p3, v3, env)
 
     -- k4
+    local p4 = { pos[1] + v3[1] * dt, pos[2] + v3[2] * dt, pos[3] + v3[3] * dt }
     local v4 = { vel[1] + a3[1] * dt, vel[2] + a3[2] * dt, vel[3] + a3[3] * dt }
-    local a4 = getAcceleration(v4, env)
+    local a4 = getAcceleration(p4, v4, env)
 
     -- Update
     local nPos = {
-        pos[1] + (vel[1] + 2 * v2[1] + 2 * v3[1] + v4[1]) * dt / 6,
-        pos[2] + (vel[2] + 2 * v2[2] + 2 * v3[2] + v4[2]) * dt / 6,
-        pos[3] + (vel[3] + 2 * v2[3] + 2 * v3[3] + v4[3]) * dt / 6
+        pos[1] + (v1[1] + 2 * v2[1] + 2 * v3[1] + v4[1]) * dt / 6,
+        pos[2] + (v1[2] + 2 * v2[2] + 2 * v3[2] + v4[2]) * dt / 6,
+        pos[3] + (v1[3] + 2 * v2[3] + 2 * v3[3] + v4[3]) * dt / 6
     }
 
     local nVel = {
@@ -159,31 +191,60 @@ function rk4Step(pos, vel, dt, env)
     return nPos, nVel
 end
 
--- 弾道シミュレーションを実行し、指定時間後の位置を返す
+-- 弾道シミュレーションを実行し、指定時間後の位置を返す (安全装置付き)
 function simulateTrajectory(v0_vec, flightTime, env)
-    local pos = { 0, 0, 0 } -- 発射位置（相対座標なので0）
+    local pos = { 0, 0, 0 } -- 相対発射位置
     local vel = v0_vec
     local t = 0
 
-    -- 計算負荷削減のため、ステップ幅を大きく取る (例: 5 tick分まとめて計算)
-    -- 精度が必要な場合は step_dt を小さくする (最小 1.0)
-    local step_dt = 1.0
+    -- ★安全策1: 最大飛行時間の制限
+    -- 弾の寿命(LIFESPAN)や現実的な時間(例:60秒=3600tick)を超えて計算させない
+    local max_allowed_time = 3600 -- 60秒
+    local safe_flightTime = math.min(flightTime, max_allowed_time)
 
-    while t < flightTime do
-        local dt_curr = math.min(step_dt, flightTime - t)
+    -- ★設定: シミュレーション精度調整
+    -- 目標分割数: これくらいの回数で計算を終わらせたい
+    local target_steps = 35
+
+    -- 最小ステップ幅(tick): これより細かくは計算しない (精度確保のため小さすぎない値)
+    local min_dt = 2.0
+
+    -- 最大ステップ幅(tick): これより粗くは計算しない (物理崩壊防止のため大きすぎない値)
+    -- 20 tick = 0.33秒。これ以上粗いと重力落下の誤差が大きくなる
+    local max_dt = 10.0
+
+    -- ステップ幅の決定
+    -- 基本は「飛行時間 ÷ 目標回数」だが、min_dt と max_dt の範囲に収める
+    local calculated_dt = safe_flightTime / target_steps
+    local step_dt = math.max(min_dt, math.min(max_dt, calculated_dt))
+
+    -- ★安全策2: 強制ループ脱出カウンタ
+    -- 万が一計算が終わらなくても、100回ループしたら強制的に打ち切る
+    local loop_safety_count = 0
+
+    while t < safe_flightTime do
+        local dt_curr = math.min(step_dt, safe_flightTime - t)
+
+        -- 残り時間が微小すぎる場合は終了
+        if dt_curr < 1e-4 then break end
+
         pos, vel = rk4Step(pos, vel, dt_curr, env)
         t = t + dt_curr
+
+        -- 無限ループ防止
+        loop_safety_count = loop_safety_count + 1
+        if loop_safety_count > 100 then break end
     end
 
     return pos
 end
 
--- 修正版弾道ソルバー (Predict-Correct Method with RK4)
-function solveBallisticRK4(Pr, VT, AT, VG, gravity, k, v0_speed, v_wind, windC)
-    -- 環境パラメータ
+-- 修正版弾道ソルバー
+function solveBallisticRK4(Pr, VT, AT, VG, y0, k, v0_speed, v_wind, windC)
+    -- 環境パラメータに絶対高度(y0)を含める
     local env = {
-        gravity = { 0, -gravity, 0 },
-        drag = k,
+        y0 = y0,
+        base_drag = k,
         windVec = v_wind,
         windFactor = windC
     }
@@ -192,7 +253,7 @@ function solveBallisticRK4(Pr, VT, AT, VG, gravity, k, v0_speed, v_wind, windC)
     local dist = math.sqrt(Pr.x ^ 2 + Pr.y ^ 2 + Pr.z ^ 2)
     local t_est = dist / v0_speed
 
-    -- 「狙うべき空間座標」の初期値（最初はターゲットの予測位置そのもの）
+    -- 「狙うべき空間座標」の初期値
     local aim_point = {
         x = Pr.x + VT.x * t_est + 0.5 * AT.x * t_est ^ 2,
         y = Pr.y + VT.y * t_est + 0.5 * AT.y * t_est ^ 2,
@@ -202,70 +263,48 @@ function solveBallisticRK4(Pr, VT, AT, VG, gravity, k, v0_speed, v_wind, windC)
     local final_elevation, final_azimuth
     local success = false
 
-    -- 反復計算 (Opcode制限を考慮し、回数は少なめに: 4〜5回)
-    for i = 1, 4 do
-        -- 1. 現在の aim_point に向けて撃つためのベクトル計算
+    -- 反復計算
+    for i = 1, 5 do
         local dx, dy, dz = aim_point.x, aim_point.y, aim_point.z
         local current_dist = math.sqrt(dx * dx + dy * dy + dz * dz)
 
-        -- 正規化して初速を掛ける
         local v0_vec = {
-            (dx / current_dist) * v0_speed + VG.x, -- 自機の慣性は加算済みとして扱うか、相対速度で扱うか
-            -- ここでは、VGは考慮せず、発射ベクトルは「砲口初速ベクトル」とする
-            -- 呼び出し元で VG を処理するか、ここで足すか。
-            -- 元コードは P_rel (ターゲット - 自機) を使っているので、
-            -- 弾丸の速度 = 砲口速度 + 自機速度
+            (dx / current_dist) * v0_speed + VG.x,
             (dy / current_dist) * v0_speed + VG.y,
             (dz / current_dist) * v0_speed + VG.z
         }
 
-        -- 自機速度成分(VG)の影響：
-        -- 元コードの論理では、Pr (相対位置) に対して計算を行っている。
-        -- RK4シミュレーションは「慣性系（地面固定）」ではなく「自機固定系」で行うのが難しい（自機が加速するため）。
-        -- シンプルにするため、シミュレーションは「発射瞬間の位置を原点とした慣性系」で行う。
-        -- ターゲットの動きも慣性系での位置予測を行う。
-
-        -- 2. RK4で弾丸を t_est 時間飛ばしてみる
+        -- RK4 シミュレーション
         local bullet_pos = simulateTrajectory(v0_vec, t_est, env)
 
-        -- 3. ターゲットの真の位置 (慣性系)
         local target_pos_true = {
             x = Pr.x + VT.x * t_est + 0.5 * AT.x * t_est ^ 2,
             y = Pr.y + VT.y * t_est + 0.5 * AT.y * t_est ^ 2,
             z = Pr.z + VT.z * t_est + 0.5 * AT.z * t_est ^ 2
         }
 
-        -- 4. 誤差計算 (ターゲット - 弾着点)
         local error = {
             x = target_pos_true.x - bullet_pos[1],
             y = target_pos_true.y - bullet_pos[2],
             z = target_pos_true.z - bullet_pos[3]
         }
 
-        -- 収束判定
         local error_dist = math.sqrt(error.x ^ 2 + error.y ^ 2 + error.z ^ 2)
         if error_dist < 3.0 then
             success = true
             break
         end
 
-        -- 5. 補正: 誤差の分だけ「狙う場所」をずらす
         aim_point.x = aim_point.x + error.x
         aim_point.y = aim_point.y + error.y
         aim_point.z = aim_point.z + error.z
 
-        -- 6. 時間の再推定 (弧の長さを考慮...は重いので、直線距離で近似更新)
         local new_aim_dist = math.sqrt(aim_point.x ^ 2 + aim_point.y ^ 2 + aim_point.z ^ 2)
         t_est = new_aim_dist / v0_speed
-
-        --ループを抜けた時点で success が false でも、Nan(計算不能)でなければ true (近似解採用) とみなして射撃させる
-        if t_est == t_est then -- NaNチェック (自分自身と等しくないならNaN)
-            success = true
-        end
     end
 
-    -- 最終的な aiming vector から角度を算出
-    -- 注意: ここで計算するのは「砲身が向くべき方向」
+    if t_est == t_est then success = true end
+
     local dx, dy, dz = aim_point.x, aim_point.y, aim_point.z
     local h_dist = math.sqrt(dx * dx + dz * dz)
     final_azimuth = math.atan(dx, dz)
@@ -293,7 +332,6 @@ function PID.update(self, setpoint, measurement, dt, outputLimit)
     local error = setpoint - measurement
     if math.abs(error) < SHOOTABLE_ERROR_THRESHOLD then isShootable = true end
     self.integral = self.integral + error * dt
-    -- Anti-windup
     local i_term = self.Ki * self.integral
     if i_term > outputLimit then
         self.integral = outputLimit / self.Ki
@@ -326,7 +364,6 @@ function onTick()
     local isError = false
 
     if isDetecting then
-        -- Inputs
         local targetX = input.getNumber(1)
         local targetY = input.getNumber(2)
         local targetZ = input.getNumber(3)
@@ -346,14 +383,12 @@ function onTick()
         local local_wind_azi_turn = input.getNumber(22)
         local wind_speed_mps = input.getNumber(23)
 
-        -- Pivot velocities for delay correction
         local yawPivot_Vel = input.getNumber(24) * PI2 * DT * PIVOT_ANGULAR_VELOCITY_CORRECTION
         local pitchPivot_Vel = input.getNumber(25) * PI2 * DT * PIVOT_ANGULAR_VELOCITY_CORRECTION
 
         local currentCannonYaw = input.getNumber(19) * PI2
         local currentCannonPitch = (IS_PITCH_ROBOTIC and input.getNumber(21) or input.getNumber(20)) * PI2
 
-        -- Gimbal Lock Check
         local cosPitch = math.cos(ownPitch)
         if math.abs(cosPitch) < 0.001 then
             isError = true
@@ -361,12 +396,10 @@ function onTick()
             PID.reset(pitchControlPID.pid)
             PID.reset(yawControlPID.pid)
         else
-            -- 座標変換準備
             local q_ship = eulerZYX_to_quaternion(ownRoll, ownYaw, ownPitch)
             local v_self_world_array = rotateVectorByQuaternion({ selfLocalVectorX, selfLocalVectorY, selfLocalVectorZ },
                 q_ship)
 
-            -- 自機位置補正
             local ownWorldX = input.getNumber(10) + v_self_world_array[1] * DT * PIVOT_ANGULAR_VELOCITY_CORRECTION
             local ownWorldY = input.getNumber(11) + v_self_world_array[2] * DT * PIVOT_ANGULAR_VELOCITY_CORRECTION
             local ownWorldZ = input.getNumber(12) + v_self_world_array[3] * DT * PIVOT_ANGULAR_VELOCITY_CORRECTION
@@ -376,21 +409,14 @@ function onTick()
             local correctedOwn = localToGlobal(offsetCoords, { x = ownWorldX, y = ownWorldY, z = ownWorldZ }, q_ship)
             ownWorldX, ownWorldY, ownWorldZ = correctedOwn.x, correctedOwn.y, correctedOwn.z
 
-            -- 風計算
-            local local_wind_azi_rad = local_wind_azi_turn * PI2
-            local V_sensor_x = -wind_speed_mps * math.sin(local_wind_azi_rad)
-            local V_sensor_z = -wind_speed_mps * math.cos(local_wind_azi_rad)
-
-            -- 風ベクトル計算 (簡易版: センサーローカルからワールドへ変換)
-            -- 厳密には元のコードのマトリクス計算の方が正確だが、Opcode節約のためクォータニオン回転で代用可
-            -- ここでは元のロジックを尊重して省略するが、ワールド風ベクトルが必要
-            -- (元のコードが複雑な行列計算をしているのは、風センサが機体と回転しているため)
-
-            -- --- 元の行列計算ロジック移植 (最適化) ---
             local c1 = rotateVectorByInverseQuaternion({ 1, 0, 0 }, q_ship)
             local c3 = rotateVectorByInverseQuaternion({ 0, 0, 1 }, q_ship)
             local r11, r13 = c1[1], c3[1]
             local r31, r33 = c1[3], c3[3]
+            local local_wind_azi_rad = local_wind_azi_turn * PI2
+            local V_sensor_x = -wind_speed_mps * math.sin(local_wind_azi_rad)
+            local V_sensor_z = -wind_speed_mps * math.cos(local_wind_azi_rad)
+
             local Kx = selfLocalVectorX - V_sensor_x
             local Kz = selfLocalVectorZ - V_sensor_z
             local D = r11 * r33 - r13 * r31
@@ -401,12 +427,10 @@ function onTick()
             end
             local V_wind_vec = { x = Wind_X_mps * DT, y = 0, z = Wind_Z_mps * DT }
 
-            -- 各種ベクトル (m/tick)
             local t_delay = LOGIC_DELAY
             local targetV = { x = targetVectorX * DT, y = targetVectorY * DT, z = targetVectorZ * DT }
             local targetA = { x = targetAccX * DT * DT, y = targetAccY * DT * DT, z = targetAccZ * DT * DT }
 
-            -- ターゲット現在位置 (遅延補正後)
             local P_T = {
                 x = targetX + targetV.x * t_delay + targetA.x * 0.5 * t_delay ^ 2,
                 y = targetY + targetV.y * t_delay + targetA.y * 0.5 * t_delay ^ 2,
@@ -421,20 +445,19 @@ function onTick()
             local P_G = { x = ownWorldX, y = ownWorldY, z = ownWorldZ }
             local V_G = { x = v_self_world_array[1] * DT, y = v_self_world_array[2] * DT, z = v_self_world_array[3] * DT }
 
-            -- 相対位置
             local P_rel = { x = P_T.x - P_G.x, y = P_T.y - P_G.y, z = P_T.z - P_G.z }
             local distance = math.sqrt(P_rel.x ^ 2 + P_rel.y ^ 2 + P_rel.z ^ 2)
 
             isDetect = distance > 0.1
 
             if isDetect then
-                -- ★★★ 数値計算ソルバー呼び出し ★★★
+                -- ★★★ 高度(P_G.y)を渡すように変更 ★★★
                 local global_el, global_az, flight_time, sol_success = solveBallisticRK4(
                     P_rel, V_T_delayed, targetA, V_G,
-                    GRAVITY_ACC, K, V0, V_wind_vec, WIND_FACTOR
+                    P_G.y, -- 絶対初期高度
+                    K, V0, V_wind_vec, WIND_FACTOR
                 )
 
-                -- ワールド角度 → ローカル角度変換
                 local cosE, sinE = math.cos(global_el), math.sin(global_el)
                 local cosA, sinA = math.cos(global_az), math.sin(global_az)
                 local v_global_aim = { cosE * sinA, sinE, cosE * cosA }
@@ -443,7 +466,6 @@ function onTick()
                 local local_azimuth = math.atan(v_local_aim[1], v_local_aim[3])
                 local local_elevation = math.atan(v_local_aim[2], math.sqrt(v_local_aim[1] ^ 2 + v_local_aim[3] ^ 2))
 
-                -- PID制御
                 local azi_limit = YAW_ANGLE_LIMIT
                 turretYaw, yawShootable = PID.update(yawControlPID.pid,
                     clamp(local_azimuth, -azi_limit, azi_limit),
@@ -452,21 +474,13 @@ function onTick()
 
                 if IS_PITCH_ROBOTIC then
                     turretPitch = clamp(local_elevation, PITCH_MIN_ANGLE_LIMIT, PITCH_ANGLE_LIMIT) - pitchPivot_Vel
-                    pitchShootable = math.abs(local_elevation - currentCannonPitch / PI2 * 4) <
-                        SHOOTABLE_ERROR_THRESHOLD -- 簡易判定
+                    pitchShootable = math.abs(local_elevation - currentCannonPitch / PI2 * 4) < SHOOTABLE_ERROR_THRESHOLD
                     turretPitch = turretPitch / PI2 * 4
                 else
                     turretPitch, pitchShootable = PID.update(pitchControlPID.pid,
                         clamp(local_elevation, PITCH_MIN_ANGLE_LIMIT, PITCH_ANGLE_LIMIT),
                         currentCannonPitch, DT, PITCH_PIVOT_MAX_SPEED)
                     turretPitch = turretPitch - pitchPivot_Vel
-                end
-
-                -- ニュートン法(RK4反復)失敗時のリセット
-                if not sol_success then
-                    -- 失敗しても前回の値を使うか、リセットするか。ここではリセットはしないがShootableをFalseに
-                    yawShootable = false
-                    pitchShootable = false
                 end
             end
 
