@@ -48,7 +48,30 @@ WIND_FACTOR = Param[INDEX][4]
 -- 重力定数 (海面高度 30m/s^2)
 GRAVITY_BASE = 30 / 60 ^ 2 -- (m/tick^2)
 
-errCount = 60
+local envTable = {}
+local TABLE_STEP = 500
+local MAX_ALTITUDE = 45000 -- 計算上限高度 (m)
+
+-- 砲弾の基準重力 30 m/s^2 を m/tick^2 に変換 (1秒 = 60 tick)
+local BASE_GRAVITY_TICK = 30 / 3600 
+-- 空気密度の分母 (1013 * 60 tick)
+local ATMOS_DENOM = 1013 * 60
+
+for h = 0, MAX_ALTITUDE, TABLE_STEP do
+    -- 1. 重力加速度計算: 減衰スケールハイトは 60000m
+    local g_acc = BASE_GRAVITY_TICK * math.exp(-h / 60000)
+
+    -- 2. 空気密度計算: 難読化コードに基づく定数を使用
+    local rho = 0
+    if h < 44200 then
+        -- (44.20 - h(km)) / 11.89
+        local base = math.max(0, (44.20 - h / 1000) / 11.89)
+        rho = (base ^ 5.256) / ATMOS_DENOM
+    end
+
+    -- テーブルに格納
+    envTable[#envTable + 1] = { g = g_acc, r = rho }
+end
 
 --------------------------------------------------------------------------------
 -- クォータニオン・ベクトル演算関数
@@ -105,21 +128,25 @@ end
 -- 環境計算関数 (高度依存の重力・空気密度)
 --------------------------------------------------------------------------------
 function getAtmosphere(y)
-    -- y: altitude in meters
-    local h = math.max(0, y)
-
-    -- 1. Gravity: g(h) = 30 * exp(-h/6000)
-    -- CSV解析結果よりスケールハイトは約6000m
-    local g_acc = GRAVITY_BASE * math.exp(-h / 6000)
-
-    -- 2. Air Density Factor: (1 - h/44330)^5.256
-    -- CSV解析結果 (標準大気モデル)
-    local rho = 0
-    if h < 44330 then
-        rho = (1 - h / 44330) ^ 5.256
+    -- 範囲外の高度をクランプ
+    local h = math.max(0, math.min(MAX_ALTITUDE, y))
+    
+    -- インデックス計算 (Luaの配列は1スタート)
+    local index = (h / TABLE_STEP) + 1
+    local i1 = math.floor(index)
+    local i2 = math.ceil(index)
+    
+    -- ちょうどの高度だった場合
+    if i1 == i2 then
+        return envTable[i1].g, envTable[i1].r
     end
-
-    return g_acc, rho
+    
+    -- 線形補間
+    local ratio = index - i1
+    local g = envTable[i1].g * (1 - ratio) + envTable[i2].g * ratio
+    local r = envTable[i1].r * (1 - ratio) + envTable[i2].r * ratio
+    
+    return g, r
 end
 
 --------------------------------------------------------------------------------
@@ -351,14 +378,16 @@ pitchControlPID = { pid = PID.new(PITCH_CONTROL_P, PITCH_CONTROL_I, PITCH_CONTRO
 yawControlPID = { pid = PID.new(YAW_CONTROL_P, YAW_CONTROL_I, YAW_CONTROL_D) }
 
 function clamp(value, min, max) return math.max(min, math.min(value, max)) end
-
+local turretYaw, turretPitch = 0, 0
 --------------------------------------------------------------------------------
 -- Main Loop
 --------------------------------------------------------------------------------
 function onTick()
-    isDetecting = input.getBool(1)
+    local fuseTime = 0
+    local lifespan = LIFESPAN * MAX_LIFESPAN
+    local isDetecting = input.getBool(1)
 
-    local turretYaw, turretPitch = 0, 0
+    
     local yawShootable, pitchShootable = false, false
     local isDetect = false
     local isError = false
@@ -392,7 +421,6 @@ function onTick()
         local cosPitch = math.cos(ownPitch)
         if math.abs(cosPitch) < 0.001 then
             isError = true
-            errCount = 1
             PID.reset(pitchControlPID.pid)
             PID.reset(yawControlPID.pid)
         else
@@ -449,7 +477,6 @@ function onTick()
             local distance = math.sqrt(P_rel.x ^ 2 + P_rel.y ^ 2 + P_rel.z ^ 2)
 
             isDetect = distance > 0.1
-
             if isDetect then
                 -- ★★★ 高度(P_G.y)を渡すように変更 ★★★
                 local global_el, global_az, flight_time, sol_success = solveBallisticRK4(
@@ -457,6 +484,10 @@ function onTick()
                     P_G.y, -- 絶対初期高度
                     K, V0, V_wind_vec, WIND_FACTOR
                 )
+
+                if flight_time > lifespan then
+                    isError = true
+                end
 
                 local cosE, sinE = math.cos(global_el), math.sin(global_el)
                 local cosA, sinA = math.cos(global_az), math.sin(global_az)
@@ -467,6 +498,8 @@ function onTick()
                 local local_elevation = math.atan(v_local_aim[2], math.sqrt(v_local_aim[1] ^ 2 + v_local_aim[3] ^ 2))
 
                 local azi_limit = YAW_ANGLE_LIMIT
+
+                if not isError then
                 turretYaw, yawShootable = PID.update(yawControlPID.pid,
                     clamp(local_azimuth, -azi_limit, azi_limit),
                     currentCannonYaw, DT, YAW_PIVOT_MAX_SPEED)
@@ -483,18 +516,16 @@ function onTick()
                     turretPitch = turretPitch - pitchPivot_Vel
                 end
             end
-
-            if isError or errCount ~= 0 then
-                errCount = (errCount + 1) % 60
             end
+
         end
     else
-        errCount = 1
         PID.reset(pitchControlPID.pid)
         PID.reset(yawControlPID.pid)
     end
 
     output.setNumber(1, turretYaw)
     output.setNumber(2, turretPitch)
-    output.setBool(1, (not isError) and isDetect and errCount == 0 and yawShootable and pitchShootable)
+    output.setNumber(3, fuseTime)
+    output.setBool(1, (not isError) and isDetect and yawShootable and pitchShootable)
 end

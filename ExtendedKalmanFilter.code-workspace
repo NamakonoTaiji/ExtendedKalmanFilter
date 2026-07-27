@@ -1,0 +1,45 @@
+{
+  "folders": [
+    {
+      "name": "ADS V3 CIWS",
+      "path": "ADS V3/ADS V3 CIWS"
+    },
+    {
+      "name": "TomahawkTaxi",
+      "path": "Others/TomahawkTaxi"
+    },
+    {
+      "name": "NewKalmanFilter",
+      "path": "ADS V3/NewKalmanFilter"
+    },
+    {
+      "name": "BallisticCalacuator",
+      "path": "ADS V3/BallisticCalacuator"
+    },
+    {
+      "name": "ADS V3 Missile",
+      "path": "ADS V3/ADS V3 Missile"
+    },
+    {
+      "name": "ADS V3 System",
+      "path": "ADS V3/ADS V3 System"
+    },
+    {
+      "name": "HeadMountDisplay",
+      "path": "Others/HeadMountDisplay"
+    },
+    {
+      "name": "Heli",
+      "path": "Others/Heli"
+    },
+    {
+      "name": "RWR",
+      "path": "Others/RWR"
+    },
+    {
+      "name": "Root (Docs/Mathlib/etc)",
+      "path": "."
+    }
+  ],
+  "settings": {}
+}

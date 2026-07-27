@@ -26,16 +26,15 @@
 - num 7: 推定目標加速度 Ax
 - num 8: 推定目標加速度 Ay
 - num 9: 推定目標加速度 Az
-- num 10: レーダー方位角マニュアル制御
-- num 11: レーダー仰角マニュアル制御
-- num 12: トラック中の目標ID
+- num 10: Last Seen Tick (最終観測Tick)
+- num 11: Detection Tick Lag (観測遅延Tick数)
+- num 12: Tracked Target ID (トラック中の目標ID)
+- num 13: Target Hit Count (目標の連続ヒット数)
 - num 32: 最新のイプシロンε
 
 前提:
 - 座標系は Physics Sensor 座標系 (X:東, Y:上, Z:北, 左手系) を基準とする。
-- EKFの各種パラメータはプロパティから読み込む想定。
-- inv 関数は別途追記が必要。
-================================================================================
+- EKFの各種パラメータはプロパティから読み込む想定
 ]]
 
 -- 定数
@@ -573,6 +572,34 @@ function predictStep(currentTarget, dt_sec)
     F[8][9] = dt_sec
 
     X_predicted = mul(F, stateVector)
+
+        -- === 案A: 加速度の動的減衰 (Distance-based Damping) ===
+    -- 予測位置と自機位置から目標までの距離を算出
+    local targetDist = 0
+    if ownGlobalPos then
+        local dx = X_predicted[1][1] - ownGlobalPos[1]
+        local dy = X_predicted[4][1] - ownGlobalPos[2]
+        local dz = X_predicted[7][1] - ownGlobalPos[3]
+        targetDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
+    end
+
+    -- 距離に基づく減衰係数の計算 (線形補間)
+    local dampingFactor = 0.99
+    local maxDamp = 0.99 -- 3000m以下の減衰係数（急機動に追従）
+    local minDamp = 0.10 -- 7000m以上の減衰係数（ほぼ等速直線運動とみなす）
+    local minDist = 3000
+    local maxDist = 7000
+
+    if targetDist > maxDist then
+        dampingFactor = minDamp
+    elseif targetDist > minDist then
+        local t = (targetDist - minDist) / (maxDist - minDist)
+        dampingFactor = maxDamp * (1 - t) + minDamp * t
+    end
+
+    X_predicted[3][1] = X_predicted[3][1] * dampingFactor -- Ax
+    X_predicted[6][1] = X_predicted[6][1] * dampingFactor -- Ay
+    X_predicted[9][1] = X_predicted[9][1] * dampingFactor -- Az
 
     -- プロセスノイズ Q の計算 (適応的 CAモデル)
     dt2 = dt_sec * dt_sec

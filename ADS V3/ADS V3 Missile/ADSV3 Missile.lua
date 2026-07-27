@@ -1,3 +1,33 @@
+--[[
+ミサイルの誘導部分を担うスクリプト。アクティブレーダー圏内までは防空システムと通信して中間誘導/単追尾を行う。終末誘導時はアクティブ誘導/比例航法
+至近距離ではミサイル出力を使用して近接信管で目標を破壊する。
+
+-- 入力:
+- bool 1: 目標を検出中
+- num 1: 推定目標座標 X
+- num 2: 推定目標座標 Y
+- num 3: 推定目標座標 Z
+- num 4: 推定目標速度 Vx
+- num 5: 推定目標速度 Vy
+- num 6: 推定目標速度 Vz
+- num 7: 推定目標加速度 Ax
+- num 8: 推定目標加速度 Ay
+- num 9: 推定目標加速度 Az
+- num 10: レーダー方位角マニュアル制御
+- num 11: レーダー仰角マニュアル制御
+- num 12: トラック中の目標ID
+- num 13-15: 自機X,Y,Z座標パススルー
+- num 16-19: 自機姿勢(クォータニオンw,x,y,z)
+- num 32: 最新のイプシロンε
+
+-- 出力:
+- bool 1: 信管フラグ
+- bool 2: ミサイル出力レーダーon/off
+- num 1: Yaw軸フィン
+- num 2: Pitch軸フィン
+]]
+
+
 DT                             = 1 / 60
 PI                             = math.pi
 PI2                            = PI * 2
@@ -253,6 +283,10 @@ function closingSpeedAverageCalculator(closingSpeed, array)
         closingSpeedAverage = closingSpeedAverage + array[i]
     end
     closingSpeedAverage = closingSpeedAverage / #array
+    -- サンプルが足りないときはclosingSpeedAverageを0にする
+    if #array < VT_FUSE_SAMPLING_TICKS then
+        closingSpeedAverage = 0
+    end
     return closingSpeedAverage, array
 end
 
@@ -320,25 +354,19 @@ function onTick()
 
         -- 9. 誘導指令として使う
         --    ご提示のコードの変数名に合わせる
-        yawAngle                               = los_rate_yaw   -- (rad/s)
-        pitchAngle                             = los_rate_pitch -- (rad/s)
+        yawAngle                               = los_rate_yaw     -- (rad/s)
+        pitchAngle                             = -los_rate_pitch  -- (rad/s)
     else
         -- 中間誘導は単追尾
-        local targetLocalPosVec = globalToLocal(targetCoords, ownCoords, ownOrientation)
+        local targetLocalPosVec = globalToLocal(targetCoordsVec, ownCoordsVec, ownOrientation)
         local targetAngle = coordsToAngle(targetLocalPosVec)
-        yawAngle = targetAngle.azimuth
-        pitchAngle = targetAngle.elevation
+        yawAngle = targetAngle.azimuth / 10
+        pitchAngle = targetAngle.elevation / 10
     end
 
     local distance = vector_magnitude(LOS_vec_global)
+    local finRadarIO
 
-    if distance < MISSILE_FIN_DISTANCE_THRESHOLD and distance ~= 0 then
-        yawAngle = 0
-        pitchAngle = 0
-        output.setBool(2, true)
-    else
-        output.setBool(2, false)
-    end
 
     local closingSpeedAverage = 0
     if oldDistance == 0 then
@@ -346,16 +374,26 @@ function onTick()
     else
         local closingSpeed                     = distance - oldDistance
         oldDistance                            = distance
+
         closingSpeedAverage, closingSpeedTable = closingSpeedAverageCalculator(closingSpeed, closingSpeedTable)
     end
 
-    if distance + closingSpeedAverage * FUSE_LOGIC_DELAY < 0 and distance ~= 0 and isLaunched then
+    if distance + closingSpeedAverage * FUSE_LOGIC_DELAY < MISSILE_FIN_DISTANCE_THRESHOLD and distance ~= 0 then
+        yawAngle = 0
+        pitchAngle = 0
+        finRadarIO = true
+    else
+        finRadarIO = false
+    end
+
+    --[[     if distance + closingSpeedAverage * FUSE_LOGIC_DELAY < 0 and distance ~= 0 and isLaunched then
         detonate = true
     else
         detonate = false
-    end
+    end ]]
 
-    output.setBool(1, detonate)
+    output.setBool(1, finRadarIO)
     output.setNumber(1, yawAngle * FIN_STRENGTH)
-    output.setNumber(2, -pitchAngle * FIN_STRENGTH)
+    output.setNumber(2, pitchAngle * FIN_STRENGTH)
+    output.setNumber(3, closingSpeedAverage)
 end

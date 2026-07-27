@@ -263,7 +263,6 @@ function onTick()
         ownRoll = input.getNumber(9)
         ownPosVec = { ownPosX, onwPosAltitude, ownPosZ }
         horizontalDataLinkDist = vectorMagnitude(vectorSub({ ownPosX, 0, ownPosZ }, { destinationX, 0, destinationZ }))
-        debug.log(horizontalDataLinkDist)
         -- 700mまで垂直上昇
         if not guidanceStart and onwPosAltitude < 600 then
             destinationTargetPosVec = { ownPosX, 600, ownPosZ }

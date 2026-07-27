@@ -37,10 +37,10 @@
     ],
     "Lua.runtime.pathStrict": true,
     "Lua.workspace.library": [
-        "f:/StormWorksProjects/ExtendedKalmanFilter/Others/Heli/",
+        "f:/StormWorksProjects/ExtendedKalmanFilter/ADS V3/ADS V3 CIWS/",
         "c:/Users/kazum/.vscode/extensions/nameouschangey.lifeboatapi-0.0.33/assets/lua/Common/",
         "c:/Users/kazum/.vscode/extensions/nameouschangey.lifeboatapi-0.0.33/assets/lua/Microcontroller/",
-        "f:/StormWorksProjects/ExtendedKalmanFilter/Others/Heli/_build/libs/"
+        "f:/StormWorksProjects/ExtendedKalmanFilter/ADS V3/ADS V3 CIWS/_build/libs/"
     ],
     "lifeboatapi.stormworks.libs.gitLibraries": [
         {

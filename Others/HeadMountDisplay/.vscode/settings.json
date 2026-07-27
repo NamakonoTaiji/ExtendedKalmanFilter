@@ -37,10 +37,10 @@
     ],
     "Lua.runtime.pathStrict": true,
     "Lua.workspace.library": [
-        "f:/StormworksUKF/HeadMountDisplay/",
-        "c:/Users/Engin/.vscode/extensions/nameouschangey.lifeboatapi-0.0.33/assets/lua/Common/",
-        "c:/Users/Engin/.vscode/extensions/nameouschangey.lifeboatapi-0.0.33/assets/lua/Microcontroller/",
-        "f:/StormworksUKF/HeadMountDisplay/_build/libs/"
+        "f:/StormWorksProjects/ExtendedKalmanFilter/Others/HeadMountDisplay/",
+        "c:/Users/kazum/.vscode/extensions/nameouschangey.lifeboatapi-0.0.33/assets/lua/Common/",
+        "c:/Users/kazum/.vscode/extensions/nameouschangey.lifeboatapi-0.0.33/assets/lua/Microcontroller/",
+        "f:/StormWorksProjects/ExtendedKalmanFilter/Others/HeadMountDisplay/_build/libs/"
     ],
     "lifeboatapi.stormworks.libs.gitLibraries": [
         {

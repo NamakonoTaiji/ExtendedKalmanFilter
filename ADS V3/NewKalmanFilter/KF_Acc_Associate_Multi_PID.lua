@@ -519,7 +519,6 @@ function calculateAngleDifference(angle1, angle2)
         diff
 end
 
--- EKF 更新ステップ (dtは固定DTを使用)
 -- ★【新関数 1】EKF 予測ステップ
 ---@param currentTarget table 追跡中の目標オブジェクト
 ---@param dt_sec number 前回の更新からの経過秒数
@@ -530,60 +529,79 @@ function predictStep(currentTarget, dt_sec)
 
     stateVector = currentTarget.X
     covariance = currentTarget.P
-    -- 前回のepsilonが無ければ目標値を使う (初期値 or ロストからの復帰時)
     lastEpsilon = currentTarget.epsilon or NOISE_TARGET_EPSILON
-    -- 前回の積分誤差を取得 (なければ0)
     lastIntegralError = currentTarget.integralError or 0
 
-    -- === PI Controller for Noise Scale ===
-    -- (ワークショップ版KFのcF関数のロジックを再現)
     setpoint = NOISE_TARGET_EPSILON
     process_variable = lastEpsilon
     integral_state = lastIntegralError
     I_gain = NOISE_INTEGRAL_GAIN
 
-    -- 誤差 (目標値 - 現在値)
     error = setpoint - process_variable
+    new_integral_state = integral_state + error * I_gain 
 
-    -- 積分項の更新 (dt_sec を掛けて時間積分)
-    -- 注意: Workshop版は dt を使っていないように見えたため、
-    -- もし挙動がおかしければ dt_sec を掛けない方が良いかもしれない
-    new_integral_state = integral_state + error * I_gain -- ★ dt_sec を使用
-
-    -- PI制御出力 (P=0, D=0 なので積分項のみ) - ゲインは積分時に考慮済み
-    cU = new_integral_state -- ★ 出力は積分状態そのものと仮定 (ゲインは更新時に適用)
-
-    -- 出力制限 (リミッター)
+    cU = new_integral_state 
     cU = math.max(NOISE_OUTPUT_MIN, math.min(NOISE_OUTPUT_MAX, cU))
 
-    -- アンチワインドアップ: 出力が制限にかかった場合、積分が進みすぎないように戻す
     if cU == NOISE_OUTPUT_MIN or cU == NOISE_OUTPUT_MAX then
-        new_integral_state = integral_state -- 積分状態を更新しない
+        new_integral_state = integral_state 
     end
 
-    -- 最終的なノイズスケール bH
     noiseScale_bH = 10 ^ -(3 + cU)
-    -- === 1. 予測ステップ ===
+    -- ※ここではまだ math.min(1e-4) でキャップせず、後で距離スケールを考慮して適用します
 
-    -- 状態遷移行列 F (CAモデル)
     dt_sec2_half = dt_sec * dt_sec * 0.5
     F = MatrixCopy(identityMatrix9x9)
-    -- X軸 (1, 2, 3)
     F[1][2] = dt_sec
     F[1][3] = dt_sec2_half
     F[2][3] = dt_sec
-    -- Y軸 (4, 5, 6)
     F[4][5] = dt_sec
     F[4][6] = dt_sec2_half
     F[5][6] = dt_sec
-    -- Z軸 (7, 8, 9)
     F[7][8] = dt_sec
     F[7][9] = dt_sec2_half
     F[8][9] = dt_sec
 
     X_predicted = mul(F, stateVector)
 
-    -- プロセスノイズ Q の計算 (適応的 CAモデル)
+    -- === 案A改: 加速度の動的減衰 と 近距離での感度(プロセスノイズ)向上 ===
+    local targetDist = 3000 -- 初期値
+    if ownGlobalPos then
+        local dx = X_predicted[1][1] - ownGlobalPos[1]
+        local dy = X_predicted[4][1] - ownGlobalPos[2]
+        local dz = X_predicted[7][1] - ownGlobalPos[3]
+        targetDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
+    end
+
+    local dampingFactor = 0.99
+    local maxDamp = 0.99 
+    local minDamp = 0.10 
+    local minDist = 2000
+    local maxDist = 8000
+    
+    local qScale = 1.0 -- 近距離時のプロセスノイズ増幅倍率
+
+    if targetDist > maxDist then
+        dampingFactor = minDamp
+    elseif targetDist > minDist then
+        local t = (targetDist - minDist) / (maxDist - minDist)
+        dampingFactor = maxDamp * (1 - t) + minDamp * t
+    else
+        -- ★追加: 3000m未満の場合、近づくほどプロセスノイズ(Q)を増大させて観測値への追従性を上げる
+        local maxQScale = 10 -- 近距離(0m)でのズレに対する感度最大倍率。機動に追いつけない場合はこの値を上げる
+        local t = targetDist / minDist
+        qScale = maxQScale * (1 - t) + 1.0 * t
+    end
+
+    X_predicted[3][1] = X_predicted[3][1] * dampingFactor 
+    X_predicted[6][1] = X_predicted[6][1] * dampingFactor 
+    X_predicted[9][1] = X_predicted[9][1] * dampingFactor 
+
+    -- ノイズスケールのキャップと実効値を qScale で引き上げる
+    local base_noise_limit = 1e-4
+    noiseScale_bH = math.min(noiseScale_bH, base_noise_limit * qScale)
+    noiseScale_bH = noiseScale_bH * qScale
+
     dt2 = dt_sec * dt_sec
     dt3 = dt2 * dt_sec
     dt4 = dt3 * dt_sec
@@ -595,7 +613,7 @@ function predictStep(currentTarget, dt_sec)
         { dt5 / 12, dt4 / 4,  dt3 / 2 },
         { dt4 / 6,  dt3 / 2,  dt2 }
     }
-    for i = 0, 2 do -- X, Y, Z軸
+    for i = 0, 2 do 
         for r = 1, 3 do
             for c = 1, 3 do
                 Q_base[i * 3 + r][i * 3 + c] = q_block[r][c]
@@ -605,8 +623,6 @@ function predictStep(currentTarget, dt_sec)
 
     Q_adapted = scalar(noiseScale_bH, Q_base)
 
-    -- 共分散 P の予測
-    -- (dt_ticks=1固定と仮定し、dt_sec の大きさに応じて不確かさを増やす)
     uncertaintyIncreaseFactor = 1.0 + (PREDICTION_UNCERTAINTY_FACTOR_BASE * dt_sec)
 
     P_pred_term1 = mul(F, covariance, T(F))
@@ -766,7 +782,6 @@ function onTick()
     for i = 1, MAX_RADAR_TARGETS do
         dist = input.getNumber(BASE_CHANNEL * i - 2) -- 距離
         if dist > 0 then
-            debug.log(dist)
             isRadarDetecting = true
             localAziRad = input.getNumber(BASE_CHANNEL * i - 1)
             localEleRad = input.getNumber(BASE_CHANNEL * i)
@@ -1033,7 +1048,7 @@ function onTick()
         output.setNumber(11, radarManualSweepY)
     else
         -- トラックがない場合
-        for i = 1, 9 do
+        for i = 1, 12 do
             output.setNumber(i, 0)
         end
         output.setBool(1, false)

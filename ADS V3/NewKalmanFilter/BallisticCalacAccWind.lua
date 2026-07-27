@@ -548,6 +548,9 @@ function onTick()
                 V_G_x, V_G_y, V_G_z,       -- VG
                 GRAVITY_ACC, K, V0, V_wind_vec, windFactorC)
 
+            if time > lifespan then
+                isError = true
+            end
             -- ★ 修正2: PID積分暴走対策
             if not isError then
                 -- 8. 角度計算
@@ -612,5 +615,6 @@ function onTick()
 
     output.setNumber(1, turretYaw)
     output.setNumber(2, turretPitch)
+    output.setNumber(3, time / 60) -- 時限信管
     output.setBool(1, (not isError) and isDetect and errCount == 0 and yawShootable and pitchShootable)
 end

@@ -39,6 +39,8 @@ ADSV3 KalmanFilter.lua
 - num 10: レーダー方位角マニュアル制御
 - num 11: レーダー仰角マニュアル制御
 - num 12: トラック中の目標ID
+- num 13-15: 自機X,Y,Z座標パススルー
+- num 16-19: 自機姿勢(クォータニオンw,x,y,z)
 - num 32: 最新のイプシロンε
 
 前提:
@@ -62,7 +64,8 @@ TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")                      
 PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") -- 観測が無い間に予測の信頼を下げる係数。値が大きいほど観測がない間に予測を信頼しなくなる。
 INITIAL_ACCELERATION_VARIANCE = 1e+6
 INITIAL_VELOCITY_VARIANCE = 1e+6
-RADAR_EFFECTIVE_RANGE = property.getNumber("RADAR_EFFECTIVE_RANGE")
+RADAR_EFFECTIVE_RANGE = property.getNumber("RADAR_EFFECTIVE_RANGE") -- アクティブ誘導レーダーの有効射程
+DATALINK_GATE_RADIUS = property.getNumber("DL_GATE")                -- データリンク座標からの許容最大離隔距離
 
 -- ★ PI制御パラメータ (新規追加)
 NOISE_TARGET_EPSILON = property.getNumber("NOISE_TARGET_EPS") -- PI制御の目標epsilon値 (ワークショップ版の dl 相当)
@@ -81,7 +84,7 @@ trackedTargets = {} -- 複数のトラックを保持するテーブル
 nextTrackID = 1     -- 新規トラックに割り当てるID
 currentTick = 0
 trackingID = nil
-dataLinkTrackingID = 0
+dataLinkTrackingID = nil
 isDataLinkTrackingIDValidate = false
 radarManualSweepX = 0
 radarManualSweepY = 0
@@ -752,11 +755,18 @@ function onTick()
 
     -- データリンク目標座標,トラッキングID
     trackIDFromADS = input.getNumber(32)
-    if not isDataLinkTrackingIDValidate and trackIDFromADS ~= 0 then
+    isLaunch = trackIDFromADS < 100000
+    if trackIDFromADS > 100000 then
+        trackIDFromADS = trackIDFromADS - 100000
         dataLinkTrackingID = trackIDFromADS
-        isDataLinkTrackingIDValidate = true
+        if dataLinkTrackingID > 90000 then     -- dataLinkTrackingID > 90000(対水上モードで発射された)を示す場合
+            isAntiShipMode = true
+            dataLinkTrackingID = dataLinkTrackingID - 90000
+        else
+            isAntiShipMode = false
+        end
     end
-    isDataLinkUpdate = trackIDFromADS == dataLinkTrackingID and isDataLinkTrackingIDValidate
+    isDataLinkUpdate = trackIDFromADS == dataLinkTrackingID
     if isDataLinkUpdate then
         dataLinkGlobalPos = { input.getNumber(22), input.getNumber(23), input.getNumber(24) }
     end
@@ -767,7 +777,7 @@ function onTick()
     isTargetInsideEffectiveRange = dataLinkDist < RADAR_EFFECTIVE_RANGE - 300 and dataLinkDist ~= 0
 
     -- レーダー有効範囲圏内かつデータリンクの更新が来たタイミングでアクティブ誘導を開始
-    isTargetTrackMode = isDataLinkTrackingIDValidate and isTargetInsideEffectiveRange
+    isTargetTrackMode = isDataLinkUpdate and isTargetInsideEffectiveRange
 
     radarManualSweepX = dataLinkLocalAngle.azimuth / PI2
     radarManualSweepY = dataLinkLocalAngle.elevation / PI2
@@ -778,14 +788,11 @@ function onTick()
     if ownOrientation == nil then ownOrientation = { 1, 0, 0, 0 } end
 
     -- レーダー観測値の処理
-    -- レーダー観測値の処理
     currentObservations = {} -- このTickで有効なレーダー観測リスト
-    isRadarDetecting = false
-    if isTargetInsideEffectiveRange then
+    if isTargetInsideEffectiveRange and isLaunch then
         for i = 1, MAX_RADAR_TARGETS do
             dist = input.getNumber(BASE_CHANNEL * i - 2) -- 距離
             if dist > 0 then
-                isRadarDetecting = true
                 localAziRad = input.getNumber(BASE_CHANNEL * i - 1) * PI2
                 localEleRad = input.getNumber(BASE_CHANNEL * i) * PI2
 
@@ -960,7 +967,7 @@ function onTick()
 
     -- (E) プライマリターゲットの選択 (データリンク目標に最も近いトラック)
     local primaryTrackID = nil
-    local minDistanceDiffSq = math.huge
+    local minDistanceToDataLink = math.huge
 
     for trackID, track in pairs(trackedTargets) do
         -- 確定トラックのみを対象にする (hits >= MIN_HITS_TO_CONFIRM)
@@ -969,10 +976,13 @@ function onTick()
         -- トラックの予測位置 (X_pred を再利用 or 再計算)
         local X_track = track.X -- 現在の状態を使う方がシンプル
         local trackGlobalPos = { X_track[1][1], X_track[4][1], X_track[7][1] }
-        local trackGlobalPosDiff = vectorMagnitude(vectorSub(trackGlobalPos, ownGlobalPos))
 
-        if trackGlobalPosDiff < minDistanceDiffSq then
-            minDistanceDiffSq = trackGlobalPosDiff
+        -- ★ データリンク目標位置 (dataLinkGlobalPos) との距離を計算
+        local distToDataLink = vectorMagnitude(vectorSub(trackGlobalPos, dataLinkGlobalPos))
+
+        -- ★ 許容距離 (DATALINK_GATE_RADIUS) 以内であり、かつ最もデータリンクに近いトラックを選択
+        if distToDataLink < DATALINK_GATE_RADIUS and distToDataLink < minDistanceToDataLink then
+            minDistanceToDataLink = distToDataLink
             primaryTrackID = trackID
         end
     end
