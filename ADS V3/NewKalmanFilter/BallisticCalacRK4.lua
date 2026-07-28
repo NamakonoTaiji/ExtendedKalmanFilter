@@ -45,9 +45,6 @@ K = Param[INDEX][2]       -- Drag Coefficient (Base)
 LIFESPAN = Param[INDEX][3]
 WIND_FACTOR = Param[INDEX][4]
 
--- 重力定数 (海面高度 30m/s^2)
-GRAVITY_BASE = 30 / 60 ^ 2 -- (m/tick^2)
-
 local envTable = {}
 local TABLE_STEP = 500
 local MAX_ALTITUDE = 45000 -- 計算上限高度 (m)
@@ -55,7 +52,7 @@ local MAX_ALTITUDE = 45000 -- 計算上限高度 (m)
 -- 砲弾の基準重力 30 m/s^2 を m/tick^2 に変換 (1秒 = 60 tick)
 local BASE_GRAVITY_TICK = 30 / 3600 
 -- 空気密度の分母 (1013 * 60 tick)
-local ATMOS_DENOM = 1013 * 60
+local ATMOS_DENOM = 1013
 
 for h = 0, MAX_ALTITUDE, TABLE_STEP do
     -- 1. 重力加速度計算: 減衰スケールハイトは 60000m
@@ -65,7 +62,7 @@ for h = 0, MAX_ALTITUDE, TABLE_STEP do
     local rho = 0
     if h < 44200 then
         -- (44.20 - h(km)) / 11.89
-        local base = math.max(0, (44.20 - h / 1000) / 11.89)
+        local base = math.max(0, (44.33 - h / 1000) / 11.89)
         rho = (base ^ 5.256) / ATMOS_DENOM
     end
 
