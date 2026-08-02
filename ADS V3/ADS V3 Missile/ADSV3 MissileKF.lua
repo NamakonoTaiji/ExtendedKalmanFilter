@@ -27,6 +27,8 @@ ADSV3 KalmanFilter.lua
 
 出力 (コンポジット信号 - デバッグ用):
 - bool 1: 目標を検出中
+- bool 2: 対水上モードか否か
+- bool 3: 射出済みか否か
 - num 1: 推定目標座標 X
 - num 2: 推定目標座標 Y
 - num 3: 推定目標座標 Z
@@ -54,7 +56,7 @@ ADSV3 KalmanFilter.lua
 PI = math.pi
 PI2 = PI * 2
 DT = 1 / 60           -- EKF更新の時間ステップ (秒)
-MAX_RADAR_TARGETS = 7 -- 処理するレーダー目標の最大数
+MAX_RADAR_TARGETS = 6 -- 処理するレーダー目標の最大数
 NUM_STATES = 9        -- EKF状態数 (x, vx, ax, y, vy, ay, z, vz, az)
 BASE_CHANNEL = 3
 
@@ -71,11 +73,11 @@ DATALINK_GATE_RADIUS = property.getNumber("DL_GATE")                -- データ
 NOISE_TARGET_EPSILON = property.getNumber("NOISE_TARGET_EPS") -- PI制御の目標epsilon値 (ワークショップ版の dl 相当)
 NOISE_INTEGRAL_GAIN = property.getNumber("NOISE_I_GAIN")      -- PI制御の積分ゲイン (ワークショップ版の I=0.5 相当)
 NOISE_OUTPUT_MIN = -8                                         -- PI制御出力の下限 (ワークショップ版と同じ)
-NOISE_OUTPUT_MAX = 5                                          -- PI制御出力の上限 (ワークショップ版と同じ)
+NOISE_OUTPUT_MAX = 1                                          -- PI制御出力の上限 (ワークショップ版と同じ)
 
 LOGIC_DELAY = property.getNumber("LOGIC_DELAY")
-R0_DIST_VAR_FACTOR = 6.67e-5 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
-R0_ANGLE_VAR = 2.63e-5       --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
+R0_DIST_VAR_FACTOR = 6.67e-4 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
+R0_ANGLE_VAR = 2.63e-4       --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
 OBSERVATION_NOISE_MATRIX_TEMPLATE = { { R0_DIST_VAR_FACTOR, 0, 0 }, { 0, R0_ANGLE_VAR, 0 }, { 0, 0, R0_ANGLE_VAR } }
 
 
@@ -89,6 +91,8 @@ isDataLinkTrackingIDValidate = false
 radarManualSweepX = 0
 radarManualSweepY = 0
 dataLinkGlobalPos = { 0, 0, 0 }
+dataLinkTargetVelocity = { 0, 0, 0 }
+isAntiShipMode = false
 --------------------------------------------------------------------------------
 -- ベクトル演算ヘルパー関数
 --------------------------------------------------------------------------------
@@ -333,7 +337,7 @@ end
 --------------------------------------------------------------------------------
 -- クォータニオン演算関数
 --------------------------------------------------------------------------------
-function multiplyQuaternions(q_a, q_b)
+--[[ function multiplyQuaternions(q_a, q_b)
     local w1, x1, y1, z1, w2, x2, y2, z2, w_result, x_result, y_result, z_result
     --
     w1 = q_a[1]
@@ -350,7 +354,7 @@ function multiplyQuaternions(q_a, q_b)
     y_result = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
     z_result = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
     return { w_result, x_result, y_result, z_result }
-end
+end ]]
 
 function eulerZYX_to_quaternion(roll, yaw, pitch)
     local half_roll, half_yaw, half_pitch, cr, sr, cy, sy, cp, sp, w, x, y, z
@@ -371,40 +375,23 @@ function eulerZYX_to_quaternion(roll, yaw, pitch)
     return { w, x, y, z }
 end
 
-function rotateVectorByQuaternion(vector, quaternion)
-    local px, py, pz, p, q, q_conj, temp, p_prime
+function rotateVectorByQuaternion(vector, quaternion, isInverse)
+    local w, x, y, z = quaternion[1], quaternion[2], quaternion[3], quaternion[4]
+    local vx, vy, vz = vector[1] or vector.x, vector[2] or vector.y, vector[3] or vector.z
 
-    px = vector[1]
-    py = vector[2]
-    pz = vector[3]
+    -- 外積演算の共通部分
+    local tx = 2 * (y * vz - z * vy)
+    local ty = 2 * (z * vx - x * vz)
+    local tz = 2 * (x * vy - y * vx)
 
-    p = { 0, px, py, pz }
-    q = quaternion
-    q_conj = { q[1], -q[2], -q[3], -q[4] }
+    -- 逆回転なら w の符号を反転（減算処理と同等になる）
+    if isInverse then w = -w end
 
-    temp = multiplyQuaternions(q, p)
-
-    p_prime = multiplyQuaternions(temp, q_conj)
-
-    return { p_prime[2], p_prime[3], p_prime[4] }
-end
-
-function rotateVectorByInverseQuaternion(vector, quaternion)
-    local px, py, pz, p, q, q_conj, temp, p_prime
-
-    px = vector[1]
-    py = vector[2]
-    pz = vector[3]
-
-    p = { 0, px, py, pz }
-    q = quaternion
-    q_conj = { q[1], -q[2], -q[3], -q[4] }
-
-    temp = multiplyQuaternions(q_conj, p)
-
-    p_prime = multiplyQuaternions(temp, q)
-
-    return { p_prime[2], p_prime[3], p_prime[4] }
+    return {
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx)
+    }
 end
 
 --------------------------------------------------------------------------------
@@ -440,7 +427,7 @@ function globalToLocalCoords(globalTargetPos, ownGlobalPos, ownOrientationQuat)
     oZ = ownGlobalPos[3]
 
     relativeVectorGlobal = { gX - oX, gY - oY, gZ - oZ }
-    localVector = rotateVectorByInverseQuaternion(relativeVectorGlobal, ownOrientationQuat)
+    localVector = rotateVectorByQuaternion(relativeVectorGlobal, ownOrientationQuat, true)
 
     return { localVector[1], localVector[2], localVector[3] }
 end
@@ -587,6 +574,10 @@ function predictStep(currentTarget, dt_sec)
     F[8][9] = dt_sec
 
     X_predicted = mul(F, stateVector)
+    local dampingFactor = 0.9                             -- 加速度の影響を減らす
+    X_predicted[3][1] = X_predicted[3][1] * dampingFactor -- Ax
+    X_predicted[6][1] = X_predicted[6][1] * dampingFactor -- Ay
+    X_predicted[9][1] = X_predicted[9][1] * dampingFactor -- Az
 
     -- プロセスノイズ Q の計算 (適応的 CAモデル)
     dt2 = dt_sec * dt_sec
@@ -661,6 +652,33 @@ function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
         epsilon = epsilon_matrix[1][1]
     end
 
+
+    -- (既存の epsilon 計算の直後に追加)
+
+    -- 1. トラックの現在推測速度を取得 (Vx, Vy, Vz)
+    local vx, vy, vz = X_predicted[2][1], X_predicted[5][1], X_predicted[8][1]
+    local vSpeed = math.sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2)
+
+    -- 2. ミサイル等、一定以上の速度（例: 50m/s以上）で移動している目標の場合のみ適用
+    if vSpeed > 50 then
+        -- 予測位置から今回の観測位置への方向ベクトル
+        local dx = observation.globalX - X_predicted[1][1]
+        local dy = observation.globalY - X_predicted[4][1]
+        local dz = observation.globalZ - X_predicted[7][1]
+        local dDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
+
+        if dDist > 1e-3 then
+            -- 速度ベクトルと移動ベクトルのコサイン類似度 (1.0 = 進行方向と完全に一致)
+            local cosTheta = (vx * dx + vy * dy + vz * dz) / (vSpeed * dDist)
+
+            -- 進行方向から外れているほど epsilon を激しく倍増させるペナルティ
+            if cosTheta < 0.8 then
+                epsilon = epsilon * (2.0 - cosTheta)
+            end
+        end
+    end
+
+
     -- updateStep で再利用するため、計算結果を返す
     return epsilon, Y, S_inv, H, R_matrix
 end
@@ -724,6 +742,8 @@ function initializeFilterState(initialObservation, tick, trackID)
     P_init[6][6] = INITIAL_ACCELERATION_VARIANCE
     P_init[9][9] = INITIAL_ACCELERATION_VARIANCE
     return {
+        localAzimuthRad = initialObservation.localAzimuthRad,
+        localElevationRad = initialObservation.localElevationRad,
         id = trackID, -- ★ トラックID
         X = X_init,
         P = P_init,
@@ -755,11 +775,11 @@ function onTick()
 
     -- データリンク目標座標,トラッキングID
     trackIDFromADS = input.getNumber(32)
-    isLaunch = trackIDFromADS < 100000
+    isLaunch = trackIDFromADS < 100000 and trackIDFromADS ~= 0
     if trackIDFromADS > 100000 then
         trackIDFromADS = trackIDFromADS - 100000
         dataLinkTrackingID = trackIDFromADS
-        if dataLinkTrackingID > 90000 then     -- dataLinkTrackingID > 90000(対水上モードで発射された)を示す場合
+        if dataLinkTrackingID > 90000 then -- dataLinkTrackingID > 90000(対水上モードで発射された)を示す場合
             isAntiShipMode = true
             dataLinkTrackingID = dataLinkTrackingID - 90000
         else
@@ -767,21 +787,25 @@ function onTick()
         end
     end
     isDataLinkUpdate = trackIDFromADS == dataLinkTrackingID
+    dataLinkGlobalPos = { dataLinkGlobalPos[1] + dataLinkTargetVelocity[1] * DT, dataLinkGlobalPos[2] +
+    dataLinkTargetVelocity[2] * DT, dataLinkGlobalPos[3] + dataLinkTargetVelocity[3] * DT }
     if isDataLinkUpdate then
-        dataLinkGlobalPos = { input.getNumber(22), input.getNumber(23), input.getNumber(24) }
+        if input.getNumber(22) ~= 0 then
+            dataLinkGlobalPos = { input.getNumber(22), input.getNumber(23), input.getNumber(24) }
+            dataLinkTargetVelocity = { input.getNumber(19), input.getNumber(20), input.getNumber(21) }
+        end
     end
     dataLinkLocalPos = globalToLocalCoords(dataLinkGlobalPos, ownGlobalPos, ownOrientation)
-    dataLinkDist = math.sqrt(dataLinkLocalPos[1] ^ 2 + dataLinkLocalPos[2] ^ 2 + dataLinkLocalPos[3] ^ 2)
     dataLinkLocalAngle = localCoordsToLocalAngle(dataLinkLocalPos)
-
-    isTargetInsideEffectiveRange = dataLinkDist < RADAR_EFFECTIVE_RANGE - 300 and dataLinkDist ~= 0
-
-    -- レーダー有効範囲圏内かつデータリンクの更新が来たタイミングでアクティブ誘導を開始
-    isTargetTrackMode = isDataLinkUpdate and isTargetInsideEffectiveRange
-
     radarManualSweepX = dataLinkLocalAngle.azimuth / PI2
     radarManualSweepY = dataLinkLocalAngle.elevation / PI2
+    dataLinkDist = math.sqrt(dataLinkLocalPos[1] ^ 2 + dataLinkLocalPos[2] ^ 2 + dataLinkLocalPos[3] ^ 2)
 
+
+    isTargetInsideEffectiveRange = dataLinkDist < RADAR_EFFECTIVE_RANGE - 150 and dataLinkDist ~= 0
+
+    -- レーダー有効範囲圏内かつデータリンクの更新が来たタイミングでアクティブ誘導を開始
+    isTargetTrackMode = (isLaunch or isDataLinkUpdate) and isTargetInsideEffectiveRange
     -- 自機姿勢をクォータニオンに変換
 
     --  (エラー発生時は単位クォータニオンで代替)
@@ -867,10 +891,16 @@ function onTick()
 
     -- (B-1) 全ての組み合わせのマハラノビス距離を計算 (Gating含む)
     for trackID, predTrack in pairs(predictedTracks) do
+        local track = predTrack.originalTrack -- ★ 元のトラックオブジェクトを参照
         for obsIndex, obs in ipairs(currentObservations) do
             local epsilon, Y, S_inv, H, R_matrix = calculateInnovation(
                 predTrack.X_pred, predTrack.P_pred, obs, ownGlobalPos
             )
+
+            -- 前回と同じ観測インデックスなら epsilon を割引して優先する
+            if track.lastAssignedObsIndex == obsIndex then
+                epsilon = epsilon * 0.6
+            end
 
             if epsilon < DATA_ASSOCIATION_EPSILON_THRESHOLD then
                 -- 閾値以下のペアを候補に追加
@@ -927,9 +957,11 @@ function onTick()
                 track.lastSeenTick = currentTick
                 track.hits = track.hits + 1
                 track.misses = 0 -- ミスカウントリセット
+                track.lastAssignedObsIndex = obsIndex
             else
                 -- 更新失敗 -> ミス扱い
                 track.misses = track.misses + 1
+                track.lastAssignedObsIndex = nil
             end
         else
             -- === マッチしなかった: ミス処理 ===
@@ -938,6 +970,7 @@ function onTick()
             -- track.P = predTrack.P_pred
             track.misses = track.misses + 1
             track.hits = 0 -- 連続ヒット数をリセット (新規トラック判定用)
+            track.lastAssignedObsIndex = nil
         end
 
         -- ロスト判定 (連続ミス回数)
@@ -998,6 +1031,9 @@ function onTick()
     -- 3. 出力
     -- -----------------------------------------------------------------
     local targetToOutput = nil
+
+    output.setBool(2, isAntiShipMode)
+    output.setBool(3, isLaunch)
     if primaryTrackID and trackedTargets[primaryTrackID] then
         targetToOutput = trackedTargets[primaryTrackID]
         isTracking = true -- プライマリターゲットがいれば Tracking フラグ ON
@@ -1009,7 +1045,7 @@ function onTick()
         -- ★ プライマリターゲットの情報を出力
         local trackX = targetToOutput.X
         local dt_delay = DT * LOGIC_DELAY
-        local dt_delay2_half = dt_delay * dt_delay * 0.5
+        local dt_delay2_half = dt_delay ^ 2 * 0.5
         local outputX, outputY, outputZ
         outputX = trackX[1][1] + trackX[2][1] * dt_delay + trackX[3][1] * dt_delay2_half
         outputY = trackX[4][1] + trackX[5][1] * dt_delay + trackX[6][1] * dt_delay2_half
@@ -1026,15 +1062,18 @@ function onTick()
         output.setNumber(9, trackX[9][1])                           -- Az
         output.setNumber(12, primaryTrackID or 0)
         output.setNumber(32, targetToOutput.epsilon)                -- Epsilon
-        if isTargetTrackMode then
-            trackingTargetLocalCoords = globalToLocalCoords(
-                { outputX, outputY, outputZ },
-                ownGlobalPos, ownOrientation
-            )
-            trackingTargetLocalAngle = localCoordsToLocalAngle(trackingTargetLocalCoords)
-            radarManualSweepX = trackingTargetLocalAngle.azimuth / PI2
-            radarManualSweepY = trackingTargetLocalAngle.elevation / PI2
-        end
+
+        --[[             radarManualSweepX, radarManualSweepY = targetToOutput.localAzimuthRad / PI2,
+                targetToOutput.localElevationRad / PI2 ]]
+
+        trackingTargetLocalCoords = globalToLocalCoords(
+            { outputX, outputY, outputZ },
+            ownGlobalPos, ownOrientation
+        )
+        trackingTargetLocalAngle = localCoordsToLocalAngle(trackingTargetLocalCoords)
+        radarManualSweepX = trackingTargetLocalAngle.azimuth / PI2
+        radarManualSweepY = trackingTargetLocalAngle.elevation / PI2
+
         output.setBool(1, true)
         output.setNumber(10, radarManualSweepX)
         output.setNumber(11, radarManualSweepY)
@@ -1043,7 +1082,10 @@ function onTick()
         output.setNumber(1, dataLinkGlobalPos[1])
         output.setNumber(2, dataLinkGlobalPos[2])
         output.setNumber(3, dataLinkGlobalPos[3])
-        for i = 4, 9 do
+        output.setNumber(4, dataLinkTargetVelocity[1])
+        output.setNumber(5, dataLinkTargetVelocity[2])
+        output.setNumber(6, dataLinkTargetVelocity[3])
+        for i = 7, 9 do
             output.setNumber(i, 0)
         end
         output.setBool(1, false)

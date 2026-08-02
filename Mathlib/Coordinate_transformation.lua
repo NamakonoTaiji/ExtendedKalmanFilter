@@ -51,40 +51,28 @@ function eulerZYX_to_quaternion(roll, yaw, pitch)
     return { w, x, y, z }
 end
 
-function rotateVectorByQuaternion(vector, quaternion)
-    local px, py, pz, p, q, q_conj, temp, p_prime
-    -- nilチェックは原則削除
-    px = vector[1] or vector.x or 0
-    py = vector[2] or vector.y or 0
-    pz = vector[3] or vector.z or 0
-    -- nilチェックは原則削除
-    p = { 0, px, py, pz }
-    q = quaternion
-    q_conj = { q[1], -q[2], -q[3], -q[4] }
-    -- nilチェックは原則削除
-    temp = multiplyQuaternions(q, p)
-    -- nilチェックは原則削除
-    p_prime = multiplyQuaternions(temp, q_conj)
-    -- nilチェックは原則削除
-    return { p_prime[2], p_prime[3], p_prime[4] }
-end
+---3次元ベクトルをクォータニオンで回転させる関数（軽量化版）
+---@param vector table {x, y, z} または {1, 2, 3} 形式の回転対象ベクトル
+---@param quaternion table {w, x, y, z} (インデックス 1, 2, 3, 4) 形式のクォータニオン
+---@param isInverse? boolean true を渡すと逆回転を実行（省略時は false/順回転）
+---@return number[] @回転後の 3次元ベクトル {x, y, z}
+function rotateVectorByQuaternion(vector, quaternion, isInverse)
+    local w, x, y, z = quaternion[1], quaternion[2], quaternion[3], quaternion[4]
+    local vx, vy, vz = vector[1] or vector.x, vector[2] or vector.y, vector[3] or vector.z
 
-function rotateVectorByInverseQuaternion(vector, quaternion)
-    local px, py, pz, p, q, q_conj, temp, p_prime
-    -- nilチェックは原則削除
-    px = vector[1] or vector.x or 0
-    py = vector[2] or vector.y or 0
-    pz = vector[3] or vector.z or 0
-    -- nilチェックは原則削除
-    p = { 0, px, py, pz }
-    q = quaternion
-    q_conj = { q[1], -q[2], -q[3], -q[4] }
-    -- nilチェックは原則削除
-    temp = multiplyQuaternions(q_conj, p)
-    -- nilチェックは原則削除
-    p_prime = multiplyQuaternions(temp, q)
-    -- nilチェックは原則削除
-    return { p_prime[2], p_prime[3], p_prime[4] }
+    -- 外積演算の共通部分（軽量化計算）
+    local tx = 2 * (y * vz - z * vy)
+    local ty = 2 * (z * vx - x * vz)
+    local tz = 2 * (x * vy - y * vx)
+
+    -- 逆回転なら w の符号を反転
+    if isInverse then w = -w end
+
+    return {
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx)
+    }
 end
 
 --- 乗り物などのローカル座標を、ワールド座標系のグローバル座標に変換します。

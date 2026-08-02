@@ -16,8 +16,7 @@ GuidanceController.lua (v0.2 - 初期誘導フェーズ追加)
 - 近接速度はプラスが接近、マイナスが離脱
 ================================================================================
 ]]
-local PI, SIMPLE_TRACK_GAIN, MAX_CONTROL, PI2, DT, PID_P, PID_I, PID_D, ALTITUDE_SET, PARACHUTE_DEPLOY_DISTANCE
-local PID = {}
+local PI, ALTITUDE_SET, PARACHUTE_DEPLOY_DISTANCE
 
 -- 定数
 PI = math.pi
@@ -25,19 +24,13 @@ PI2 = PI * 2
 DT = 1 / 60
 
 -- プロパティ読み込み
-MAX_CONTROL = property.getNumber("MaxControl") -- 動翼への出力の上限
-PID_P = property.getNumber("PID_P")
-PID_I = property.getNumber("PID_I")
-PID_D = property.getNumber("PID_D")
 ALTITUDE_SET = property.getNumber("ALTITUDE_SET")
 PARACHUTE_DEPLOY_DISTANCE = property.getNumber("PARACHUTE_DEPLOY_DISTANCE")
-
+FIN_STRANGTH = property.getNumber("FIN_STRANGTH")
 
 -- グローバル変数
 local launchTickCounter = 0 -- 発射後のTickカウンター
-local targetPosX, targetPosY, targetPosZ, targetVelX, targetVelY, targetVelZ = 0, 0, 0, 0, 0, 0
 local deployParachute = false
-local guidanceStart = false
 
 -- ============================================================================
 -- ヘルパー関数群 (変更なし - vectorNormalize を含むこと)
@@ -189,53 +182,6 @@ function globalToLocalCoords(globalTargetPos, ownGlobalPos, ownOrientationQuat)
     }
 end
 
---- PIDコントローラーのインスタンスを生成します
-function PID.new(Kp, Ki, Kd)
-    return {
-        Kp = Kp,
-        Ki = Ki,
-        Kd = Kd,
-        prev_error = 0,
-        integral = 0
-    }
-end
-
---- PIDの内部状態をリセットします
-function PID.reset(self)
-    self.prev_error = 0
-    self.integral = 0
-end
-
---- PIDの計算を更新し、操作量を出力します
-function PID.update(self, setpoint, measurement, dt, outputLimit)
-    if outputLimit == nil then
-        outputLimit = math.huge
-    end
-
-    local error = setpoint - measurement
-    self.integral = self.integral + error * dt
-
-    local derivative = (error - self.prev_error) / dt
-    local output = self.Kp * error + self.Ki * self.integral + self.Kd * derivative
-
-    if output > outputLimit then
-        self.integral = outputLimit - (self.Kp * error + self.Kd * derivative)
-        output = outputLimit
-    elseif output < -outputLimit then
-        self.integral = -outputLimit - (self.Kp * error + self.Kd * derivative)
-        output = -outputLimit
-    end
-    self.prev_error = error
-    return output
-end
-
-local pitch_PID = {
-    pid = PID.new(PID_P, PID_I, PID_D),
-
-}
-local yaw_PID = {
-    pid = PID.new(PID_P, PID_I, PID_D),
-}
 --------------------------------------------------------------------------------
 -- メイン処理 (onTick)
 --------------------------------------------------------------------------------
@@ -247,33 +193,42 @@ function onTick()
         local destinationX, destinationAltitude, destinationZ, destinationTargetPosVec
         local ownPosX, onwPosAltitude, ownPosZ, ownPitch, ownYaw, ownRoll
         local ownOrientation, targetPosVec, thrustOutput
-        local pitchControl, yawControl, horizontalDataLinkDist, ownPosVec
+        local pitchControl, yawControl, horizontalDist, ownPosVec
         local targetLocal, horizontalDistance, currentLocalAzimuth, currentLocalElevation
 
         destinationX = input.getNumber(1)        -- EAST
-        destinationAltitude = input.getNumber(2) -- ALTITUDE
-        destinationAltitude = ALTITUDE_SET
+        destinationAltitude = input.getNumber(2)
+        if destinationAltitude == 0 then
+            destinationAltitude = ALTITUDE_SET
+        end
         destinationZ = input.getNumber(3)        -- NORTH
-        destinationTargetPosVec = { destinationX, destinationAltitude, destinationZ }
+        destinationTargetPosVec = { input.getNumber(1), destinationAltitude, input.getNumber(3) }
         ownPosX = input.getNumber(4)             -- EAST
         onwPosAltitude = input.getNumber(5)      -- ALTITUDE
         ownPosZ = input.getNumber(6)             -- NORTH
         ownPitch = input.getNumber(7)
         ownYaw = input.getNumber(8)
         ownRoll = input.getNumber(9)
-        ownPosVec = { ownPosX, onwPosAltitude, ownPosZ }
-        horizontalDataLinkDist = vectorMagnitude(vectorSub({ ownPosX, 0, ownPosZ }, { destinationX, 0, destinationZ }))
-        -- 700mまで垂直上昇
-        if not guidanceStart and onwPosAltitude < 600 then
-            destinationTargetPosVec = { ownPosX, 600, ownPosZ }
-        else
-            guidanceStart = true
+
+
+        local dx = destinationX - ownPosX
+        local dz = destinationZ - ownPosZ
+        local horizontalDist = math.sqrt(dx * dx + dz * dz)
+
+        if horizontalDist > 700 then
+            local dirX = dx / horizontalDist
+            local dirZ = dz / horizontalDist
+            destinationTargetPosVec = {
+                x = ownPosX + dirX * 500,
+                y = destinationAltitude,
+                z = ownPosZ + dirZ * 500
+            }
         end
 
-
-        if horizontalDataLinkDist < PARACHUTE_DEPLOY_DISTANCE + 700 and horizontalDataLinkDist >= PARACHUTE_DEPLOY_DISTANCE then -- 200mまで接近したらスラストを半分に制限
+        
+        if horizontalDist < PARACHUTE_DEPLOY_DISTANCE + 700 and horizontalDist >= PARACHUTE_DEPLOY_DISTANCE then -- 200mまで接近したらスラストを半分に制限
             thrustOutput = 0.7
-        elseif horizontalDataLinkDist < PARACHUTE_DEPLOY_DISTANCE then                                                           -- 50mまで接近したらパラシュート降下開始
+        elseif horizontalDist < PARACHUTE_DEPLOY_DISTANCE then                                                           -- 50mまで接近したらパラシュート降下開始
             deployParachute = true
         else
             thrustOutput = 0
@@ -313,8 +268,8 @@ function onTick()
                     currentLocalElevation = 0
                 end
             end
-            pitchControl = PID.update(pitch_PID.pid, currentLocalElevation, 0, DT, MAX_CONTROL)
-            yawControl = PID.update(yaw_PID.pid, currentLocalAzimuth, 0, DT, MAX_CONTROL)
+            pitchControl = currentLocalElevation
+            yawControl = currentLocalAzimuth
         else
             -- 座標変換失敗時の処理
             pitchControl = 0
@@ -323,8 +278,8 @@ function onTick()
 
         -- 5. 出力
         output.setBool(1, deployParachute)
-        output.setNumber(1, yawControl)   -- ch1: ヨー制御
-        output.setNumber(2, pitchControl) -- ch2: ピッチ制御
+        output.setNumber(1, yawControl* FIN_STRANGTH)   -- ch1: ヨー制御
+        output.setNumber(2, pitchControl* FIN_STRANGTH) -- ch2: ピッチ制御
         output.setNumber(3, thrustOutput) -- ch3: ブースター燃焼速度
     end
 end

@@ -186,7 +186,7 @@ function onTick()
     local ownWorldCoords = { x = input.getNumber(27), y = input.getNumber(28), z = input.getNumber(29) }          -- 自機座標 {x -> 東, y -> 高度, z -> 北}
     local ownEulerAngles = { pitch = input.getNumber(30), yaw = input.getNumber(31), roll = input.getNumber(32) } -- 自機姿勢
     trackingID = input.getNumber(12)
-    isTracking = input.getNumber(21) == 1
+    isTracking = input.getBool(31)
     -- 追跡中ターゲット座標
     trackingTarget = { x = input.getNumber(22), y = input.getNumber(23), z = input.getNumber(24) }
 

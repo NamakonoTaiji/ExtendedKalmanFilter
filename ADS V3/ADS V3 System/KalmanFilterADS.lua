@@ -573,7 +573,7 @@ function predictStep(currentTarget, dt_sec)
 
     X_predicted = mul(F, stateVector)
 
-        -- === 案A: 加速度の動的減衰 (Distance-based Damping) ===
+    -- === 案A: 加速度の動的減衰 (Distance-based Damping) ===
     -- 予測位置と自機位置から目標までの距離を算出
     local targetDist = 0
     if ownGlobalPos then
@@ -584,8 +584,8 @@ function predictStep(currentTarget, dt_sec)
     end
 
     -- 距離に基づく減衰係数の計算 (線形補間)
-    local dampingFactor = 0.99
-    local maxDamp = 0.99 -- 3000m以下の減衰係数（急機動に追従）
+    local dampingFactor = 0.96
+    local maxDamp = 0.96 -- 3000m以下の減衰係数（急機動に追従）
     local minDamp = 0.10 -- 7000m以上の減衰係数（ほぼ等速直線運動とみなす）
     local minDist = 3000
     local maxDist = 7000
@@ -673,8 +673,31 @@ function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
     if epsilon_matrix and epsilon_matrix[1] and epsilon_matrix[1][1] then
         epsilon = epsilon_matrix[1][1]
     end
+    -- (既存の epsilon 計算の直後に追加)
 
-    -- updateStep で再利用するため、計算結果を返す
+    -- 1. トラックの現在推測速度を取得 (Vx, Vy, Vz)
+    local vx, vy, vz = X_predicted[2][1], X_predicted[5][1], X_predicted[8][1]
+    local vSpeed = math.sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2)
+
+    -- 2. ミサイル等、一定以上の速度（例: 50m/s以上）で移動している目標の場合のみ適用
+    if vSpeed > 50 then
+        -- 予測位置から今回の観測位置への方向ベクトル
+        local dx = observation.globalX - X_predicted[1][1]
+        local dy = observation.globalY - X_predicted[4][1]
+        local dz = observation.globalZ - X_predicted[7][1]
+        local dDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
+
+        if dDist > 1e-3 then
+            -- 速度ベクトルと移動ベクトルのコサイン類似度 (1.0 = 進行方向と完全に一致)
+            local cosTheta = (vx * dx + vy * dy + vz * dz) / (vSpeed * dDist)
+
+            -- 進行方向から外れているほど epsilon を激しく倍増させるペナルティ
+            if cosTheta < 0.8 then
+                epsilon = epsilon * (2.0 - cosTheta)
+            end
+        end
+    end
+
     return epsilon, Y, S_inv, H, R_matrix
 end
 
@@ -851,10 +874,16 @@ function onTick()
 
     -- (B-1) 全ての組み合わせのマハラノビス距離を計算 (Gating含む)
     for trackID, predTrack in pairs(predictedTracks) do
+        local track = predTrack.originalTrack -- ★ 元のトラックオブジェクトを参照
         for obsIndex, obs in ipairs(currentObservations) do
             local epsilon, Y, S_inv, H, R_matrix = calculateInnovation(
                 predTrack.X_pred, predTrack.P_pred, obs, ownGlobalPos
             )
+
+            -- 前回と同じ観測インデックスなら epsilon を割引して優先する
+            if track.lastAssignedObsIndex == obsIndex then
+                epsilon = epsilon * 0.6
+            end
 
             if epsilon < DATA_ASSOCIATION_EPSILON_THRESHOLD then
                 -- 閾値以下のペアを候補に追加
@@ -911,9 +940,11 @@ function onTick()
                 track.lastSeenTick = currentTick
                 track.hits = track.hits + 1
                 track.misses = 0 -- ミスカウントリセット
+                track.lastAssignedObsIndex = obsIndex
             else
                 -- 更新失敗 -> ミス扱い
                 track.misses = track.misses + 1
+                track.lastAssignedObsIndex = nil
             end
         else
             -- === マッチしなかった: ミス処理 ===
@@ -921,6 +952,7 @@ function onTick()
             -- track.X = predTrack.X_pred -- lastTick を更新しないので予測状態は保持しない方が良い
             -- track.P = predTrack.P_pred
             track.misses = track.misses + 1
+            track.lastAssignedObsIndex = nil
         end
 
         -- ロスト判定 (連続ミス回数)

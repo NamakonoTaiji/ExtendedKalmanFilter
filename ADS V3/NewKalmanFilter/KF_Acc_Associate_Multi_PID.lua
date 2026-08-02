@@ -538,13 +538,13 @@ function predictStep(currentTarget, dt_sec)
     I_gain = NOISE_INTEGRAL_GAIN
 
     error = setpoint - process_variable
-    new_integral_state = integral_state + error * I_gain 
+    new_integral_state = integral_state + error * I_gain
 
-    cU = new_integral_state 
+    cU = new_integral_state
     cU = math.max(NOISE_OUTPUT_MIN, math.min(NOISE_OUTPUT_MAX, cU))
 
     if cU == NOISE_OUTPUT_MIN or cU == NOISE_OUTPUT_MAX then
-        new_integral_state = integral_state 
+        new_integral_state = integral_state
     end
 
     noiseScale_bH = 10 ^ -(3 + cU)
@@ -573,12 +573,12 @@ function predictStep(currentTarget, dt_sec)
         targetDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
     end
 
-    local dampingFactor = 0.99
-    local maxDamp = 0.99 
-    local minDamp = 0.10 
+    local dampingFactor = 1
+    local maxDamp = 1
+    local minDamp = 0.01
     local minDist = 2000
     local maxDist = 8000
-    
+
     local qScale = 1.0 -- 近距離時のプロセスノイズ増幅倍率
 
     if targetDist > maxDist then
@@ -593,9 +593,9 @@ function predictStep(currentTarget, dt_sec)
         qScale = maxQScale * (1 - t) + 1.0 * t
     end
 
-    X_predicted[3][1] = X_predicted[3][1] * dampingFactor 
-    X_predicted[6][1] = X_predicted[6][1] * dampingFactor 
-    X_predicted[9][1] = X_predicted[9][1] * dampingFactor 
+    X_predicted[3][1] = X_predicted[3][1] * dampingFactor
+    X_predicted[6][1] = X_predicted[6][1] * dampingFactor
+    X_predicted[9][1] = X_predicted[9][1] * dampingFactor
 
     -- ノイズスケールのキャップと実効値を qScale で引き上げる
     local base_noise_limit = 1e-4
@@ -613,7 +613,7 @@ function predictStep(currentTarget, dt_sec)
         { dt5 / 12, dt4 / 4,  dt3 / 2 },
         { dt4 / 6,  dt3 / 2,  dt2 }
     }
-    for i = 0, 2 do 
+    for i = 0, 2 do
         for r = 1, 3 do
             for c = 1, 3 do
                 Q_base[i * 3 + r][i * 3 + c] = q_block[r][c]
@@ -735,6 +735,8 @@ function initializeFilterState(initialObservation, tick, trackID)
     P_init[6][6] = INITIAL_ACCELERATION_VARIANCE
     P_init[9][9] = INITIAL_ACCELERATION_VARIANCE
     return {
+        localAzimuthRad = initialObservation.localAzimuthRad,
+        localElevationRad = initialObservation.localElevationRad,
         id = trackID, -- ★ トラックID
         X = X_init,
         P = P_init,
@@ -1040,6 +1042,10 @@ function onTick()
                 ownGlobalPos, ownOrientation
             )
             trackingTargetLocalAngle = localCoordsToLocalAngle(trackingTargetLocalCoords)
+
+            radarManualSweepX, radarManualSweepY = targetToOutput.localAzimuthRad / PI2,
+                targetToOutput.localElevationRad / PI2
+
             radarManualSweepX = trackingTargetLocalAngle.azimuth / PI2
             radarManualSweepY = trackingTargetLocalAngle.elevation / PI2
         end

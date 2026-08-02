@@ -13,7 +13,7 @@ function onTick()
     local distance = iN(1)
     local isDetected = iB(1)
 
-    if isDetected then
+    if isDetected and distance > 1000 then
         vtStart = true
     end
 

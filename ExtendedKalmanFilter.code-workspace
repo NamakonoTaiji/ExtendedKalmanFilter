@@ -37,9 +37,19 @@
       "path": "Others/RWR"
     },
     {
+      "name": "AddonLua",
+      "path": "AddonLua"
+    },
+    {
+      "name": "Torpedo",
+      "path": "Torpedo"
+    },
+    {
       "name": "Root (Docs/Mathlib/etc)",
       "path": "."
     }
   ],
-  "settings": {}
+  "settings": {
+    "liveServer.settings.multiRootWorkspaceName": "ADS V3 Missile"
+  }
 }

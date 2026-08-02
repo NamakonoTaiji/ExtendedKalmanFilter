@@ -1,29 +1,19 @@
 --[[
-================================================================================
-KalmanFilter_SAM.lua (v0.3 - 新コーディングルール適用: nilチェック削除、local宣言整理)
-================================================================================
-機能:
-- データリンク座標 (X, Y) を入力として受け取る (Zは0扱い)。
-- ミサイル搭載レーダーからの観測値 (最大6目標 x 4ch/目標) を入力として受け取る。
-- データリンク座標 または 追跡中の目標の予測位置 を基準として、
-  レーダー観測値とのデータアソシエーション (EKF試算によるε最小化) を行う。
-- アソシエーションに成功した観測値を用いてEKFを実行し、目標状態を更新する。
-- 試験段階として、自機位置・姿勢はセンサー入力とする。
-- フィルター結果の出力はデバッグ用に行う。
+機能:一次フィルターからの入力を元にカルマンフィルターによるノイズ抑制と目標の同定を行う。
 
 入力 (コンポジット信号):
 - num 1-3: レーダー目標1 (距離, 方位角(ラジアン), 仰角(ラジアン))
 - num 4-6: レーダー目標2 ...
 - ...
 - num 19-21: レーダー目標7
-- num 22-24: 火器管制から指示された迎撃目標座標 X,Y,Z
 - num 25: 自機グローバル位置 X
 - num 26: 自機グローバル位置 Y
 - num 27: 自機グローバル位置 Z
 - num 28: 自機オイラー角 Pitch (ラジアン)
 - num 29: 自機オイラー角 Yaw (ラジアン)
 - num 30: 自機オイラー角 Roll (ラジアン)
-- num 32: 迎撃目標ID
+- num 31: パイロットシート視線方位角(回転単位)
+- num 32: パイロットシート視線仰角(回転単位)
 
 出力 (コンポジット信号 - デバッグ用):
 - bool 1: 目標を検出中
@@ -36,27 +26,24 @@ KalmanFilter_SAM.lua (v0.3 - 新コーディングルール適用: nilチェッ�
 - num 7: 推定目標加速度 Ax
 - num 8: 推定目標加速度 Ay
 - num 9: 推定目標加速度 Az
-- num 10: レーダー方位角マニュアル制御
-- num 11: レーダー仰角マニュアル制御
-- num 12: トラック中の目標ID
+- num 10: Last Seen Tick (最終観測Tick)
+- num 11: Detection Tick Lag (観測遅延Tick数)
+- num 12: Tracked Target ID (トラック中の目標ID)
+- num 13: Target Hit Count (目標の連続ヒット数)
 - num 32: 最新のイプシロンε
 
 前提:
 - 座標系は Physics Sensor 座標系 (X:東, Y:上, Z:北, 左手系) を基準とする。
-- EKFの各種パラメータはプロパティから読み込む想定。
-- inv 関数は別途追記が必要。
-================================================================================
+- EKFの各種パラメータはプロパティから読み込む想定
 ]]
 
 -- 定数
 PI = math.pi
 PI2 = PI * 2
 DT = 1 / 60           -- EKF更新の時間ステップ (秒)
-MAX_RADAR_TARGETS = 7 -- 処理するレーダー目標の最大数
+MAX_RADAR_TARGETS = 6 -- 処理するレーダー目標の最大数
 NUM_STATES = 9        -- EKF状態数 (x, vx, ax, y, vy, ay, z, vz, az)
-BASE_CHANNEL = 3
-
-DL_GATE = property.getNumber("DL_GATE") -- 火器管制マイコンから送られてきた目標座標とレーダーに映っている目標を同定することができる最大閾値
+BASE_CHANNEL = 4
 
 -- EKF パラメータ (プロパティから読み込む想定)
 DATA_ASSOCIATION_EPSILON_THRESHOLD = property.getNumber("D_ASOC_EPS") -- データアソシエーションのε閾値
@@ -65,32 +52,30 @@ TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")            -- 目標�
 --PROCESS_NOISE_ADAPTIVE_SCALE = property.getNumber("P_ADPT")                      -- epsilon が非常に大きい（機動時）に、P_BASE に追加されるノイズの最大量
 --PROCESS_NOISE_EPSILON_THRESHOLD = property.getNumber("P_NOISE_EPS_THRS")         -- P_ADPTによるスケーリングを開始するεの閾値。εがこれを超えると適応的調整が入り始める。
 --PROCESS_NOISE_EPSILON_SLOPE = property.getNumber("P_NOISE_EPS_SLOPE")            -- プロセスノイズ適応調整のε傾き。これが大きいほどプロセスノイズの増加が急になる。
-PREDICTION_UNCERTAINTY_FACTOR_BASE = 1.01 -- property.getNumber("PRED_UNCERTAINTY_FACT") -- 観測が無い間に予測の信頼を下げる係数。値が大きいほど観測がない間に予測を信頼しなくなる。
-INITIAL_ACCELERATION_VARIANCE = 1e+6
-INITIAL_VELOCITY_VARIANCE = 1e+6
+PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") -- 観測が無い間に予測の信頼を下げる係数。値が大きいほど観測がない間に予測を信頼しなくなる。
+INITIAL_ACCELERATION_VARIANCE = 1e+3
+INITIAL_VELOCITY_VARIANCE = 1e+3
 
 -- ★ PI制御パラメータ (新規追加)
-NOISE_TARGET_EPSILON = property.getNumber("NOISE_TARGET_EPS") -- PI制御の目標epsilon値 (ワークショップ版の dl 相当)
-NOISE_INTEGRAL_GAIN = property.getNumber("NOISE_I_GAIN")      -- PI制御の積分ゲイン (ワークショップ版の I=0.5 相当)
-NOISE_OUTPUT_MIN = -8                                         -- PI制御出力の下限 (ワークショップ版と同じ)
-NOISE_OUTPUT_MAX = 5                                          -- PI制御出力の上限 (ワークショップ版と同じ)
+NOISE_TARGET_EPSILON = property.getNumber("NOISE_TARGET_EPS") -- PI制御の目標epsilon値
+NOISE_INTEGRAL_GAIN = property.getNumber("NOISE_I_GAIN")      -- PI制御の積分ゲイン
+NOISE_OUTPUT_MIN = -8                                         -- PI制御出力の下限
+NOISE_OUTPUT_MAX = 5                                          -- PI制御出力の上限
 
 LOGIC_DELAY = property.getNumber("LOGIC_DELAY")
-R0_DIST_VAR_FACTOR = 6.67e-5 * 5 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
-R0_ANGLE_VAR = 2.63e-5 * 5       --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
+R0_DIST_VAR_FACTOR = 6.67e-3 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
+R0_ANGLE_VAR = 2.63e-3       --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
+R_DIST_VAR = 202.81
+R_ANGLE_VAR = 1.316e-5       --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
 OBSERVATION_NOISE_MATRIX_TEMPLATE = { { R0_DIST_VAR_FACTOR, 0, 0 }, { 0, R0_ANGLE_VAR, 0 }, { 0, 0, R0_ANGLE_VAR } }
 
 
 -- グローバル変数
-trackedTargets       = {} -- 複数のトラックを保持するテーブル
-nextTrackID          = 1  -- 新規トラックに割り当てるID
-currentTick          = 0
-trackingID           = nil
-isTargetTrackMode    = false
-oldThreatTargetID    = 0
-threatTargetCoods    = { x = 0, y = 0, z = 0 }
-threatTargetID       = 0
-local primaryTrackID = nil
+trackedTargets = {} -- 複数のトラックを保持するテーブル
+nextTrackID = 1     -- 新規トラックに割り当てるID
+currentTick = 0
+trackingID = nil
+trackedTargetsIndex = 0
 --------------------------------------------------------------------------------
 -- ベクトル演算ヘルパー関数
 --------------------------------------------------------------------------------
@@ -335,7 +320,7 @@ end
 --------------------------------------------------------------------------------
 -- クォータニオン演算関数
 --------------------------------------------------------------------------------
---[[ function multiplyQuaternions(q_a, q_b)
+function multiplyQuaternions(q_a, q_b)
     local w1, x1, y1, z1, w2, x2, y2, z2, w_result, x_result, y_result, z_result
     --
     w1 = q_a[1]
@@ -352,7 +337,7 @@ end
     y_result = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
     z_result = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
     return { w_result, x_result, y_result, z_result }
-end ]]
+end
 
 function eulerZYX_to_quaternion(roll, yaw, pitch)
     local half_roll, half_yaw, half_pitch, cr, sr, cy, sy, cp, sp, w, x, y, z
@@ -373,28 +358,40 @@ function eulerZYX_to_quaternion(roll, yaw, pitch)
     return { w, x, y, z }
 end
 
----3次元ベクトルをクォータニオンで回転させる関数（軽量化版）
----@param vector table {x, y, z} または {1, 2, 3} 形式の回転対象ベクトル
----@param quaternion table {w, x, y, z} (インデックス 1, 2, 3, 4) 形式のクォータニオン
----@param isInverse? boolean true を渡すと逆回転を実行（省略時は false/順回転）
----@return number[] @回転後の 3次元ベクトル {x, y, z}
-function rotateVectorByQuaternion(vector, quaternion, isInverse)
-    local w, x, y, z = quaternion[1], quaternion[2], quaternion[3], quaternion[4]
-    local vx, vy, vz = vector[1] or vector.x, vector[2] or vector.y, vector[3] or vector.z
+function rotateVectorByQuaternion(vector, quaternion)
+    local px, py, pz, p, q, q_conj, temp, p_prime
 
-    -- 外積演算の共通部分（軽量化計算）
-    local tx = 2 * (y * vz - z * vy)
-    local ty = 2 * (z * vx - x * vz)
-    local tz = 2 * (x * vy - y * vx)
+    px = vector[1]
+    py = vector[2]
+    pz = vector[3]
 
-    -- 逆回転なら w の符号を反転
-    if isInverse then w = -w end
+    p = { 0, px, py, pz }
+    q = quaternion
+    q_conj = { q[1], -q[2], -q[3], -q[4] }
 
-    return {
-        vx + w * tx + (y * tz - z * ty),
-        vy + w * ty + (z * tx - x * tz),
-        vz + w * tz + (x * ty - y * tx)
-    }
+    temp = multiplyQuaternions(q, p)
+
+    p_prime = multiplyQuaternions(temp, q_conj)
+
+    return { p_prime[2], p_prime[3], p_prime[4] }
+end
+
+function rotateVectorByInverseQuaternion(vector, quaternion)
+    local px, py, pz, p, q, q_conj, temp, p_prime
+
+    px = vector[1]
+    py = vector[2]
+    pz = vector[3]
+
+    p = { 0, px, py, pz }
+    q = quaternion
+    q_conj = { q[1], -q[2], -q[3], -q[4] }
+
+    temp = multiplyQuaternions(q_conj, p)
+
+    p_prime = multiplyQuaternions(temp, q)
+
+    return { p_prime[2], p_prime[3], p_prime[4] }
 end
 
 --------------------------------------------------------------------------------
@@ -422,15 +419,15 @@ function globalToLocalCoords(globalTargetPos, ownGlobalPos, ownOrientationQuat)
     local gX, gY, gZ, oX, oY, oZ, relativeVectorGlobal, localVector
     -- 各入力が {x, y, z} 形式のテーブルを想定
 
-    gX = globalTargetPos[1] or globalTargetPos.x
-    gY = globalTargetPos[2] or globalTargetPos.y
-    gZ = globalTargetPos[3] or globalTargetPos.z
-    oX = ownGlobalPos[1] or ownGlobalPos.x
-    oY = ownGlobalPos[2] or ownGlobalPos.y
-    oZ = ownGlobalPos[3] or ownGlobalPos.z
+    gX = globalTargetPos[1]
+    gY = globalTargetPos[2]
+    gZ = globalTargetPos[3]
+    oX = ownGlobalPos[1]
+    oY = ownGlobalPos[2]
+    oZ = ownGlobalPos[3]
 
     relativeVectorGlobal = { gX - oX, gY - oY, gZ - oZ }
-    localVector = rotateVectorByQuaternion(relativeVectorGlobal, ownOrientationQuat, true)
+    localVector = rotateVectorByInverseQuaternion(relativeVectorGlobal, ownOrientationQuat)
 
     return { localVector[1], localVector[2], localVector[3] }
 end
@@ -514,6 +511,7 @@ function calculateAngleDifference(angle1, angle2)
         diff
 end
 
+-- EKF 更新ステップ (dtは固定DTを使用)
 -- ★【新関数 1】EKF 予測ステップ
 ---@param currentTarget table 追跡中の目標オブジェクト
 ---@param dt_sec number 前回の更新からの経過秒数
@@ -524,43 +522,62 @@ function predictStep(currentTarget, dt_sec)
 
     stateVector = currentTarget.X
     covariance = currentTarget.P
+    -- 前回のepsilonが無ければ目標値を使う (初期値 or ロストからの復帰時)
     lastEpsilon = currentTarget.epsilon or NOISE_TARGET_EPSILON
+    -- 前回の積分誤差を取得 (なければ0)
     lastIntegralError = currentTarget.integralError or 0
 
+    -- === PI Controller for Noise Scale ===
+    -- (ワークショップ版KFのcF関数のロジックを再現)
     setpoint = NOISE_TARGET_EPSILON
     process_variable = lastEpsilon
     integral_state = lastIntegralError
     I_gain = NOISE_INTEGRAL_GAIN
 
+    -- 誤差 (目標値 - 現在値)
     error = setpoint - process_variable
-    new_integral_state = integral_state + error * I_gain
 
-    cU = new_integral_state
+    -- 積分項の更新 (dt_sec を掛けて時間積分)
+    -- 注意: Workshop版は dt を使っていないように見えたため、
+    -- もし挙動がおかしければ dt_sec を掛けない方が良いかもしれない
+    new_integral_state = integral_state + error * I_gain -- ★ dt_sec を使用
+
+    -- PI制御出力 (P=0, D=0 なので積分項のみ) - ゲインは積分時に考慮済み
+    cU = new_integral_state -- ★ 出力は積分状態そのものと仮定 (ゲインは更新時に適用)
+
+    -- 出力制限 (リミッター)
     cU = math.max(NOISE_OUTPUT_MIN, math.min(NOISE_OUTPUT_MAX, cU))
 
+    -- アンチワインドアップ: 出力が制限にかかった場合、積分が進みすぎないように戻す
     if cU == NOISE_OUTPUT_MIN or cU == NOISE_OUTPUT_MAX then
-        new_integral_state = integral_state
+        new_integral_state = integral_state -- 積分状態を更新しない
     end
 
+    -- 最終的なノイズスケール bH
     noiseScale_bH = 10 ^ -(3 + cU)
-    -- ※ここではまだ math.min(1e-4) でキャップせず、後で距離スケールを考慮して適用します
+    -- === 1. 予測ステップ ===
 
+    -- 状態遷移行列 F (CAモデル)
     dt_sec2_half = dt_sec * dt_sec * 0.5
     F = MatrixCopy(identityMatrix9x9)
+    -- X軸 (1, 2, 3)
     F[1][2] = dt_sec
     F[1][3] = dt_sec2_half
     F[2][3] = dt_sec
+    -- Y軸 (4, 5, 6)
     F[4][5] = dt_sec
     F[4][6] = dt_sec2_half
     F[5][6] = dt_sec
+    -- Z軸 (7, 8, 9)
     F[7][8] = dt_sec
     F[7][9] = dt_sec2_half
     F[8][9] = dt_sec
 
     X_predicted = mul(F, stateVector)
 
-    -- === 案A改: 加速度の動的減衰 と 近距離での感度(プロセスノイズ)向上 ===
-    local targetDist = 3000 -- 初期値
+    -- === 案A: 加速度の動的減衰 (Distance-based Damping) ===
+    -- 予測位置と自機位置から目標までの距離を算出
+    local targetDist = 0
     if ownGlobalPos then
         local dx = X_predicted[1][1] - ownGlobalPos[1]
         local dy = X_predicted[4][1] - ownGlobalPos[2]
@@ -568,35 +585,25 @@ function predictStep(currentTarget, dt_sec)
         targetDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
     end
 
+    -- 距離に基づく減衰係数の計算 (線形補間)
     local dampingFactor = 0.99
-    local maxDamp = 0.99
-    local minDamp = 0.10
-    local minDist = 2000
-    local maxDist = 8000
-
-    local qScale = 1.0 -- 近距離時のプロセスノイズ増幅倍率
+    local maxDamp = 0.99 -- 3000m以下の減衰係数（急機動に追従）
+    local minDamp = 0.10 -- 7000m以上の減衰係数（ほぼ等速直線運動とみなす）
+    local minDist = 1000
+    local maxDist = 3000
 
     if targetDist > maxDist then
         dampingFactor = minDamp
     elseif targetDist > minDist then
         local t = (targetDist - minDist) / (maxDist - minDist)
         dampingFactor = maxDamp * (1 - t) + minDamp * t
-    else
-        -- ★追加: 3000m未満の場合、近づくほどプロセスノイズ(Q)を増大させて観測値への追従性を上げる
-        local maxQScale = 10 -- 近距離(0m)でのズレに対する感度最大倍率。機動に追いつけない場合はこの値を上げる
-        local t = targetDist / minDist
-        qScale = maxQScale * (1 - t) + 1.0 * t
     end
 
-    X_predicted[3][1] = X_predicted[3][1] * dampingFactor
-    X_predicted[6][1] = X_predicted[6][1] * dampingFactor
-    X_predicted[9][1] = X_predicted[9][1] * dampingFactor
+    X_predicted[3][1] = X_predicted[3][1] * dampingFactor -- Ax
+    X_predicted[6][1] = X_predicted[6][1] * dampingFactor -- Ay
+    X_predicted[9][1] = X_predicted[9][1] * dampingFactor -- Az
 
-    -- ノイズスケールのキャップと実効値を qScale で引き上げる
-    local base_noise_limit = 1e-4
-    noiseScale_bH = math.min(noiseScale_bH, base_noise_limit * qScale)
-    noiseScale_bH = noiseScale_bH * qScale
-
+    -- プロセスノイズ Q の計算 (適応的 CAモデル)
     dt2 = dt_sec * dt_sec
     dt3 = dt2 * dt_sec
     dt4 = dt3 * dt_sec
@@ -608,7 +615,7 @@ function predictStep(currentTarget, dt_sec)
         { dt5 / 12, dt4 / 4,  dt3 / 2 },
         { dt4 / 6,  dt3 / 2,  dt2 }
     }
-    for i = 0, 2 do
+    for i = 0, 2 do -- X, Y, Z軸
         for r = 1, 3 do
             for c = 1, 3 do
                 Q_base[i * 3 + r][i * 3 + c] = q_block[r][c]
@@ -618,6 +625,8 @@ function predictStep(currentTarget, dt_sec)
 
     Q_adapted = scalar(noiseScale_bH, Q_base)
 
+    -- 共分散 P の予測
+    -- (dt_ticks=1固定と仮定し、dt_sec の大きさに応じて不確かさを増やす)
     uncertaintyIncreaseFactor = 1.0 + (PREDICTION_UNCERTAINTY_FACTOR_BASE * dt_sec)
 
     P_pred_term1 = mul(F, covariance, T(F))
@@ -655,10 +664,10 @@ function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
     S = sum(mul(H, P_predicted, T(H)), R_matrix)
     S_inv = inv3(S)
 
-    if S_inv == nil then
-        --     逆行列計算失敗
-        return math.huge, nil, nil, nil, nil
-    end
+    -- if S_inv == nil then
+    --     -- 逆行列計算失敗
+    --     return math.huge, nil, nil, nil, nil
+    -- end
 
     -- 誤差指標 epsilon (マハラノビス距離) の計算: epsilon = Y^T * S^-1 * Y
     epsilon = 1.0
@@ -666,32 +675,6 @@ function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
     if epsilon_matrix and epsilon_matrix[1] and epsilon_matrix[1][1] then
         epsilon = epsilon_matrix[1][1]
     end
-
-    -- (既存の epsilon 計算の直後に追加)
-
-    -- 1. トラックの現在推測速度を取得 (Vx, Vy, Vz)
-    local vx, vy, vz = X_predicted[2][1], X_predicted[5][1], X_predicted[8][1]
-    local vSpeed = math.sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2)
-
-    -- 2. ミサイル等、一定以上の速度（例: 50m/s以上）で移動している目標の場合のみ適用
-    if vSpeed > 50 then
-        -- 予測位置から今回の観測位置への方向ベクトル
-        local dx = observation.globalX - X_predicted[1][1]
-        local dy = observation.globalY - X_predicted[4][1]
-        local dz = observation.globalZ - X_predicted[7][1]
-        local dDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
-
-        if dDist > 1e-3 then
-            -- 速度ベクトルと移動ベクトルのコサイン類似度 (1.0 = 進行方向と完全に一致)
-            local cosTheta = (vx * dx + vy * dy + vz * dz) / (vSpeed * dDist)
-
-            -- 進行方向から外れているほど epsilon を激しく倍増させるペナルティ
-            if cosTheta < 0.8 then
-                epsilon = epsilon * (2.0 - cosTheta)
-            end
-        end
-    end
-
 
     -- updateStep で再利用するため、計算結果を返す
     return epsilon, Y, S_inv, H, R_matrix
@@ -746,6 +729,19 @@ function initializeFilterState(initialObservation, tick, trackID)
     P_init[1][1] = (R_init[3][3] + R_init[1][1]) * pos_variance_scale -- X(East)
     P_init[4][4] = (R_init[2][2] + R_init[1][1]) * pos_variance_scale -- Y(Up)
     P_init[7][7] = (R_init[3][3] + R_init[1][1]) * pos_variance_scale -- Z(North)
+
+
+    local dist = initialObservation.distance
+    local distVar = R0_DIST_VAR_FACTOR
+    local anglePosVar = (dist ^ 2) * R0_ANGLE_VAR
+    pos_variance_scale = 5 -- 初期位置の不確かさを観測ノイズの10倍程度に設定
+    local totalPosVar = (distVar + anglePosVar) * pos_variance_scale
+    -- 位置の分散 (1,1), (4,4), (7,7)
+    P_init[1][1] = totalPosVar -- X(East)
+    P_init[4][4] = totalPosVar -- Y(Up)
+    P_init[7][7] = totalPosVar -- Z(North)
+
+
     -- 速度の分散 (2,2), (5,5), (8,8)
     P_init[2][2] = INITIAL_VELOCITY_VARIANCE
     P_init[5][5] = INITIAL_VELOCITY_VARIANCE
@@ -760,11 +756,11 @@ function initializeFilterState(initialObservation, tick, trackID)
         X = X_init,
         P = P_init,
         epsilon = 1.0,
-        lastTick = tick,     -- 最後に更新/初期化されたTick
-        lastSeenTick = tick, -- 最後に観測が紐付けられたTick
-        hits = 1,            -- ★ 連続ヒット数 (信頼性評価用)
-        misses = 0,          -- ★ 連続ミス数 (削除判定用)
-        integralError = 0    -- ★ PIコントローラーの積分状態を初期化
+        lastTick = tick,                                     -- 最後に更新/初期化されたTick
+        lastSeenTick = initialObservation.targetReachedTick, -- 最後に観測が紐付けられたTick
+        hits = 1,                                            -- ★ 連続ヒット数 (信頼性評価用)
+        misses = 0,                                          -- ★ 連続ミス数 (削除判定用)
+        integralError = 0                                    -- ★ PIコントローラーの積分状態を初期化
     }
 end
 
@@ -775,7 +771,6 @@ function onTick()
     -- 関数冒頭でローカル変数を宣言
 
     currentTick = currentTick + 1
-    isTracking = false
 
     -- 1. 入力読み込み
 
@@ -783,45 +778,29 @@ function onTick()
     ownGlobalPos = { input.getNumber(25), input.getNumber(26), input.getNumber(27) }
     ownEuler = { Pitch = input.getNumber(28), Yaw = input.getNumber(29), Roll = input.getNumber(30) }
 
-    if input.getNumber(32) ~= 0 then
-        threatTargetCoods = { x = input.getNumber(22), y = input.getNumber(23), z = input.getNumber(24) }
-        threatTargetID = input.getNumber(32)
-    end
-    if threatTargetID ~= oldThreatTargetID then
-        oldThreatTargetID = threatTargetID
-        isTargetTrackMode = false
-    end
-
     -- 自機姿勢をクォータニオンに変換
     ownOrientation = eulerZYX_to_quaternion(ownEuler.Roll, ownEuler.Yaw, ownEuler.Pitch)
     --  (エラー発生時は単位クォータニオンで代替)
-    -- if ownOrientation == nil then ownOrientation = { 1, 0, 0, 0 } end
+    if ownOrientation == nil then ownOrientation = { 1, 0, 0, 0 } end
 
     -- レーダー観測値の処理
     -- レーダー観測値の処理
     currentObservations = {} -- このTickで有効なレーダー観測リスト
     isRadarDetecting = false
 
-    centerTargetAngleDistanceSquared = math.huge     -- レーダーの視点中央からの距離。同定したいターゲットの選出に使う。
-    centerID = 0                                     -- 中央に捉えている目標の配列番号
     for i = 1, MAX_RADAR_TARGETS do
-        dist = input.getNumber(BASE_CHANNEL * i - 2) -- 距離
+        dist = input.getNumber(BASE_CHANNEL * i - 3) -- 距離
         if dist > 0 then
             isRadarDetecting = true
-            localAziRad = input.getNumber(BASE_CHANNEL * i - 1)
-            localEleRad = input.getNumber(BASE_CHANNEL * i)
-
+            localAziRad = input.getNumber(BASE_CHANNEL * i - 2)
+            localEleRad = input.getNumber(BASE_CHANNEL * i - 1)
+            targetReachedTick = input.getNumber(BASE_CHANNEL * i)
             -- ローカル極座標からローカル直交座標へ
             targetLocalPosVec = polarCoordsToLocalCoords(dist, localEleRad, localAziRad)
 
             -- ローカル直交座標からグローバル直交座標へ
             targetGlobal = localToGlobalCoords(targetLocalPosVec, ownGlobalPos, ownOrientation)
 
-            -- 視点中央からの距離、配列番号を更新
-            if localAziRad ^ 2 + localEleRad ^ 2 < centerTargetAngleDistanceSquared then
-                centerTargetAngleDistanceSquared = localAziRad ^ 2 + localEleRad ^ 2
-                centerID = i
-            end
             -- nilチェックは原則削除
             if targetGlobal ~= nil then
                 -- グローバル座標からグローバルな仰角・方位角を計算 (EKF用)
@@ -841,7 +820,8 @@ function onTick()
                         localElevationRad = localEleRad,
                         globalX = targetGlobal[1],
                         globalY = targetGlobal[2],
-                        globalZ = targetGlobal[3]
+                        globalZ = targetGlobal[3],
+                        targetReachedTick = targetReachedTick
                     })
                 end -- relativeGlobalVec nil check end
             end     -- targetGlobal nil check end
@@ -887,16 +867,11 @@ function onTick()
 
     -- (B-1) 全ての組み合わせのマハラノビス距離を計算 (Gating含む)
     for trackID, predTrack in pairs(predictedTracks) do
-        local track = predTrack.originalTrack -- ★ 元のトラックオブジェクトを参照
         for obsIndex, obs in ipairs(currentObservations) do
             local epsilon, Y, S_inv, H, R_matrix = calculateInnovation(
                 predTrack.X_pred, predTrack.P_pred, obs, ownGlobalPos
             )
 
-            -- 前回と同じ観測インデックスなら epsilon を割引して優先する
-            if track.lastAssignedObsIndex == obsIndex then
-                epsilon = epsilon * 0.6
-            end
             if epsilon < DATA_ASSOCIATION_EPSILON_THRESHOLD then
                 -- 閾値以下のペアを候補に追加
                 table.insert(associations, {
@@ -949,14 +924,12 @@ function onTick()
                 track.P = P_up
                 track.epsilon = eps_up
                 track.lastTick = currentTick
-                track.lastSeenTick = currentTick
+                track.lastSeenTick = obs.targetReachedTick
                 track.hits = track.hits + 1
                 track.misses = 0 -- ミスカウントリセット
-                track.lastAssignedObsIndex = obsIndex
             else
                 -- 更新失敗 -> ミス扱い
                 track.misses = track.misses + 1
-                track.lastAssignedObsIndex = nil
             end
         else
             -- === マッチしなかった: ミス処理 ===
@@ -964,9 +937,6 @@ function onTick()
             -- track.X = predTrack.X_pred -- lastTick を更新しないので予測状態は保持しない方が良い
             -- track.P = predTrack.P_pred
             track.misses = track.misses + 1
-            track.lastTick = currentTick
-            track.hits = 0 -- 連続ヒット数をリセット (新規トラック判定用)
-            track.lastAssignedObsIndex = nil
         end
 
         -- ロスト判定 (連続ミス回数)
@@ -982,6 +952,7 @@ function onTick()
 
     for obsIndex, obs in ipairs(currentObservations) do
         if not assignedObsIndices[obsIndex] then
+            -- ★ 新規トラックを作成
             local newTrackID = nextTrackID
             nextTrackID = nextTrackID + 1
 
@@ -993,44 +964,41 @@ function onTick()
         end
     end
 
-    -- (E) - 迎撃対象のハードロックを試みる (火器管制から送られた迎撃対象に最も近いトラック)
-    local minDistanceDiffSq = math.huge
-    if not isTargetTrackMode then
-        local id_temp = nil
-        for trackID, track in pairs(trackedTargets) do
-            -- 距離を計算
-            local distanceDiffSq = (track.X[1][1] - threatTargetCoods.x) ^ 2 +
-                (track.X[4][1] - threatTargetCoods.y) ^ 2 +
-                (track.X[7][1] - threatTargetCoods.z) ^ 2
+    local sortedTracks = {}
 
-            -- 迎撃対象とレーダー目標の最小の差を更新
-            if distanceDiffSq < minDistanceDiffSq then
-                minDistanceDiffSq = distanceDiffSq
-                id_temp = trackID
-            end
-        end
-
-        -- 最小の差がDL_GATEで定めた上限を下回っている場合ハードロックするべき対象として更新
-        local dlGateSq = DL_GATE ^ 2
-        if minDistanceDiffSq < dlGateSq then
-            primaryTrackID    = id_temp
-            isTargetTrackMode = true
-        end
+    for trackID, track in pairs(trackedTargets) do
+        table.insert(sortedTracks, track)
     end
-    -- -----------------------------------------------------------------
-    -- 3. 出力
-    -- -----------------------------------------------------------------
+
     local targetToOutput = nil
-    if primaryTrackID and trackedTargets[primaryTrackID] then
-        targetToOutput = trackedTargets[primaryTrackID]
+    local primaryTrackID = nil
+
+    if #sortedTracks > 0 then
+        -- ★ ソートを実行
+        table.sort(sortedTracks, function(a, b) return a.id < b.id end)
+
+        -- ★ インデックスのインクリメントとラップアラウンド
+        trackedTargetsIndex = trackedTargetsIndex + 1
+        if trackedTargetsIndex > #sortedTracks then
+            trackedTargetsIndex = 1 -- 最後の次は 1 に戻る
+        end
+
+        -- ★ 時分割でターゲットを選択
+        targetToOutput = sortedTracks[trackedTargetsIndex]
+        primaryTrackID = targetToOutput.id
+    else
+        -- トラックが一つもない場合
+        trackedTargetsIndex = 0 -- インデックスをリセット
     end
-    -- 迎撃対象ロックオン時のみ目標データを出力
-    if targetToOutput ~= nil and isTargetTrackMode then
+
+    if targetToOutput ~= nil then
         -- ★ プライマリターゲットの情報を出力
         local trackX = targetToOutput.X
-        local dt_delay = DT * LOGIC_DELAY
+        local detectionTickLag = currentTick - targetToOutput.lastSeenTick
+        local dt_delay = DT * (LOGIC_DELAY + detectionTickLag)
         local dt_delay2_half = dt_delay * dt_delay * 0.5
         local outputX, outputY, outputZ
+
         outputX = trackX[1][1] + trackX[2][1] * dt_delay + trackX[3][1] * dt_delay2_half
         outputY = trackX[4][1] + trackX[5][1] * dt_delay + trackX[6][1] * dt_delay2_half
         outputZ = trackX[7][1] + trackX[8][1] * dt_delay + trackX[9][1] * dt_delay2_half
@@ -1044,29 +1012,18 @@ function onTick()
         output.setNumber(7, trackX[3][1])                           -- Ax
         output.setNumber(8, trackX[6][1])                           -- Ay
         output.setNumber(9, trackX[9][1])                           -- Az
+        output.setNumber(10, targetToOutput.lastSeenTick)
+        output.setNumber(11, detectionTickLag)
         output.setNumber(12, primaryTrackID or 0)
-        output.setNumber(32, targetToOutput.epsilon)                -- Epsilon
-
-        trackingTargetLocalCoords = globalToLocalCoords(
-            { outputX, outputY, outputZ },
-            ownGlobalPos, ownOrientation
-        )
-        trackingTargetLocalAngle = localCoordsToLocalAngle(trackingTargetLocalCoords)
-
+        output.setNumber(13, targetToOutput.hits)
+        output.setNumber(32, targetToOutput.epsilon) -- Epsilon
         output.setBool(1, true)
-        output.setNumber(10, trackingTargetLocalAngle.azimuth / PI2)
-        output.setNumber(11, trackingTargetLocalAngle.elevation / PI2)
     else
         -- トラックがない場合
-        for i = 1, 12 do
+        for i = 1, 9 do
             output.setNumber(i, 0)
         end
-
-        -- 目標をとらえていないときはデータリンク座標にレーダーを指向しておく
-        local localThreatTargetCoords = globalToLocalCoords(threatTargetCoods, ownGlobalPos, ownOrientation)
-        local radarManualSweepAngles = localCoordsToLocalAngle(localThreatTargetCoords)
         output.setBool(1, false)
-        output.setNumber(10, radarManualSweepAngles.azimuth / PI2)
-        output.setNumber(11, radarManualSweepAngles.elevation / PI2)
+        trackedTargetsIndex = 0
     end
 end

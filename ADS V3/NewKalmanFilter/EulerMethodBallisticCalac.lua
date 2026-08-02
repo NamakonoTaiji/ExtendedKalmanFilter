@@ -37,6 +37,9 @@ OFFSET_PHYSICS_FROM_CANNON_X = property.getNumber("OffsetPhysicsFromCannonX(Righ
 OFFSET_PHYSICS_FROM_CANNON_Y = property.getNumber("OffsetPhysicsFromCannonY(Up+)")
 OFFSET_PHYSICS_FROM_CANNON_Z = property.getNumber("OffsetPhysicsFromCannonZ(Forward+)")
 
+-- Cannon Parameters 付近に追加
+IS_HIGH_ARC = property.getBool("IsHighArc") -- 曲射オプション
+
 PI = math.pi
 PI2 = PI * 2
 DT = 1 / 60
@@ -192,129 +195,219 @@ function calculateFlightTime(dist, v0, k)
         return -math.log(1 - drag_factor) / k
     end
 end
-
--- 修正版弾道ソルバー
-function solveBallisticEuler(Pr, VT, AT, VG, y0, k, v0_speed, v_wind, windC)
-    -- 環境パラメータに絶対高度(y0)を含める
-    local env = {
-        y0 = y0,
-        base_drag = k,
-        windVec = v_wind,
-        windFactor = windC
+--------------------------------------------------------------------------------
+-- 弾道シミュレーション (毎ティック演算・交差判定内包版)
+--------------------------------------------------------------------------------
+function evaluateTrajectory(pitch, yaw, v0_speed, env, Pr, VT, AT, max_ticks)
+    local cos_p = math.cos(pitch)
+    local pos = {0, 0, 0}
+    local vel = {
+        math.sin(yaw) * cos_p * v0_speed + env.VG.x,
+        math.sin(pitch) * v0_speed + env.VG.y,
+        math.cos(yaw) * cos_p * v0_speed + env.VG.z
     }
-
-    -- 初期推定: 距離 / 初速
-    local dist = math.sqrt(Pr.x ^ 2 + Pr.y ^ 2 + Pr.z ^ 2)
-    local t_est = calculateFlightTime(dist, v0_speed, k)
-
-    -- 「狙うべき空間座標」の初期値
-    local aim_point = {
-        x = Pr.x + VT.x * t_est + 0.5 * AT.x * t_est ^ 2,
-        y = Pr.y + VT.y * t_est + 0.5 * AT.y * t_est ^ 2,
-        z = Pr.z + VT.z * t_est + 0.5 * AT.z * t_est ^ 2
-    }
-
-    local final_elevation, final_azimuth
-    local success = false
-
-    -- 反復計算
-    for i = 1, 5 do
-        local dx, dy, dz = aim_point.x, aim_point.y, aim_point.z
-        local current_dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-
-        -- ★追加: ゼロ除算ガード (距離が0に極めて近い場合は最小値に固定)
-        if current_dist < 0.001 then
-            current_dist = 0.001
+    
+    for t = 1, max_ticks do
+        -- 加速度・位置・速度の更新
+        local ax = env.wind_force_x - env.base_drag * vel[1]
+        local ay = env.wind_force_y - env.g_curr - env.base_drag * vel[2]
+        local az = env.wind_force_z - env.base_drag * vel[3]
+        
+        pos[1] = pos[1] + vel[1]
+        pos[2] = pos[2] + vel[2]
+        pos[3] = pos[3] + vel[3]
+        
+        vel[1] = vel[1] + ax
+        vel[2] = vel[2] + ay
+        vel[3] = vel[3] + az
+        
+        -- 目標の未来位置
+        local tx = Pr.x + VT.x * t + 0.5 * AT.x * t^2
+        local ty = Pr.y + VT.y * t + 0.5 * AT.y * t^2
+        local tz = Pr.z + VT.z * t + 0.5 * AT.z * t^2
+        
+        -- 目標の水平方向への単位ベクトルを計算
+        local R_fut = math.sqrt(tx^2 + tz^2)
+        if R_fut < 0.001 then R_fut = 0.001 end
+        local dir_x = tx / R_fut
+        local dir_z = tz / R_fut
+        
+        -- 弾と目標の水平位置の差分
+        local dx = pos[1] - tx
+        local dz = pos[3] - tz
+        
+        -- 目標への水平距離を弾が超えた瞬間に高度誤差を返す
+        if (dx * dir_x + dz * dir_z > 0) and t > 2 then
+            return pos[2] - ty, t
         end
+        
+        -- 目標の高度を大きく下回り、かつ下降中の場合は「飛距離不足」
+        if pos[2] < ty - 50 and vel[2] < 0 then
+            return -9999, t
+        end
+    end
+    
+    -- 寿命到達までに交差しなかった場合も「飛距離不足」
+    return -9999, max_ticks
+end
 
-        local v0_vec = {
-            (dx / current_dist) * v0_speed + VG.x,
-            (dy / current_dist) * v0_speed + VG.y,
-            (dz / current_dist) * v0_speed + VG.z
-        }
-
-        -- RK4 シミュレーション
-        local bullet_pos = simulateTrajectory(v0_vec, t_est, env)
-
-        local target_pos_true = {
-            x = Pr.x + VT.x * t_est + 0.5 * AT.x * t_est ^ 2,
-            y = Pr.y + VT.y * t_est + 0.5 * AT.y * t_est ^ 2,
-            z = Pr.z + VT.z * t_est + 0.5 * AT.z * t_est ^ 2
-        }
-
-        local error = {
-            x = target_pos_true.x - bullet_pos[1],
-            y = target_pos_true.y - bullet_pos[2],
-            z = target_pos_true.z - bullet_pos[3]
-        }
-
-        local error_dist = math.sqrt(error.x ^ 2 + error.y ^ 2 + error.z ^ 2)
-        if error_dist < 3.0 then
+--------------------------------------------------------------------------------
+-- 二分法(Bisection Method)を用いた弾道ソルバー
+--------------------------------------------------------------------------------
+function solveBallisticEuler(Pr, VT, AT, VG, y0, k, v0_speed, v_wind, windC, is_high_arc, lifespan)
+    local g_curr, rho_curr = getAtmosphere(y0)
+    local env = {
+        base_drag = k,
+        wind_force_x = v_wind.x * windC * rho_curr,
+        wind_force_y = v_wind.y * windC * rho_curr,
+        wind_force_z = v_wind.z * windC * rho_curr,
+        g_curr = g_curr,
+        VG = VG
+    }
+    
+    local R0 = math.sqrt(Pr.x^2 + Pr.z^2)
+    if R0 < 0.001 then R0 = 0.001 end
+    local current_yaw = math.atan(Pr.x, Pr.z)
+    
+    local p_min, p_max
+    if is_high_arc then
+        p_min = 0.70
+        p_max = 1.55
+    else
+        p_min = math.atan(Pr.y, R0) - 0.1
+        p_max = 0.785
+    end
+    
+    local max_ticks = math.min(lifespan, 2400)
+    
+    local final_t = 0
+    local success = false
+    local p_mid = (p_min + p_max) / 2
+    local final_yaw = current_yaw
+    
+    for i = 1, 8 do
+        p_mid = (p_min + p_max) / 2
+        local e_mid, t_mid = evaluateTrajectory(p_mid, current_yaw, v0_speed, env, Pr, VT, AT, max_ticks)
+        final_t = t_mid
+        final_yaw = current_yaw
+        
+        if math.abs(e_mid) < 0.5 then
             success = true
             break
         end
-
-        aim_point.x = aim_point.x + error.x
-        aim_point.y = aim_point.y + error.y
-        aim_point.z = aim_point.z + error.z
-
-local new_aim_dist = math.sqrt(aim_point.x ^ 2 + aim_point.y ^ 2 + aim_point.z ^ 2)
-        t_est = calculateFlightTime(new_aim_dist, v0_speed, k)
+        
+        if is_high_arc then
+            if e_mid > 0 then
+                p_min = p_mid
+            else
+                p_max = p_mid
+            end
+        else
+            if e_mid > 0 then
+                p_max = p_mid
+            else
+                p_min = p_mid
+            end
+        end
+        
+        -- ★修正箇所: 飛距離不足(-9999)の時は異常な時間で未来位置が計算されるため、Yaw角の更新を行わない
+        if e_mid ~= -9999 then
+            local tx = Pr.x + VT.x * final_t + 0.5 * AT.x * final_t^2
+            local tz = Pr.z + VT.z * final_t + 0.5 * AT.z * final_t^2
+            current_yaw = math.atan(tx, tz)
+        end
     end
-
-    if t_est == t_est then success = true end
-
-    local dx, dy, dz = aim_point.x, aim_point.y, aim_point.z
-    local h_dist = math.sqrt(dx * dx + dz * dz)
-    final_azimuth = math.atan(dx, dz)
-    final_elevation = math.atan(dy, h_dist)
-
-    return final_elevation, final_azimuth, t_est, success
-end
-
---------------------------------------------------------------------------------
--- えすゆー氏の仮説に基づく Explicit Euler (前進オイラー法) ステップ計算
---------------------------------------------------------------------------------
-function eulerStep(pos, vel, env)
-    -- 1. 現在の位置・速度で加速度 (m/tick^2) を計算
-    local acc = getAcceleration(pos, vel, env)
     
-    -- 2. 【位置の更新】 前のtickの速度(vel)を使って弾の位置を更新 (1tick進めるためdt掛けは不要)
-    local nPos = {
-        pos[1] + vel[1],
-        pos[2] + vel[2],
-        pos[3] + vel[3]
+    -- ループ内で0.5m以内に収束しなかった場合でも、最終誤差が2m以内なら許可
+    if not success then
+        local e_final, _ = evaluateTrajectory(p_mid, final_yaw, v0_speed, env, Pr, VT, AT, max_ticks)
+        if math.abs(e_final) < 2.0 then success = true end
+    end
+    
+    return p_mid, final_yaw, final_t, success
+end
+--------------------------------------------------------------------------------
+-- 二分法(Bisection Method)を用いた弾道ソルバー
+--------------------------------------------------------------------------------
+function solveBallisticEuler(Pr, VT, AT, VG, y0, k, v0_speed, v_wind, windC, is_high_arc, lifespan)
+    -- 環境パラメータのセットアップ
+    local g_curr, rho_curr = getAtmosphere(y0)
+    local env = {
+        base_drag = k,
+        wind_force_x = v_wind.x * windC * rho_curr,
+        wind_force_y = v_wind.y * windC * rho_curr,
+        wind_force_z = v_wind.z * windC * rho_curr,
+        g_curr = g_curr,
+        VG = VG
     }
     
-    -- 3. 【速度の更新】 そのあとに加速度(acc)で速度を更新 (1tick進めるためdt掛けは不要)
-    local nVel = {
-        vel[1] + acc[1],
-        vel[2] + acc[2],
-        vel[3] + acc[3]
-    }
+    local R0 = math.sqrt(Pr.x^2 + Pr.z^2)
+    if R0 < 0.001 then R0 = 0.001 end
+    local current_yaw = math.atan(Pr.x, Pr.z)
     
-    return nPos, nVel
-end
-
---------------------------------------------------------------------------------
--- 弾道シミュレーション (毎ティック演算版)
---------------------------------------------------------------------------------
-function simulateTrajectory(v0_vec, flightTimeTicks, env)
-    local pos = { 0, 0, 0 }
-    local vel = v0_vec
-    
-    -- flightTimeTicks (t_est) は既に tick 単位のため、端数を切り上げるだけでOK
-    local max_ticks = math.ceil(flightTimeTicks)
-    
-    -- 安全装置: 砲弾の最大飛翔 (2400 tick) を超えないように制限
-    local safe_ticks = math.min(max_ticks, 2400)
-
-    -- エンジン側と同じように 1tick ずつループで物理演算を再現する
-    for i = 1, safe_ticks do
-        pos, vel = eulerStep(pos, vel, env)
+    -- 探索範囲の初期化 (二分法のための上限と下限を設定)
+    local p_min, p_max
+    if is_high_arc then
+        -- 曲射: 約40度(0.7 rad) から 約88度(1.55 rad) の範囲で探索
+        p_min = 0.70
+        p_max = 1.55
+    else
+        -- 直射: 目標への直線仰角から 約45度(0.785 rad) の範囲で探索
+        p_min = math.atan(Pr.y, R0) - 0.1 -- 撃ち下ろしも考慮して少し下を最小値に
+        p_max = 0.785
     end
-
-    return pos
+    
+    -- 砲弾の寿命による計算上限を設定 (最大2400 tick)
+    local max_ticks = math.min(lifespan, 2400)
+    
+    local final_t = 0
+    local success = false
+    local p_mid = (p_min + p_max) / 2
+    
+    -- 二分法による反復計算 (8回で約0.1度の精度に収束)
+    for i = 1, 8 do
+        p_mid = (p_min + p_max) / 2
+        local e_mid, t_mid = evaluateTrajectory(p_mid, current_yaw, v0_speed, env, Pr, VT, AT, max_ticks)
+        final_t = t_mid
+        
+        -- 垂直誤差が0.5m以内になれば命中と判定してループを抜ける
+        if math.abs(e_mid) < 0.5 then
+            success = true
+            break
+        end
+        
+        -- 誤差の符号に基づいて探索範囲を半分に狭める
+        if is_high_arc then
+            -- 曲射の特性: 角度を上げる(真上に近づく)ほど弾は手前に落ちる(高度誤差マイナス)
+            if e_mid > 0 then
+                -- 弾が目標より上を通過した -> 角度を上げて手前に落とす
+                p_min = p_mid
+            else
+                -- 弾が目標より下を通過した -> 角度を下げて奥へ飛ばす
+                p_max = p_mid
+            end
+        else
+            -- 直射の特性: 角度を上げる(45度に近づく)ほど弾は奥へ飛ぶ(高度誤差プラス)
+            if e_mid > 0 then
+                -- 弾が目標より上を通過した -> 角度を下げる
+                p_max = p_mid
+            else
+                -- 弾が目標より下を通過した -> 角度を上げる
+                p_min = p_mid
+            end
+        end
+        
+        -- 新しい飛行時間から目標の未来位置を再計算し、Yaw角を補正
+        local tx = Pr.x + VT.x * final_t + 0.5 * AT.x * final_t^2
+        local tz = Pr.z + VT.z * final_t + 0.5 * AT.z * final_t^2
+        current_yaw = math.atan(tx, tz)
+    end
+    
+    -- 最終的な誤差が2.0m以内であれば射撃許可を出す
+    local e_final, _ = evaluateTrajectory(p_mid, current_yaw, v0_speed, env, Pr, VT, AT, max_ticks)
+    if math.abs(e_final) < 2.0 then success = true end
+    
+    return p_mid, current_yaw, final_t, success
 end
 
 --------------------------------------------------------------------------------
@@ -470,6 +563,7 @@ function onTick()
                     P_rel, V_T_delayed, targetA, V_G,
                     P_G.y, -- 絶対初期高度
                     K, V0, V_wind_vec, WIND_FACTOR
+                    ,IS_HIGH_ARC, lifespan
                 )
 
                 if flight_time > lifespan then
@@ -486,7 +580,7 @@ function onTick()
 
                 local azi_limit = YAW_ANGLE_LIMIT
 
-                if not isError then
+                if not isError and sol_success then
                     turretYaw, yawShootable = PID.update(yawControlPID.pid,
                         clamp(local_azimuth, -azi_limit, azi_limit),
                         currentCannonYaw, DT, YAW_PIVOT_MAX_SPEED)
