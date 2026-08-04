@@ -359,7 +359,7 @@ function onTick()
                 local dirZ = dz / horizontalDist
                 activeTargetCoordsVec = {
                     x = ownCoordsVec.x + dirX * 100,
-                    y = math.max(ownCoords[2] / 1.7, SKIMMING_ALT),
+                    y = math.max(ownCoords[2] / 1.3, SKIMMING_ALT),
                     z = ownCoordsVec.z + dirZ * 100
                 }
             end

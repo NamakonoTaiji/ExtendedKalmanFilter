@@ -76,8 +76,8 @@ NOISE_OUTPUT_MIN = -8                                         -- PI制御出力�
 NOISE_OUTPUT_MAX = 1                                          -- PI制御出力の上限 (ワークショップ版と同じ)
 
 LOGIC_DELAY = property.getNumber("LOGIC_DELAY")
-R0_DIST_VAR_FACTOR = 6.67e-4 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
-R0_ANGLE_VAR = 2.63e-4       --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
+R0_DIST_VAR_FACTOR = 6.67e-5 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
+R0_ANGLE_VAR = 2.63e-5       --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
 OBSERVATION_NOISE_MATRIX_TEMPLATE = { { R0_DIST_VAR_FACTOR, 0, 0 }, { 0, R0_ANGLE_VAR, 0 }, { 0, 0, R0_ANGLE_VAR } }
 
 
@@ -574,7 +574,7 @@ function predictStep(currentTarget, dt_sec)
     F[8][9] = dt_sec
 
     X_predicted = mul(F, stateVector)
-    local dampingFactor = 0.9                             -- 加速度の影響を減らす
+    local dampingFactor = 0.98                             -- 加速度の影響を減らす
     X_predicted[3][1] = X_predicted[3][1] * dampingFactor -- Ax
     X_predicted[6][1] = X_predicted[6][1] * dampingFactor -- Ay
     X_predicted[9][1] = X_predicted[9][1] * dampingFactor -- Az
@@ -742,8 +742,6 @@ function initializeFilterState(initialObservation, tick, trackID)
     P_init[6][6] = INITIAL_ACCELERATION_VARIANCE
     P_init[9][9] = INITIAL_ACCELERATION_VARIANCE
     return {
-        localAzimuthRad = initialObservation.localAzimuthRad,
-        localElevationRad = initialObservation.localElevationRad,
         id = trackID, -- ★ トラックID
         X = X_init,
         P = P_init,
@@ -841,8 +839,6 @@ function onTick()
                             distance = dist,             -- 元の観測距離
                             azimuth = globalAzimuth,     -- グローバル方位角 (Z軸基準)
                             elevation = globalElevation, -- グローバル仰角 (Y軸基準)
-                            localAzimuthRad = localAziRad,
-                            localElevationRad = localEleRad,
                             globalX = targetGlobal[1],
                             globalY = targetGlobal[2],
                             globalZ = targetGlobal[3]
@@ -1057,14 +1053,11 @@ function onTick()
         output.setNumber(4, trackX[2][1] + trackX[3][1] * dt_delay) -- Vx
         output.setNumber(5, trackX[5][1] + trackX[6][1] * dt_delay) -- Vy
         output.setNumber(6, trackX[8][1] + trackX[9][1] * dt_delay) -- Vz
-        output.setNumber(7, trackX[3][1])                           -- Ax
+--[[         output.setNumber(7, trackX[3][1])                           -- Ax
         output.setNumber(8, trackX[6][1])                           -- Ay
-        output.setNumber(9, trackX[9][1])                           -- Az
+        output.setNumber(9, trackX[9][1])                           -- Az ]]
         output.setNumber(12, primaryTrackID or 0)
         output.setNumber(32, targetToOutput.epsilon)                -- Epsilon
-
-        --[[             radarManualSweepX, radarManualSweepY = targetToOutput.localAzimuthRad / PI2,
-                targetToOutput.localElevationRad / PI2 ]]
 
         trackingTargetLocalCoords = globalToLocalCoords(
             { outputX, outputY, outputZ },

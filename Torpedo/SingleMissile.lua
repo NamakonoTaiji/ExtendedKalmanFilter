@@ -12,9 +12,6 @@
 - num 4: 推定目標速度 Vx
 - num 5: 推定目標速度 Vy
 - num 6: 推定目標速度 Vz
-- num 7: 推定目標加速度 Ax
-- num 8: 推定目標加速度 Ay
-- num 9: 推定目標加速度 Az
 - num 10: レーダー方位角マニュアル制御
 - num 11: レーダー仰角マニュアル制御
 - num 12: トラック中の目標ID
@@ -27,46 +24,41 @@
 - bool 2: 対水上用衝撃信管on/off
 - num 1: Yaw軸フィン
 - num 2: Pitch軸フィン
+- num 3: 近接速度
 ]]
 
 
-DT                             = 1 / 60
-PI                             = math.pi
-PI2                            = PI * 2
+DT                           = 1 / 60
+PI                           = math.pi
+PI2                          = PI * 2
 
-VT_FUSE_SAMPLING_TICKS         = 10
-oldDistance                    = 0
-closingSpeedTable              = {}
-missileRadarIO                 = false
-isLaunched                     = false
-lauchedCount                   = 0
-initialGuidanceCounter         = 0
-isGuidanceStart                = false
-isPPN                          = true
+isLaunch                     = false
+isLaunched                   = false
+lauchedCount                 = 0
+initialGuidanceCounter       = 0
+isGuidanceStart              = false
+isPPN                        = true
+isHeadCapture                = false
+targetCoords                 = { 0, 0, 0 }
+targetVelocity               = { 0, 0, 0 }
+fuse                         = false
 
-DIVE_START_TANJENT             = math.tan(math.rad(70))
-PN_FIN_STRENGTH                = property.getNumber("PN_FIN_STRENGTH")
-PPN_FIN_STRENGTH               = property.getNumber("PPN_FIN_STRENGTH")
-FUSE_LOGIC_DELAY               = property.getNumber("FUSE_LOGIC_DELAY")
-MISSILE_FIN_DISTANCE_THRESHOLD = property.getNumber("MISSILE_FIN_DISTANCE_THRESHOLD")
-SKIMMING_ALT                   = property.getNumber("SKIMMING_ALT")
-GUIDANCE_START_ALTITUDE        = property.getNumber("GUIDANCE_START_ALTITUDE")
+DIVE_START_TANJENT           = math.tan(math.rad(40))                        -- 巡航モードからダイブを開始させる角度
+PN_FIN_STRENGTH              = property.getNumber("PN_FIN_STRENGTH")         -- 比例航法時のフィンにかける係数
+PPN_FIN_STRENGTH             = property.getNumber("PPN_FIN_STRENGTH")        -- 単追尾時のフィンにかける係数
+SKIMMING_ALT                 = property.getNumber("SKIMMING_ALT")            -- 対水上モード巡航高度
+GUIDANCE_START_ALTITUDE      = property.getNumber("GUIDANCE_START_ALTITUDE") -- 誘導開始高度
+IMPACT_DELAY                 = property.getNumber("IMPACT_DELAY")
+IMPACT_RADIUS                = property.getNumber("IMPACT_RADIUS")
 
----@class Vector3
----@field x number
----@field y number
----@field z number
+-- グローバル座標系での前フレームの正規化されたLOSベクトルを保存
+-- {x, y, z} 形式で保存
+oldLOS_vec_global_normalized = { x = 0, y = 0, z = 1 } -- 初期値 (例: 前方)
 
----@class Quaternion
----@field qw number
----@field qx number
----@field qy number
----@field qz number
+oldLOS                       = { azimuth = 0, elevation = 0 }
+currentLOS                   = { azimuth = 0, elevation = 0 }
+LOStable                     = { old = oldLOS, current = currentLOS }
 
-oldLOS                         = { azimuth = 0, elevation = 0 }
-currentLOS                     = { azimuth = 0, elevation = 0 }
-LOStable                       = { old = oldLOS, current = currentLOS }
-isInit                         = true -- 近接速度計算初期化
 --- 3Dベクトル a から b を引きます (a - b)
 ---@param a Vector3 {x: number, y: number, z: number} または {number, number, number}
 ---@param b Vector3 {x: number, y: number, z: number} または {number, number, number}
@@ -123,6 +115,18 @@ function cross_product(a, b)
     local rz = ax * by - ay * bx
 
     return { rx, ry, rz }
+end
+
+function dot(a, b)
+    local ax = a.x or a[1] or 0
+    local ay = a.y or a[2] or 0
+    local az = a.z or a[3] or 0
+
+    local bx = b.x or b[1] or 0
+    local by = b.y or b[2] or 0
+    local bz = b.z or b[3] or 0
+
+    return ax * bx + ay * by + az * bz
 end
 
 --------------------------------------------------------------------------------
@@ -278,76 +282,58 @@ function localAngleDistToLocalCoords(dist, localAziRad, localEleRad)
     return { x = localX, y = localY, z = localZ }
 end
 
--- グローバル座標系での前フレームの正規化されたLOSベクトルを保存
--- {x, y, z} 形式で保存
-oldLOS_vec_global_normalized = { x = 0, y = 0, z = 1 } -- 初期値 (例: 前方)
-
 function onTick()
     -- 1. 座標・オイラー角の取得
-    local targetCoords   = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
-    local ownCoords      = { input.getNumber(13), input.getNumber(14), input.getNumber(15) }
-    local ownOrientation = { input.getNumber(16), input.getNumber(17), input.getNumber(18), input.getNumber(19) }
-    local isDetecting    = input.getBool(1)
-    local isAntiShipMode = input.getBool(2)
-    local isLaunch       = input.getBool(3)
-    if isLaunch and not isLaunched then
-        lauchedCount = lauchedCount + 1
-        if lauchedCount > 20 then
-            isLaunched = true
-        end
-    end
 
-    if isAntiShipMode then
-        targetCoords[2] = 0 -- 水上目標は高度0mで固定
-    end
+    local targetCoords          = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
+    local targetVelocity        = { input.getNumber(4), input.getNumber(5), input.getNumber(6) }
+    local ownCoords             = { input.getNumber(27), input.getNumber(28), input.getNumber(29) }
+    local selfSpeed             = input.getNumber(26) * DT
+    local ownEuler              = { pitch = input.getNumber(30), yaw = input.getNumber(31), roll = input.getNumber(32) }
+    local ownOrientation        = eulerZYX_to_quaternion(ownEuler.roll, ownEuler.yaw, ownEuler.pitch)
+    local distance              = vector_magnitude(subtract(targetCoords, ownCoords))
+
     -- {x, y, z} 形式のベクトルテーブルに変換
     local targetCoordsVec       = { x = targetCoords[1], y = targetCoords[2], z = targetCoords[3] }
     local ownCoordsVec          = { x = ownCoords[1], y = ownCoords[2], z = ownCoords[3] }
     local activeTargetCoordsVec = targetCoordsVec
     local LOS_vec_global
 
-    if isLaunch then
-        if ownCoordsVec.y < GUIDANCE_START_ALTITUDE and not isGuidanceStart then
-            activeTargetCoordsVec = { x = ownCoordsVec.x, y = ownCoordsVec.y + 500, z = ownCoordsVec.z }
-        else
-            isGuidanceStart = true
-        end
+    -- 指定された高度mまで垂直上昇
+
+    if (ownCoordsVec.y < GUIDANCE_START_ALTITUDE) and not isGuidanceStart then
+        activeTargetCoordsVec = { x = ownCoordsVec.x, y = ownCoordsVec.y + 50, z = ownCoordsVec.z }
+    elseif ownCoordsVec.y >= GUIDANCE_START_ALTITUDE then
+        isGuidanceStart = true
     end
 
     if isGuidanceStart then
         initialGuidanceCounter = initialGuidanceCounter + 1
-        if initialGuidanceCounter > 60 then
+        if initialGuidanceCounter > 30 then
             isPPN = false
         end
     end
-    ----------------------------------------------------------------------------
-    -- 対水上モード時の低空巡航 (シースキミング) 処理
-    ----------------------------------------------------------------------------
-    local isASMMidCourse = false
-    if isAntiShipMode and isGuidanceStart then
-        local dx = targetCoordsVec.x - ownCoordsVec.x
-        local dz = targetCoordsVec.z - ownCoordsVec.z
-        local horizontalDist = math.sqrt(dx * dx + dz * dz)
-        local diveStartDistance = math.min(1500, math.max(SKIMMING_ALT / DIVE_START_TANJENT, 500))
+    local dx = targetCoordsVec.x - ownCoordsVec.x
+    local dz = targetCoordsVec.z - ownCoordsVec.z
+    local horizontalDist = math.sqrt(dx * dx + dz * dz)
+    local diveStartDistance = math.min(1500, math.max(SKIMMING_ALT / DIVE_START_TANJENT, 500))
 
-        -- 水平距離が500mより離れている場合は「自機から目標方向へ500m先、高度10m」を仮の目標にする
-        if horizontalDist > diveStartDistance or (horizontalDist > 500 and ownCoordsVec.y < 40) then
-            isASMMidCourse = true
-            local dirX = dx / horizontalDist
-            local dirZ = dz / horizontalDist
-            activeTargetCoordsVec = {
-                x = ownCoordsVec.x + dirX * 100,
-                y = math.max(ownCoords[2] / 1.5, SKIMMING_ALT),
-                z = ownCoordsVec.z + dirZ * 100
-            }
-        end
+    -- 水平距離が急降下開始水平距離より離れている場合は自機から目標方向へ100m先を仮の目標にする
+    if (horizontalDist > diveStartDistance) and isGuidanceStart then
+        isPPN = true
+        local dirX = dx / horizontalDist
+        local dirZ = dz / horizontalDist
+        activeTargetCoordsVec = {
+            x = ownCoordsVec.x + dirX * 100,
+            y = math.max(ownCoords[2] / 1.3, SKIMMING_ALT),
+            z = ownCoordsVec.z + dirZ * 100
+        }
     end
+
 
     -- 3. グローバル座標系でのLOS (Line of Sight) ベクトルを計算
     LOS_vec_global = subtract(activeTargetCoordsVec, ownCoordsVec)
-    local distance = vector_magnitude(subtract(targetCoords, ownCoords))
-
-    if not isPPN and not isASMMidCourse then
+    if not isPPN and isGuidanceStart then
         -- 4. グローバルLOSベクトルを正規化
         local currentLOS_vec_global_normalized = normalize(LOS_vec_global)
 
@@ -391,44 +377,36 @@ function onTick()
         --    ご提示のコードの変数名に合わせる
         yawAngle                               = los_rate_yaw * DT * PN_FIN_STRENGTH    -- (rad/tick)
         pitchAngle                             = -los_rate_pitch * DT * PN_FIN_STRENGTH -- (rad/tick)
-        
     else
-        -- 初期誘導は単追尾
-        local targetLocalPosVec = globalToLocal(activeTargetCoordsVec, ownCoordsVec, ownOrientation)
+        local targetLocalPosVec =
+            globalToLocal(
+                activeTargetCoordsVec,
+                ownCoordsVec,
+                ownOrientation
+            )
+
         local targetAngle = coordsToAngle(targetLocalPosVec)
-        yawAngle = targetAngle.azimuth * PPN_FIN_STRENGTH
-        pitchAngle = targetAngle.elevation * PPN_FIN_STRENGTH
+
+        yawAngle =
+            targetAngle.azimuth
+            * PPN_FIN_STRENGTH
+
+        pitchAngle =
+            targetAngle.elevation
+            * PPN_FIN_STRENGTH
+
+        oldLOS_vec_global_normalized =
+            normalize(LOS_vec_global)
     end
 
-    if isInit and isLaunched then
-        oldDistance = distance
-        isInit = false
-    end
 
-    if not isInit then
-        approach_Velocity = distance - oldDistance
-    else
-        approach_Velocity = 0
-    end
-    oldDistance = distance
+
     -- ミサイルレーダーの有効圏内かつ対水上モードでない場合ミサイルレーダーを有効化・中間誘導用翼の出力をゼロに
-    if distance + approach_Velocity * FUSE_LOGIC_DELAY < MISSILE_FIN_DISTANCE_THRESHOLD and not isAntiShipMode and isLaunched then
-        missileRadarIO = true
-    end
-    if missileRadarIO then
-        yawAngle = 0
-        pitchAngle = 0
+    if ((distance - selfSpeed * IMPACT_DELAY < IMPACT_RADIUS) or (targetCoordsVec.y > ownCoordsVec.y)) and isGuidanceStart then
+        fuse = true
     end
 
-    --[[     if distance + closingSpeedAverage * FUSE_LOGIC_DELAY < 0 and distance ~= 0 and isLaunched then
-        detonate = true
-    else
-        detonate = false
-    end ]]
-
-    output.setBool(1, missileRadarIO)
-    output.setBool(2, isAntiShipMode)
+    output.setBool(1, fuse)
     output.setNumber(1, yawAngle)
     output.setNumber(2, pitchAngle)
-    output.setNumber(3, approach_Velocity)
 end

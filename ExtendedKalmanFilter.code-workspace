@@ -45,6 +45,10 @@
       "path": "Torpedo"
     },
     {
+      "name": "ASM",
+      "path": "ASM"
+    },
+    {
       "name": "Root (Docs/Mathlib/etc)",
       "path": "."
     }
