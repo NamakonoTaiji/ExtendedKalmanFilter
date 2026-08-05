@@ -1,41 +1,43 @@
 --[[
-アクティブソナー距離測定スクリプト (ニュートン法 + v_los補正 + ローカル速度入力)
+アクティブソナー距離測定・同一Tickクラスタリング
 
 機能:
-- 定期的にソナーのアクティブモードをON/OFF制御。
-- Ping発射時の自機位置を記憶。
-- 各Tickでソナー入力ch1-8を監視し、ONになっているチャンネルのエコーを処理。
-- ★Physics Sensorからローカル速度ベクトル(ch23-25)を直接読み取る。
-   (注:仕様書[cite: 26]のグローバル基準という記述は誤りとのユーザー指摘に基づく)
-- ★目標への視線(LOS)方向の速度成分(v_los)を計算。
-- ★実効的な音速を (SOUND_SPEED - v_los) として補正。
-- エコー受信時の自機位置と発射時の位置の差分から移動ベクトルを計算。
-- クォータニオンで移動ベクトルをローカル座標系に変換。
-- ニュートン法で距離計算(補正後の実効音速を使用)。
-- そのTickで検出・計算された結果をリストに一時保存し、順次出力。
+- 推定目標距離に応じた間隔でアクティブソナーをPingする。
+- Ping発射位置、自機移動量、ローカル速度、受信角度からニュートン法で距離を推定する。
+- 同一Tickに複数のエコーが入った場合、方向の近い観測を1目標へ統合する。
+- 統合時は視線単位ベクトルを平均し、方位角・仰角の±π境界を正しく扱う。
+- 統合した距離と反射時刻はクラスタ内観測の算術平均を使用する。
+- 最大6目標を、後段の6状態カルマンフィルター用4ch形式で出力する。
 
-入力チャンネル設定:
-- Composite On/Off 1-8: Sonar Echo Detect Target 1-8 (1 TickのみON)
-- Composite On/Off 9: isLaunch
-- Composite On/Off 10: KalmanFilter Init Request(パススルー)
-- Composite Number 1-16: Sonar Angles Target 1-8 (1:T1 Azi, 2:T1 Ele, ...) - 回転単位(Turns)
-- Composite Number 17: Physics Sensor Global Pos X (East)
-- Composite Number 18: Physics Sensor Global Pos Y (Up)
-- Composite Number 19: Physics Sensor Global Pos Z (North)
-- Composite Number 20: Physics Sensor Euler Pitch (X rot) (Radian)
-- Composite Number 21: Physics Sensor Euler Yaw (Y rot) (Radian)
-- Composite Number 22: Physics Sensor Euler Roll (Z rot) (Radian)
-- Composite Number 23: Physics Sensor Local Vel X (Right) <-- ローカル基準！
-- Composite Number 24: Physics Sensor Local Vel Y (Up)    <-- ローカル基準！
-- Composite Number 25: Physics Sensor Local Vel Z (Fwd)   <-- ローカル基準！
-- Composite Number 26: True Target Global Pos X (East) (ログ比較用)
-- Composite Number 27: True Target Global Pos Y (Up)   (ログ比較用)
-- Composite Number 28: True Target Global Pos Z (North) (ログ比較用)
+入力 On/Off:
+- ch 1-8: ソナー目標1-8のエコー受信パルス（受信TickのみOn）
 
-出力チャンネル設定:
-- Composite Number 1-8: Calculated Distance (検出結果順, ニュートン法 v_los補正)
-- Composite On/Off 8: KalmanFilter Init Request (パススルー)
-- Composite On/Off 1: Sonar Active Mode Trigger (to Sonar Input Ch2)
+入力 Number:
+- ch 1-16: ソナー角度。目標nは ch(2n-1)=方位角、ch(2n)=仰角（回転単位）
+- ch 21-23: 検証用固定標的のグローバル座標 X,Y,Z
+- ch 24-26: Physics Sensorローカル速度 X(右),Y(上),Z(前) [m/s]
+- ch 27-29: 自機グローバル座標 X(東),Y(上),Z(北)
+- ch 30-32: 自機姿勢 Pitch,Yaw,Roll [rad]
+
+出力 On/Off:
+- ch 1: ソナーActive/Ping信号（ソナー入力ch2へ）
+
+出力 Number:
+- 目標n（n=1-6）:
+  ch(4n-3): 推定距離 [m]
+  ch(4n-2): ローカル方位角 [rad]
+  ch(4n-1): ローカル仰角 [rad]
+  ch(4n):   音波が目標へ到達した推定絶対Tick
+- ch 25-27: 自機グローバル座標 X,Y,Z
+- ch 28-30: 自機姿勢 Pitch,Yaw,Roll [rad]
+
+プロパティ:
+- PING_INTERVAL_TICKS: Ping周期の最低値
+- SEND_LOGIC_DELAY: Ping送信側のロジック遅延 [tick]
+- RECEIVE_LOGIC_DELAY: エコー受信側のロジック遅延 [tick]
+- CLUSTER_ANGLE_TURNS: 同一目標とみなす最大角度差 [turn]。0以下なら0.004 turn
+- CLUSTER_DISTANCE_RATIO: 距離差ゲート比率。0以下なら0.03
+- CLUSTER_DISTANCE_BASE: 距離差ゲート基礎値 [m]。0以下なら20m
 --]]
 
 -- 定数
@@ -43,21 +45,29 @@ local SOUND_SPEED = 1480
 local SOUND_SPEED_PER_TICK = SOUND_SPEED / 60
 local TICKS_PER_SECOND = 60
 local MAX_TARGETS = 8
+local MAX_OUTPUT_TARGETS = 6
 local PI = math.pi
 local PI2 = PI * 2
 local NEWTON_ITERATIONS = 1
 
 -- プロパティ読み込み
-local PING_INTERVAL_TICKS = property.getNumber("PING_INTERVAL_TICKS") or 60
-local SEND_LOGIC_DELAY = property.getNumber("SEND_LOGIC_DELAY") or 0
-local RECEIVE_LOGIC_DELAY = property.getNumber("RECEIVE_LOGIC_DELAY") or 0
+local PING_INTERVAL_TICKS = property.getNumber("PING_INTERVAL_TICKS")
+local SEND_LOGIC_DELAY = property.getNumber("SEND_LOGIC_DELAY")
+local RECEIVE_LOGIC_DELAY = property.getNumber("RECEIVE_LOGIC_DELAY")
+local CLUSTER_ANGLE_TURNS = property.getNumber("CLUSTER_ANGLE_TURNS")
+local CLUSTER_DISTANCE_RATIO = property.getNumber("CLUSTER_DISTANCE_RATIO")
+local CLUSTER_DISTANCE_BASE = property.getNumber("CLUSTER_DISTANCE_BASE")
+if CLUSTER_ANGLE_TURNS <= 0 then CLUSTER_ANGLE_TURNS = 0.004 end
+if CLUSTER_DISTANCE_RATIO <= 0 then CLUSTER_DISTANCE_RATIO = 0.03 end
+if CLUSTER_DISTANCE_BASE <= 0 then CLUSTER_DISTANCE_BASE = 20 end
+local CLUSTER_COS = math.cos(CLUSTER_ANGLE_TURNS * PI2)
 
 -- グローバル変数
 local pingSentTick = 0
 local isPinging = false
 local currentTick = 0
 local pingGlobalPosition = { x = 0, y = 0, z = 0 }
-local diffArry, distanceActualArry = {}, {}
+local diffArry, distFromDataLinkArry, distanceDiffArry = {}, {}, {}
 -- === ヘルパー関数 (ベクトル, クォータニオン, ニュートン法, 座標変換) ===
 function vectorMagnitude(v)
     local x = v[1] or v.x or 0; local y = v[2] or v.y or 0; local z = v[3] or v.z or 0; return math.sqrt(x ^ 2 + y ^ 2 +
@@ -194,6 +204,66 @@ function localToGlobal(localPosition, objectGlobalPos, objectOrientationQuat)
     return { x = gx, y = gy, z = gz }
 end
 
+-- 同一Tick内の観測を方向と距離で統合する。
+-- 角度は単位ベクトルの内積で比較し、平均もベクトル合成で行う。
+function clusterDetections(detections)
+    if #detections < 2 then return detections end
+    local clusters = {}
+
+    for _, d in ipairs(detections) do
+        local ce = math.cos(d.elevation)
+        local ux = ce * math.sin(d.azimuth)
+        local uy = math.sin(d.elevation)
+        local uz = ce * math.cos(d.azimuth)
+        local best, bestDot = nil, CLUSTER_COS
+
+        for _, c in ipairs(clusters) do
+            local m = math.sqrt(c.sx * c.sx + c.sy * c.sy + c.sz * c.sz)
+            local dot = (ux * c.sx + uy * c.sy + uz * c.sz) / m
+            local meanDistance = c.sd / c.n
+            local distanceGate = CLUSTER_DISTANCE_BASE +
+                math.max(meanDistance, d.distance) * CLUSTER_DISTANCE_RATIO
+
+            if dot >= bestDot and
+                math.abs(d.distance - meanDistance) <= distanceGate then
+                best = c
+                bestDot = dot
+            end
+        end
+
+        if best then
+            best.sx = best.sx + ux
+            best.sy = best.sy + uy
+            best.sz = best.sz + uz
+            best.sd = best.sd + d.distance
+            best.st = best.st + d.targetReachedTick
+            best.n = best.n + 1
+        else
+            clusters[#clusters + 1] = {
+                sx = ux,
+                sy = uy,
+                sz = uz,
+                sd = d.distance,
+                st = d.targetReachedTick,
+                n = 1
+            }
+        end
+    end
+
+    local result = {}
+    for _, c in ipairs(clusters) do
+        local horizontal = math.sqrt(c.sx * c.sx + c.sz * c.sz)
+        result[#result + 1] = {
+            distance = c.sd / c.n,
+            azimuth = math.atan(c.sx, c.sz),
+            elevation = math.atan(c.sy, horizontal),
+            targetReachedTick = c.st / c.n,
+            clusterSize = c.n
+        }
+    end
+    return result
+end
+
 -- === メイン処理 ===
 function onTick()
     currentTick = currentTick + 1
@@ -208,8 +278,9 @@ function onTick()
 
     -- --- Ping 開始/終了処理 ---
     local distanceFromDataLinkCoords = vectorMagnitude(vectorSub(ownGlobalPos,
-                        dataLinkCoordsVec))
-    local intervalTicks = distanceFromDataLinkCoords / SOUND_SPEED_PER_TICK * 2 + distanceFromDataLinkCoords * 0.1
+        dataLinkCoordsVec))
+    local intervalTicks = math.max(PING_INTERVAL_TICKS,
+        distanceFromDataLinkCoords / SOUND_SPEED_PER_TICK * 2 + distanceFromDataLinkCoords * 0.1)
     if not isPinging and currentTick >= pingSentTick + intervalTicks then
         pingSentTick = currentTick + SEND_LOGIC_DELAY
         isPinging = true
@@ -289,29 +360,37 @@ function onTick()
                     local globalTargetCoords = localToGlobal(localTargetCoords, ownGlobalPos, ownOrientation)
 
                     diff = vectorMagnitude(vectorSub(dataLinkCoordsVec, globalTargetCoords))
-                    diffAvg, distAvg = 0, 0
-                    if diff < 500 then
+                    distFromDataLinkAvg, distAvg, distanceDiffAvg = 0, 0, 0
+                    if diff < 100 then
                         diffArry[#diffArry + 1] = diff
-                        distanceActualArry[#distanceActualArry + 1] = distanceFromDataLinkCoords
+                        distFromDataLinkArry[#distFromDataLinkArry + 1] = distanceFromDataLinkCoords
+                        distanceDiffArry[#distanceDiffArry + 1] = math.abs(calculated_distance-distanceFromDataLinkCoords)
                         local diffSum = 0
-                        local distActSum = 0
+                        local distFromDataLinkSum = 0
+                        local distDiffSum = 0
                         for i = 1, #diffArry do
                             diffSum = diffSum + diffArry[i]
-                            distActSum = distActSum + distanceActualArry[i]
+                            distFromDataLinkSum = distFromDataLinkSum + distFromDataLinkArry[i]
+                            distDiffSum = distDiffSum + distanceDiffArry[i]
                             if i == #diffArry then
-                                diffAvg = diffSum / i
-                                distAvg = distActSum / i
+                                distFromDataLinkAvg = diffSum / i
+                                distAvg = distFromDataLinkSum / i
+                                distanceDiffAvg = distDiffSum / i
                             end
                         end
 
                         debug.log("Samples: " ..
-                            #diffArry .. " diffAvg: " .. diffAvg .. " distAvg: " .. distAvg .. " errRaito: " ..
-                            diffAvg / distAvg)
+                            #diffArry ..
+                            " distanceDiffAvg: " .. distanceDiffAvg .. " distAvg: " .. distAvg .. " errRaito: " ..
+                            distanceDiffAvg / distAvg)
                     end
                 end
             end
         end
     end
+
+    -- 同一Tick内の近接観測を統合する。
+    detectionsThisTick = clusterDetections(detectionsThisTick)
 
     -- 出力ノード初期化
     for i = 1, 32 do
@@ -320,7 +399,7 @@ function onTick()
     end
     output.setBool(1, isPinging)
     -- --- 距離データの出力 ---
-    for i = 1, #detectionsThisTick do
+    for i = 1, math.min(#detectionsThisTick, MAX_OUTPUT_TARGETS) do
         local d = detectionsThisTick[i]
         local b = (i - 1) * 4
         output.setNumber(b + 1, d.distance)
@@ -335,5 +414,3 @@ function onTick()
     output.setNumber(29, yaw)
     output.setNumber(30, roll)
 end
-
--- onDraw関数は省略

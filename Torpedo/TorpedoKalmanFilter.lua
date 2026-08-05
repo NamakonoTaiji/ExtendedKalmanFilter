@@ -1,45 +1,52 @@
 --[[
-機能:一次フィルターからの入力を元にカルマンフィルターによるノイズ抑制と目標の同定を行う。
+機能:
+一次フィルター（Torpedo NewtonDistanceFinder）で同一Ping内の重複反射を
+1観測へ統合したデータを受け取り、6状態EKFで時系列追跡する。
 
-入力 (コンポジット信号):
-- num 1-3: レーダー目標1 (距離, 方位角(ラジアン), 仰角(ラジアン))
-- num 4-6: レーダー目標2 ...
-- ...
-- num 19-21: レーダー目標7
-- num 25: 自機グローバル位置 X
-- num 26: 自機グローバル位置 Y
-- num 27: 自機グローバル位置 Z
-- num 28: 自機オイラー角 Pitch (ラジアン)
-- num 29: 自機オイラー角 Yaw (ラジアン)
-- num 30: 自機オイラー角 Roll (ラジアン)
-- num 31: パイロットシート視線方位角(回転単位)
-- num 32: パイロットシート視線仰角(回転単位)
+処理:
+1. 距離・方位角・仰角をグローバル座標へ変換
+2. 各観測をマハラノビス距離が最小の既存トラックへ関連付け
+3. 関連付けできない観測を仮クラスタへ追加
+4. 仮クラスタが複数回確認されたら正式トラック化
+5. 観測がない間は等速モデルで予測し、距離依存時間後に削除
 
-出力 (コンポジット信号 - デバッグ用):
-- bool 1: 目標を検出中
-- num 1: 推定目標座標 X
-- num 2: 推定目標座標 Y
-- num 3: 推定目標座標 Z
-- num 4: 推定目標速度 Vx
-- num 5: 推定目標速度 Vy
-- num 6: 推定目標速度 Vz
-- num 7-9: 0 (6状態化後の互換用予約出力)
-- num 10: Last Seen Tick (最終観測Tick)
-- num 11: Detection Tick Lag (観測遅延Tick数)
-- num 12: Tracked Target ID (トラック中の目標ID)
-- num 13: Target Hit Count (目標の連続ヒット数)
-- num 32: 最新のイプシロンε
+一次フィルター側で空間的な重複反射を統合済みのため、
+このコードでは正式トラック同士の近接統合や重複エコー吸収を行わない。
 
-前提:
-- 座標系は Physics Sensor 座標系 (X:東, Y:上, Z:北, 左手系) を基準とする。
-- EKFの各種パラメータはプロパティから読み込む想定
+入力（Composite Number）:
+- ch 1～24: 最大6目標、1目標につき4ch
+  - 4n-3: 距離 [m]
+  - 4n-2: ローカル方位角 [rad]
+  - 4n-1: ローカル仰角 [rad]
+  - 4n  : 音波が目標へ到達した絶対Tick
+- ch 25: 自機グローバル位置 X（東）
+- ch 26: 自機グローバル位置 Y（上）
+- ch 27: 自機グローバル位置 Z（北）
+- ch 28: 自機Pitch [rad]
+- ch 29: 自機Yaw [rad]
+- ch 30: 自機Roll [rad]
+
+出力:
+- bool 1: 正式トラックあり
+- num 1～3: 現在時刻へ外挿した推定位置 X,Y,Z
+- num 4～6: 推定速度 Vx,Vy,Vz
+- num 7～9: 予約（0）
+- num 10: 最終観測の目標到達Tick
+- num 11: 現在Tickから最終観測Tickまでの遅延
+- num 12: トラックID
+- num 13: 累積ヒット数
+- num 32: 最新のマハラノビス距離 epsilon
+
+座標系:
+Physics Sensor座標系（X:東、Y:上、Z:北、左手系）。
+状態ベクトルは [x,vx,y,vy,z,vz]。
 ]]
 
 -- 定数
 PI = math.pi
 PI2 = PI * 2
 DT = 1 / 60           -- EKF更新の時間ステップ (秒)
-MAX_RADAR_TARGETS = 6 -- 処理するレーダー目標の最大数
+MAX_RADAR_TARGETS = 6 -- 一次フィルターから受け取る最大目標数
 NUM_STATES = 6        -- EKF状態数 (x, vx, y, vy, z, vz)
 BASE_CHANNEL = 4
 
@@ -49,17 +56,15 @@ TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")                      
 
 PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") -- 観測が無い間に予測の信頼を下げる係数。値が大きいほど観測がない間に予測を信頼しなくなる。
 INITIAL_VELOCITY_VARIANCE = 10000
-
+PROCESS_NOISE = property.getNumber("PROCESS_NOISE")
 -- ★ PI制御パラメータ (新規追加)
 NOISE_TARGET_EPSILON = property.getNumber("NOISE_TARGET_EPS") -- PI制御の目標epsilon値
 NOISE_INTEGRAL_GAIN = property.getNumber("NOISE_I_GAIN")      -- PI制御の積分ゲイン
-NOISE_OUTPUT_MIN = -8                                         -- PI制御出力の下限
-NOISE_OUTPUT_MAX = 5                                          -- PI制御出力の上限
 
 LOGIC_DELAY = property.getNumber("LOGIC_DELAY")
 
-R0_DIST_VAR_FACTOR = 200 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
-R0_ANGLE_VAR = 2.63e-3   --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
+R0_DIST_VAR_FACTOR = 0.005 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
+R0_ANGLE_VAR = 2.63e-4     --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
 OBSERVATION_NOISE_MATRIX_TEMPLATE = { { R0_DIST_VAR_FACTOR, 0, 0 }, { 0, R0_ANGLE_VAR, 0 }, { 0, 0, R0_ANGLE_VAR } }
 
 
@@ -67,7 +72,6 @@ OBSERVATION_NOISE_MATRIX_TEMPLATE = { { R0_DIST_VAR_FACTOR, 0, 0 }, { 0, R0_ANGL
 trackedTargets = {} -- 複数のトラックを保持するテーブル
 nextTrackID = 1     -- 新規トラックに割り当てるID
 currentTick = 0
-trackingID = nil
 trackedTargetsIndex = 0
 
 tentativeClusters = {}
@@ -75,15 +79,12 @@ nextClusterID = 1
 
 -- ソナー向けクラスタリング設定
 -- 必要に応じてプロパティ化してください。
-CLUSTER_CONFIRM_HITS = 3                     -- 正式トラック化に必要な独立観測数
-CLUSTER_CONFIRM_WINDOW = 180                 -- 候補を維持する最大観測時刻差[tick]
-CLUSTER_MIN_HIT_GAP = 2                      -- 同時刻付近の重複を別ヒットとして数えない
-CLUSTER_BASE_GATE = 40                       -- 候補クラスタの基礎ゲート[m]
-CLUSTER_RANGE_FACTOR = 0.07                  -- 距離に比例して広げるゲート
-OLD_ECHO_MAX_AGE = 240                       -- 古いエコーとして吸収する最大時刻差[tick]
-OLD_ECHO_BASE_GATE = CLUSTER_BASE_GATE * 0.8 -- 既存トラック近傍判定の基礎ゲート[m]
-OLD_ECHO_RANGE_FACTOR = 0.025                -- 距離に比例して広げる近傍ゲート
-MAX_INITIAL_SPEED = 250                      -- クラスタ速度の上限
+CLUSTER_CONFIRM_HITS = 3     -- 正式トラック化に必要な独立観測数
+CLUSTER_CONFIRM_WINDOW = 360 -- 候補を維持する最大観測時刻差[tick]
+CLUSTER_MIN_HIT_GAP = 2      -- 同時刻付近の重複を別ヒットとして数えない
+CLUSTER_BASE_GATE = 40       -- 候補クラスタの基礎ゲート[m]
+CLUSTER_RANGE_FACTOR = 0.01  -- 距離に比例して広げるゲート
+MAX_INITIAL_SPEED = 250      -- クラスタ速度の上限
 --------------------------------------------------------------------------------
 -- ベクトル演算ヘルパー関数
 --------------------------------------------------------------------------------
@@ -199,17 +200,18 @@ end
 
 -- 3x3行列専用の逆行列関数 (汎用invの代替)
 function inv3(m)
-    local a, b, c = m[1][1], m[1][2], m[1][3]
-    local d, e, f = m[2][1], m[2][2], m[2][3]
-    local g, h, i = m[3][1], m[3][2], m[3][3]
+    local a, b, c, d, e, f, g, h, i, det, invDet
+    a, b, c = m[1][1], m[1][2], m[1][3]
+    d, e, f = m[2][1], m[2][2], m[2][3]
+    g, h, i = m[3][1], m[3][2], m[3][3]
 
     -- 行列式 (Sarrus)
-    local det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
 
     -- 特異行列判定
     if math.abs(det) < 1e-15 then return nil end
 
-    local invDet = 1 / det
+    invDet = 1 / det
 
     -- クラメルの公式に基づく余因子行列の転置 * (1/det)
     return {
@@ -371,57 +373,31 @@ end
 -- ★【新関数 1】EKF 予測ステップ
 ---@param currentTarget table 追跡中の目標オブジェクト
 ---@param dt_sec number 前回の更新からの経過秒数
----@return table X_predicted, table P_predicted, number newIntegralError (予測状態、予測共分散、新しい積分誤差)
-function predictStep(currentTarget, dt_sec)
-    local stateVector, covariance, lastEpsilon, integral_state
-    local error, new_integral_state, cU, noiseScale_bH
-    local F, Q_base, Q_adapted, P_pred_term1, uncertaintyIncreaseFactor
-    local dt2, dt3, q_block, X_predicted, P_predicted
+---@return table X_predicted, table P_predicted(予測状態、予測共分散、新しい積分誤差)
 
-    stateVector = currentTarget.X
-    covariance = currentTarget.P
-    lastEpsilon = currentTarget.epsilon or NOISE_TARGET_EPSILON
-    integral_state = currentTarget.integralError or 0
+function predictStep(currentTarget, dt)
+    local X = currentTarget.X
+    local P = currentTarget.P
+    local F = MatrixCopy(identityMatrix6x6)
 
-    error = NOISE_TARGET_EPSILON - lastEpsilon
-    new_integral_state = integral_state + error * NOISE_INTEGRAL_GAIN
-    cU = math.max(NOISE_OUTPUT_MIN, math.min(NOISE_OUTPUT_MAX, new_integral_state))
-    if cU == NOISE_OUTPUT_MIN or cU == NOISE_OUTPUT_MAX then
-        new_integral_state = integral_state
-    end
-    noiseScale_bH = 0.1
+    F[1][2] = dt
+    F[3][4] = dt
+    F[5][6] = dt
 
-    -- 等速(CV)モデル
-    F = MatrixCopy(identityMatrix6x6)
-    F[1][2] = dt_sec
-    F[3][4] = dt_sec
-    F[5][6] = dt_sec
-    X_predicted = mul(F, stateVector)
+    local XP = mul(F, X)
+    local d2 = dt * dt
+    local d3 = d2 * dt
+    local Q = zeros(6, 6)
 
-    -- 白色加速度を仮定したCVモデルのプロセスノイズ
-    dt2 = dt_sec * dt_sec
-    dt3 = dt2 * dt_sec
-    Q_base = zeros(NUM_STATES, NUM_STATES)
-    q_block = {
-        { dt3 / 3, dt2 / 2 },
-        { dt2 / 2, dt_sec }
-    }
     for i = 0, 2 do
-        for r = 1, 2 do
-            for c = 1, 2 do
-                Q_base[i * 2 + r][i * 2 + c] = q_block[r][c]
-            end
-        end
+        local n = i * 2
+        Q[n + 1][n + 1] = d3 / 3 * PROCESS_NOISE
+        Q[n + 1][n + 2] = d2 / 2 * PROCESS_NOISE
+        Q[n + 2][n + 1] = d2 / 2 * PROCESS_NOISE
+        Q[n + 2][n + 2] = dt * PROCESS_NOISE
     end
-    Q_adapted = scalar(noiseScale_bH, Q_base)
 
-    uncertaintyIncreaseFactor =
-        1.0 + PREDICTION_UNCERTAINTY_FACTOR_BASE * dt_sec
-    P_pred_term1 = mul(F, covariance, T(F))
-    P_predicted = sum(Q_adapted, P_pred_term1)
-
-
-    return X_predicted, P_predicted, new_integral_state
+    return XP, sum(mul(F, P, T(F)), Q)
 end
 
 -- ★【新関数 2】マハラノビス距離 (epsilon) の計算
@@ -429,7 +405,7 @@ end
 ---@param P_predicted table 予測共分散
 ---@param observation table 観測値
 ---@param ownPosition table 自機位置
----@return number epsilon, table Y, table S_inv, table H , table R_matrix (マハラノビス距離), table Y (イノベーション), table S_inv (イノベーション共分散の逆), table H, table R_matrix (更新ステップ用)
+---@return number epsilon, table Y, table|nil S_inv, table H (マハラノビス距離), table Y (イノベーション), table S_inv (イノベーション共分散の逆), table H, table R_matrix (更新ステップ用)
 function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
     local Z, epsilon, Y, S_inv, H, R_matrix, h, S, epsilon_matrix
     -- 観測ベクトル Z = [距離, グローバル仰角, グローバル方位角]^T
@@ -466,25 +442,26 @@ function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
     end
     -- (既存の epsilon 計算の直後に追加)
 
+    local vx, vy, vz, vSpeed, dx, dy, dz, dDist, cosTheta
     -- 1. トラックの現在推測速度を取得 (Vx, Vy, Vz)
-    local vx, vy, vz = X_predicted[2][1], X_predicted[4][1], X_predicted[6][1]
-    local vSpeed = math.sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2)
+    vx, vy, vz = X_predicted[2][1], X_predicted[4][1], X_predicted[6][1]
+    vSpeed = math.sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2)
 
     -- 2. ミサイル等、一定以上の速度（例: 50m/s以上）で移動している目標の場合のみ適用
     if vSpeed > 50 then
         -- 予測位置から今回の観測位置への方向ベクトル
-        local dx = observation.globalX - X_predicted[1][1]
-        local dy = observation.globalY - X_predicted[3][1]
-        local dz = observation.globalZ - X_predicted[5][1]
-        local dDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
+        dx = observation.globalX - X_predicted[1][1]
+        dy = observation.globalY - X_predicted[3][1]
+        dz = observation.globalZ - X_predicted[5][1]
+        dDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
 
         if dDist > 1e-3 then
             -- 速度ベクトルと移動ベクトルのコサイン類似度 (1.0 = 進行方向と完全に一致)
-            local cosTheta = (vx * dx + vy * dy + vz * dz) / (vSpeed * dDist)
+            cosTheta = (vx * dx + vy * dy + vz * dz) / (vSpeed * dDist)
 
             -- 進行方向から外れているほど epsilon を激しく倍増させるペナルティ
-            if cosTheta < 0.6 then
-                epsilon = epsilon * (2.0 - cosTheta)
+            if cosTheta < 0.3 then
+                epsilon = epsilon * (1.5 - cosTheta*0.5)
             end
         end
     end
@@ -493,23 +470,29 @@ function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
 end
 
 -- ★【新関数 3】EKF 更新ステップ
----@return table X_updated, table P_updated, number epsilon, boolean success
+---@return table X_updated, table P_updated
 function updateStep(X_predicted, P_predicted, Y, S_inv, H)
-    local K = mul(P_predicted, T(H), S_inv)
-    local X_updated = sum(X_predicted, mul(K, Y))
-    local P_updated = mul(sub(identityMatrix6x6, mul(K, H)), P_predicted)
+    local K, X_updated, P_updated
+    K = mul(P_predicted, T(H), S_inv)
+    X_updated = sum(X_predicted, mul(K, Y))
+    P_updated = mul(sub(identityMatrix6x6, mul(K, H)), P_predicted)
     return X_updated, P_updated
 end
 
 -- フィルター状態を初期化
 function initializeFilterState(c, id)
-    local o = c.lastObservation
+    local o, X, P, d, v
+    o = c.lastObservation
 
-    local X = { { o.globalX }, { 0 }, { o.globalY }, { 0 }, { o.globalZ }, { 0 } }
+    X = {
+        { o.globalX }, { c.vx },
+        { o.globalY }, { c.vy },
+        { o.globalZ }, { c.vz }
+    }
 
-    local P = zeros(6, 6)
-    local d = o.distance
-    local v = d * d * 2.325e-4
+    P = zeros(6, 6)
+    d = o.distance
+    v = d * d * 2.325e-4
 
     P[1][1] = v
     P[3][3] = v
@@ -525,53 +508,21 @@ function initializeFilterState(c, id)
         epsilon = 1,
         lastTick = o.targetReachedTick,
         lastSeenTick = o.targetReachedTick,
+        lastReceiveTick = currentTick,
         hits = c.hits,
-        misses = 0,
-        integralError = 0
     }
 end
 
 --------------------------------------------------------------------------------
 -- メイン処理 (onTick)
 --------------------------------------------------------------------------------
--- 観測時刻におけるトラックの簡易位置を返す。
--- 未来方向はCVモデル、過去方向は現在状態からの逆算を使用する。
-function getTrackPositionAtTick(track, observationTick)
-    local dt = (observationTick - track.lastTick) * DT
-    return {
-        track.X[1][1] + track.X[2][1] * dt,
-        track.X[3][1] + track.X[4][1] * dt,
-        track.X[5][1] + track.X[6][1] * dt
-    }
-end
-
-function positionErrorToObservation(track, obs)
-    local p = getTrackPositionAtTick(track, obs.targetReachedTick)
-    local dx = obs.globalX - p[1]
-    local dy = obs.globalY - p[2]
-    local dz = obs.globalZ - p[3]
-    return math.sqrt(dx * dx + dy * dy + dz * dz)
-end
-
--- EKFで時系列更新できない古い観測、または既存トラック近傍の余剰観測を
--- 「別目標」ではなく重複エコーとして吸収する。
-function isEchoOfExistingTrack(obs)
-    for _, track in pairs(trackedTargets) do
-        local age = track.lastTick - obs.targetReachedTick
-        if age >= 0 and age <= OLD_ECHO_MAX_AGE then
-            local gate = OLD_ECHO_BASE_GATE
-                + obs.distance * OLD_ECHO_RANGE_FACTOR
-            if positionErrorToObservation(track, obs) < gate then
-                return true
-            end
-        end
-    end
-    return false
-end
-
 function removeExpiredTentativeClusters()
-    for id, cluster in pairs(tentativeClusters) do
-        if currentTick - cluster.lastReceiveTick > CLUSTER_CONFIRM_WINDOW then
+    for id, c in pairs(tentativeClusters) do
+        local timeout = math.max(
+            CLUSTER_CONFIRM_WINDOW,
+            c.distance * 120 / 1480 + 120
+        )
+        if currentTick - c.lastReceiveTick > timeout then
             tentativeClusters[id] = nil
         end
     end
@@ -580,43 +531,57 @@ end
 -- 未関連付け観測を候補クラスタへ追加する。
 -- 1観測だけでは正式トラックを作らず、時間的に独立した複数観測で確認する。
 function addTentativeObservation(obs)
-    local bestID = nil
-    local bestError = math.huge
+    local bestID, bestError
+    bestID, bestError = nil, math.huge
 
-    for id, cluster in pairs(tentativeClusters) do
-        local dtTicks = obs.targetReachedTick - cluster.lastTick
-        if dtTicks >= 0 and dtTicks <= CLUSTER_CONFIRM_WINDOW then
+    for id, c in pairs(tentativeClusters) do
+        local dtTicks = obs.targetReachedTick - c.lastTick
+        if dtTicks >= 0 then
             local dt = dtTicks * DT
-            local px = cluster.x + cluster.vx * dt
-            local py = cluster.y + cluster.vy * dt
-            local pz = cluster.z + cluster.vz * dt
+            local px, py, pz = c.x, c.y, c.z
+            local gate = CLUSTER_BASE_GATE +
+                obs.distance * CLUSTER_RANGE_FACTOR
+
+            if c.hits < 2 then
+                gate = gate + MAX_INITIAL_SPEED * dt
+            else
+                px = px + c.vx * dt
+                py = py + c.vy * dt
+                pz = pz + c.vz * dt
+                gate = gate + 20 * dt
+            end
+
             local dx = obs.globalX - px
             local dy = obs.globalY - py
             local dz = obs.globalZ - pz
             local err = math.sqrt(dx * dx + dy * dy + dz * dz)
-            local gate = CLUSTER_BASE_GATE
-                + obs.distance * CLUSTER_RANGE_FACTOR
 
             if err < gate and err < bestError then
-                bestError = err
-                bestID = id
+                bestError, bestID = err, id
             end
         end
     end
 
     if bestID == nil then
         local id = nextClusterID
-        nextClusterID = nextClusterID + 1
+        nextClusterID = id + 1
         tentativeClusters[id] = {
             id = id,
             x = obs.globalX,
             y = obs.globalY,
             z = obs.globalZ,
+
+            firstX = obs.globalX,
+            firstY = obs.globalY,
+            firstZ = obs.globalZ,
+            firstTick = obs.targetReachedTick,
+
             vx = 0,
             vy = 0,
             vz = 0,
             lastTick = obs.targetReachedTick,
             lastReceiveTick = currentTick,
+            distance = obs.distance,
             hits = 1,
             lastObservation = obs
         }
@@ -625,36 +590,36 @@ function addTentativeObservation(obs)
 
     local c = tentativeClusters[bestID]
     local tickGap = obs.targetReachedTick - c.lastTick
-
-    -- 同一時刻付近の重複出力はヒット数に加算しない。
-    if tickGap < CLUSTER_MIN_HIT_GAP then
-        return nil
-    end
+    if tickGap < CLUSTER_MIN_HIT_GAP then return nil end
 
     local dt = tickGap * DT
+    local dt = (obs.targetReachedTick - c.firstTick) * DT
+
     if dt > 0 then
-        local measuredVx = (obs.globalX - c.x) / dt
-        local measuredVy = (obs.globalY - c.y) / dt
-        local measuredVz = (obs.globalZ - c.z) / dt
-        local a = 1 / math.min(c.hits + 1, 4)
-        c.vx = c.vx + (measuredVx - c.vx) * a
-        c.vy = c.vy + (measuredVy - c.vy) * a
-        c.vz = c.vz + (measuredVz - c.vz) * a
+        local vx = (obs.globalX - c.firstX) / dt
+        local vy = (obs.globalY - c.firstY) / dt
+        local vz = (obs.globalZ - c.firstZ) / dt
+        local s = math.sqrt(vx * vx + vy * vy + vz * vz)
+
+        if s > MAX_INITIAL_SPEED then
+            local k = MAX_INITIAL_SPEED / s
+            vx, vy, vz = vx * k, vy * k, vz * k
+        end
+
+        c.vx, c.vy, c.vz = vx, vy, vz
     end
 
-    c.x = obs.globalX
-    c.y = obs.globalY
-    c.z = obs.globalZ
+    c.x, c.y, c.z = obs.globalX, obs.globalY, obs.globalZ
     c.lastTick = obs.targetReachedTick
     c.lastReceiveTick = currentTick
     c.lastObservation = obs
+    c.distance = obs.distance
     c.hits = c.hits + 1
 
     if c.hits >= CLUSTER_CONFIRM_HITS then
         tentativeClusters[bestID] = nil
         return c
     end
-    return nil
 end
 
 --------------------------------------------------------------------------------
@@ -683,27 +648,28 @@ function onTick()
     local currentObservations = {}
 
     for i = 1, MAX_RADAR_TARGETS do
-        local dist = input.getNumber(BASE_CHANNEL * i - 3)
+        local dist, localAziRad, localEleRad, targetReachedTick, localPos, globalPos, relative, distCheck
+        dist = input.getNumber(BASE_CHANNEL * i - 3)
         if dist > 0 then
-            local localAziRad = input.getNumber(BASE_CHANNEL * i - 2)
-            local localEleRad = input.getNumber(BASE_CHANNEL * i - 1)
-            local targetReachedTick = input.getNumber(BASE_CHANNEL * i)
-            local localPos = polarCoordsToLocalCoords(
+            localAziRad = input.getNumber(BASE_CHANNEL * i - 2)
+            localEleRad = input.getNumber(BASE_CHANNEL * i - 1)
+            targetReachedTick = input.getNumber(BASE_CHANNEL * i)
+            localPos = polarCoordsToLocalCoords(
                 dist,
                 localEleRad,
                 localAziRad
             )
-            local globalPos = localToGlobalCoords(
+            globalPos = localToGlobalCoords(
                 localPos,
                 ownGlobalPos,
                 ownOrientation
             )
 
             if globalPos ~= nil then
-                local relative = vectorSub(globalPos, ownGlobalPos)
-                local distCheck = vectorMagnitude(relative)
+                relative = vectorSub(globalPos, ownGlobalPos)
+                distCheck = vectorMagnitude(relative)
                 if distCheck > 1e-6 then
-                    table.insert(currentObservations, {
+                    currentObservations[#currentObservations + 1] = {
                         distance = dist,
                         elevation = math.asin(math.max(
                             -1,
@@ -716,7 +682,7 @@ function onTick()
                         globalY = globalPos[2],
                         globalZ = globalPos[3],
                         targetReachedTick = targetReachedTick
-                    })
+                    }
                 end
             end
         end
@@ -727,22 +693,21 @@ function onTick()
         return a.targetReachedTick < b.targetReachedTick
     end)
 
-    local updatedTracks = {}
 
     for _, obs in ipairs(currentObservations) do
-        local bestTrackID = nil
-        local bestEpsilon = math.huge
-        local bestCache = nil
+        local bestTrackID, bestEpsilon, bestCache, dtTicks, XPred, PPred
+        bestTrackID = nil
+        bestEpsilon = math.huge
+        bestCache = nil
 
-        -- 1観測ごとに最適な既存トラックを探す。
-        -- assignedTrackIDsは使わないため、同じTick中でも時系列が進んでいれば
-        -- 同一トラックを複数回更新できる。
+        -- 各観測を、予測と最も整合する1本の既存トラックへ関連付けする。
+        -- 一次側で同一Ping内の重複反射は統合済み。
         for trackID, track in pairs(trackedTargets) do
-            local dtTicks = obs.targetReachedTick - track.lastTick
+            dtTicks = obs.targetReachedTick - track.lastTick
 
-            -- 同時刻・古い観測は再更新せず、後段の重複エコー判定へ送る。
+            -- 同時刻または古い観測ではトラックを巻き戻して更新しない。
             if dtTicks > 0 then
-                local XPred, PPred, integralError =
+                XPred, PPred =
                     predictStep(track, dtTicks * DT)
 
                 if XPred ~= nil and PPred ~= nil then
@@ -764,7 +729,6 @@ function onTick()
                             Y = Y,
                             SInv = SInv,
                             H = H,
-                            integralError = integralError
                         }
                     end
                 end
@@ -772,8 +736,12 @@ function onTick()
         end
 
         if bestTrackID ~= nil then
-            local track = trackedTargets[bestTrackID]
-            local XUp, PUp = updateStep(
+            local track, oldX, oldTick, XUp, PUp
+            track = trackedTargets[bestTrackID]
+            oldX = track.X
+            oldTick = track.lastTick
+
+            XUp, PUp = updateStep(
                 bestCache.XPred,
                 bestCache.PPred,
                 bestCache.Y,
@@ -782,50 +750,83 @@ function onTick()
             )
 
             if XUp then
-                local vx, vy, vz = XUp[2][1], XUp[4][1], XUp[6][1]
-                local speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+                local dt, mvx, mvy, mvz, a, vx, vy, vz, speed, k
+                dt = (obs.targetReachedTick - oldTick) * DT
+
+                -- 観測位置差分から求めた速度を少し混ぜる
+                if dt > 0 then
+                    mvx = (obs.globalX - oldX[1][1]) / dt
+                    mvy = (obs.globalY - oldX[3][1]) / dt
+                    mvz = (obs.globalZ - oldX[5][1]) / dt
+                    a = math.min(0.3, dt * 0.1)
+
+                    XUp[2][1] = XUp[2][1] + (mvx - XUp[2][1]) * a
+                    XUp[4][1] = XUp[4][1] + (mvy - XUp[4][1]) * a
+                    XUp[6][1] = XUp[6][1] + (mvz - XUp[6][1]) * a
+                end
+
+                -- 補正後の速度に上限をかける
+                vx = XUp[2][1]
+                vy = XUp[4][1]
+                vz = XUp[6][1]
+                speed = math.sqrt(vx * vx + vy * vy + vz * vz)
 
                 if speed > 250 then
-                    local k = 250 / speed
+                    k = 250 / speed
                     XUp[2][1] = vx * k
                     XUp[4][1] = vy * k
                     XUp[6][1] = vz * k
                 end
 
+                debug.log(
+                    "dt:" .. dt ..
+                    " mv:" .. math.sqrt(mvx * mvx + mvy * mvy + mvz * mvz) ..
+                    " kfv:" .. math.sqrt(
+                        XUp[2][1] ^ 2 +
+                        XUp[4][1] ^ 2 +
+                        XUp[6][1] ^ 2
+                    ) ..
+                    " a:" .. a
+                )
                 track.X = XUp
                 track.P = PUp
                 track.epsilon = bestEpsilon
-                track.integralError = bestCache.integralError
                 track.lastTick = obs.targetReachedTick
                 track.lastReceiveTick = currentTick
                 track.lastSeenTick = obs.targetReachedTick
                 track.hits = track.hits + 1
-                track.misses = 0
-                updatedTracks[bestTrackID] = true
             end
-        elseif not isEchoOfExistingTrack(obs) then
-            local c = addTentativeObservation(obs)
+        else
+            local c, id
+            c = addTentativeObservation(obs)
             if c then
-                local id = nextTrackID
+                id = nextTrackID
                 nextTrackID = id + 1
                 trackedTargets[id] = initializeFilterState(c, id)
-                updatedTracks[id] = true
             end
         end
     end
 
-    -- 観測を受けなかったトラックだけ、1ゲームTickにつき1回ミス加算する。
+    -- 最終受信から距離依存の待機時間を超えたトラックを削除する。
     local deleteIDs = {}
+
     for id, track in pairs(trackedTargets) do
-        if not updatedTracks[id] then
-            track.misses = track.misses + 1
-        end
-        if track.misses > TARGET_LOST_THRESHOLD_TICKS then
-            table.insert(deleteIDs, id)
+        local dx, dy, dz, distance, timeout
+        dx = track.X[1][1] - ownGlobalPos[1]
+        dy = track.X[3][1] - ownGlobalPos[2]
+        dz = track.X[5][1] - ownGlobalPos[3]
+        distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+        timeout = math.max(
+            TARGET_LOST_THRESHOLD_TICKS,
+            distance * 120 / 1480 + 180
+        )
+
+        if currentTick - track.lastReceiveTick > timeout then
+            deleteIDs[#deleteIDs + 1] = id
         end
     end
     for _, id in ipairs(deleteIDs) do
-        debug.log("d-ID")
         trackedTargets[id] = nil
     end
 
@@ -834,7 +835,7 @@ function onTick()
     -- ID順に時分割出力する。
     local sortedTracks = {}
     for _, track in pairs(trackedTargets) do
-        table.insert(sortedTracks, track)
+        sortedTracks[#sortedTracks + 1] = track
     end
 
     local targetToOutput = nil
@@ -850,15 +851,13 @@ function onTick()
     end
 
     if targetToOutput ~= nil then
-        local X = targetToOutput.X
-        local predictionTicks =
+        local X, predictionTicks, dt
+        X = targetToOutput.X
+        predictionTicks =
             currentTick - targetToOutput.lastTick + LOGIC_DELAY
-        if targetToOutput.hits < 6 then
-            predictionTicks = math.min(predictionTicks, 60)
-        end
         if predictionTicks < 0 then predictionTicks = 0 end
 
-        local dt = predictionTicks * DT
+        dt = predictionTicks * DT
 
         output.setNumber(1, X[1][1] + X[2][1] * dt)
         output.setNumber(2, X[3][1] + X[4][1] * dt)
@@ -875,6 +874,7 @@ function onTick()
         output.setNumber(13, targetToOutput.hits)
         output.setNumber(32, targetToOutput.epsilon)
         output.setBool(1, true)
+        debug.log("spd: " .. math.sqrt(X[2][1] ^ 2 + X[4][1] ^ 2 + X[6][1] ^ 2))
     else
         for i = 1, 13 do output.setNumber(i, 0) end
         output.setNumber(32, 0)
