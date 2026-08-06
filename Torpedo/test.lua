@@ -1,7 +1,2 @@
-arry = {}
-A = 1
-B = 2
-C = 3
-table.insert(arry,A)
-table.insert(arry,B)
-print(arry[2])
+a = math.pi
+print((a * math.rad(0.72)) ^ 2 / 12)

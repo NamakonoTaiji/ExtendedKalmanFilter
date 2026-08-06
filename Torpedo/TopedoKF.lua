@@ -1,7 +1,7 @@
 --[[
 機能:
 一次フィルター（Torpedo NewtonDistanceFinder）で同一Ping内の重複反射を
-1観測へ統合したデータを受け取り、6状態EKFで時系列追跡する。
+1観測へ統合したデータを受け取り、6状態の線形カルマンフィルターで時系列追跡する。
 
 処理:
 1. 距離・方位角・仰角をグローバル座標へ変換
@@ -45,27 +45,28 @@ Physics Sensor座標系（X:東、Y:上、Z:北、左手系）。
 -- 定数
 PI = math.pi
 PI2 = PI * 2
-DT = 1 / 60           -- EKF更新の時間ステップ (秒)
+DT = 1 / 60           -- 更新時間の基準 (秒)
 MAX_RADAR_TARGETS = 6 -- 一次フィルターから受け取る最大目標数
 NUM_STATES = 6        -- EKF状態数 (x, vx, y, vy, z, vz)
 BASE_CHANNEL = 4
 
--- EKF パラメータ (プロパティから読み込む想定)
-DATA_ASSOCIATION_EPSILON_THRESHOLD = property.getNumber("D_ASOC_EPS")            -- データアソシエーションのε閾値
-TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")                       -- 目標ロスト判定のTick数
+-- カルマンフィルターパラメータ
+DATA_ASSOCIATION_EPSILON_THRESHOLD = property.getNumber("D_ASOC_EPS") -- データアソシエーションのε閾値
+TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")            -- 目標ロスト判定のTick数
 
-PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") -- 観測が無い間に予測の信頼を下げる係数。値が大きいほど観測がない間に予測を信頼しなくなる。
 INITIAL_VELOCITY_VARIANCE = 10000
 PROCESS_NOISE = property.getNumber("PROCESS_NOISE")
--- ★ PI制御パラメータ (新規追加)
-NOISE_TARGET_EPSILON = property.getNumber("NOISE_TARGET_EPS") -- PI制御の目標epsilon値
-NOISE_INTEGRAL_GAIN = property.getNumber("NOISE_I_GAIN")      -- PI制御の積分ゲイン
-
 LOGIC_DELAY = property.getNumber("LOGIC_DELAY")
 
-R0_DIST_VAR_FACTOR = 0.005 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
-R0_ANGLE_VAR = 0.0062     --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
-OBSERVATION_NOISE_MATRIX_TEMPLATE = { { R0_DIST_VAR_FACTOR, 0, 0 }, { 0, R0_ANGLE_VAR, 0 }, { 0, 0, R0_ANGLE_VAR } }
+-- 一次フィルターで得たグローバル座標の1軸あたり観測分散
+-- sigma^2 = POSITION_NOISE_BASE + distance^2 * POSITION_NOISE_RANGE
+POSITION_NOISE_BASE = 100
+POSITION_NOISE_RANGE = 2.025e-5
+OBSERVATION_MATRIX = {
+    { 1, 0, 0, 0, 0, 0 },
+    { 0, 0, 1, 0, 0, 0 },
+    { 0, 0, 0, 0, 1, 0 }
+}
 
 
 -- グローバル変数
@@ -311,70 +312,10 @@ function polarCoordsToLocalCoords(dist, localEleRad, localAziRad)
 end
 
 --------------------------------------------------------------------------------
--- EKF 関連関数
+-- カルマンフィルター関連関数
 --------------------------------------------------------------------------------
--- 観測ヤコビアン H と 観測予測値 h を計算
-function getObservationJacobianAndPrediction(stateVector, ownPosition)
-    -- 関数冒頭でローカル変数を宣言
-    local targetX, targetY, targetZ, relativeX, relativeY, relativeZ, r_sq, rh_sq, r, rh, predictedDistance, asin_arg, predictedElevation, predictedAzimuth, h, H
-
-
-    targetX = stateVector[1][1]
-    targetY = stateVector[3][1]
-    targetZ = stateVector[5][1]
-    relativeX = targetX - ownPosition[1]
-    relativeY = targetY - ownPosition[2]
-    relativeZ = targetZ - ownPosition[3]
-
-    r_sq = relativeX ^ 2 + relativeY ^ 2 + relativeZ ^ 2
-    rh_sq = relativeX ^ 2 + relativeZ ^ 2
-    -- ゼロ除算防止
-    if r_sq < 1e-9 then r_sq = 1e-9 end
-    if rh_sq < 1e-9 then rh_sq = 1e-9 end
-    r = math.sqrt(r_sq)
-    rh = math.sqrt(rh_sq)
-
-    -- 観測予測値 h = [距離, グローバル仰角, グローバル方位角]^T
-    predictedDistance = r
-    asin_arg = math.max(-1.0, math.min(1.0, relativeY / r))
-    predictedElevation = math.asin(asin_arg)           -- YがUp
-    predictedAzimuth = math.atan(relativeX, relativeZ) -- atan(East, North) -> Z軸(北)基準の方位角
-    h = { { predictedDistance }, { predictedElevation }, { predictedAzimuth } }
-
-    -- 観測ヤコビ行列 H = dh/dX (3x6)
-    H = zeros(3, NUM_STATES)
-    -- d(h)/d(x) (1列目)
-    H[1][1] = relativeX / r
-    H[2][1] = (relativeX * -relativeY) / (r_sq * rh)
-    H[3][1] = relativeZ / rh_sq
-    -- d(h)/d(y) (3列目)
-    H[1][3] = relativeY / r
-    H[2][3] = rh / r_sq
-    H[3][3] = 0
-    -- d(h)/d(z) (5列目)
-    H[1][5] = relativeZ / r
-    H[2][5] = (relativeZ * -relativeY) / (r_sq * rh)
-    H[3][5] = -relativeX / rh_sq
-    -- 速度項の偏微分はゼロ
-
-    return H, h
-end
-
--- 角度差を計算 (-PI から PI の範囲)
-function calculateAngleDifference(angle1, angle2)
-    local diff = angle2 - angle1
-    while diff <= -PI do diff = diff + PI2 end
-    while diff > PI do diff = diff - PI2 end
-    return
-        diff
-end
-
--- EKF 更新ステップ (dtは固定DTを使用)
--- ★【新関数 1】EKF 予測ステップ
----@param currentTarget table 追跡中の目標オブジェクト
----@param dt_sec number 前回の更新からの経過秒数
----@return table X_predicted, table P_predicted(予測状態、予測共分散、新しい積分誤差)
-
+-- グローバル直交座標観測による線形カルマンフィルター
+-- 状態 [x,vx,y,vy,z,vz] から位置 [x,y,z] を直接観測する。
 function predictStep(currentTarget, dt)
     local X = currentTarget.X
     local P = currentTarget.P
@@ -400,76 +341,34 @@ function predictStep(currentTarget, dt)
     return XP, sum(mul(F, P, T(F)), Q)
 end
 
--- ★【新関数 2】マハラノビス距離 (epsilon) の計算
----@param X_predicted table 予測状態
----@param P_predicted table 予測共分散
----@param observation table 観測値
----@param ownPosition table 自機位置
----@return number epsilon, table Y, table|nil S_inv, table H (マハラノビス距離), table Y (イノベーション), table S_inv (イノベーション共分散の逆), table H, table R_matrix (更新ステップ用)
-function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
-    local Z, epsilon, Y, S_inv, H, R_matrix, h, S, epsilon_matrix
-    -- 観測ベクトル Z = [距離, グローバル仰角, グローバル方位角]^T
-    Z = { { observation.distance }, { observation.elevation }, { observation.azimuth } }
+-- 直交座標のイノベーションとマハラノビス距離を計算
+function calculateInnovation(X, P, o)
+    local H = OBSERVATION_MATRIX
+    local Y = {
+        { o.globalX - X[1][1] },
+        { o.globalY - X[3][1] },
+        { o.globalZ - X[5][1] }
+    }
 
-    -- ヤコビアン H と 観測予測 h を計算
-    H, h = getObservationJacobianAndPrediction(X_predicted, ownPosition)
-    -- if H == nil then return math.huge, nil, nil, nil, nil end
+    local v = POSITION_NOISE_BASE +
+        o.distance * o.distance * POSITION_NOISE_RANGE
+    local R = {
+        { v, 0, 0 },
+        { 0, v, 0 },
+        { 0, 0, v }
+    }
+    local S = sum(mul(H, P, T(H)), R)
+    local Si = inv3(S)
 
-    -- 観測ノイズ R
-    R_matrix = MatrixCopy(OBSERVATION_NOISE_MATRIX_TEMPLATE)
-    R_matrix[1][1] = R_matrix[1][1] * (observation.distance ^ 2)
-
-    -- イノベーション(観測残差) Y
-    Y = zeros(3, 1)
-    Y[1][1] = Z[1][1] - h[1][1]                          -- 距離
-    Y[2][1] = calculateAngleDifference(h[2][1], Z[2][1]) -- 仰角
-    Y[3][1] = calculateAngleDifference(h[3][1], Z[3][1]) -- 方位角
-
-    -- イノベーション共分散 S = H * P_pred * H^T + R
-    S = sum(mul(H, P_predicted, T(H)), R_matrix)
-    S_inv = inv3(S)
-
-    -- if S_inv == nil then
-    --     -- 逆行列計算失敗
-    --     return math.huge, nil, nil, nil, nil
-    -- end
-
-    -- 誤差指標 epsilon (マハラノビス距離) の計算: epsilon = Y^T * S^-1 * Y
-    epsilon = 1.0
-    epsilon_matrix = mul(T(Y), S_inv, Y)
-    if epsilon_matrix and epsilon_matrix[1] and epsilon_matrix[1][1] then
-        epsilon = epsilon_matrix[1][1]
-    end
-    -- (既存の epsilon 計算の直後に追加)
-
-    local vx, vy, vz, vSpeed, dx, dy, dz, dDist, cosTheta
-    -- 1. トラックの現在推測速度を取得 (Vx, Vy, Vz)
-    vx, vy, vz = X_predicted[2][1], X_predicted[4][1], X_predicted[6][1]
-    vSpeed = math.sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2)
-
-    -- 2. ミサイル等、一定以上の速度（例: 50m/s以上）で移動している目標の場合のみ適用
-    if vSpeed > 50 then
-        -- 予測位置から今回の観測位置への方向ベクトル
-        dx = observation.globalX - X_predicted[1][1]
-        dy = observation.globalY - X_predicted[3][1]
-        dz = observation.globalZ - X_predicted[5][1]
-        dDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
-
-        if dDist > 1e-3 then
-            -- 速度ベクトルと移動ベクトルのコサイン類似度 (1.0 = 進行方向と完全に一致)
-            cosTheta = (vx * dx + vy * dy + vz * dz) / (vSpeed * dDist)
-
-            -- 進行方向から外れているほど epsilon を激しく倍増させるペナルティ
-            if cosTheta < 0.3 then
-                epsilon = epsilon * (1.5 - cosTheta*0.5)
-            end
-        end
+    if not Si then
+        return math.huge, nil, nil, nil
     end
 
-    return epsilon, Y, S_inv, H
+    local E = mul(T(Y), Si, Y)
+    return E[1][1], Y, Si, H
 end
 
--- ★【新関数 3】EKF 更新ステップ
+-- カルマン更新ステップ
 ---@return table X_updated, table P_updated
 function updateStep(X_predicted, P_predicted, Y, S_inv, H)
     local K, X_updated, P_updated
@@ -492,7 +391,7 @@ function initializeFilterState(c, id)
 
     P = zeros(6, 6)
     d = o.distance
-    v = d * d * 2.325e-4
+    v = (POSITION_NOISE_BASE + d * d * POSITION_NOISE_RANGE) * 5
 
     P[1][1] = v
     P[3][3] = v
@@ -715,8 +614,7 @@ function onTick()
                         calculateInnovation(
                             XPred,
                             PPred,
-                            obs,
-                            ownGlobalPos
+                            obs
                         )
 
                     if epsilon < DATA_ASSOCIATION_EPSILON_THRESHOLD
@@ -731,6 +629,12 @@ function onTick()
                             H = H,
                         }
                     end
+                    debug.log(
+                        "rY:" .. Y[1][1] ..
+                        " eY:" .. Y[2][1] ..
+                        " aY:" .. Y[3][1] ..
+                        " eps:" .. epsilon
+                    )
                 end
             end
         end
@@ -778,7 +682,7 @@ function onTick()
                     XUp[6][1] = vz * k
                 end
 
-                debug.log(
+--[[                 debug.log(
                     "dt:" .. dt ..
                     " mv:" .. math.sqrt(mvx * mvx + mvy * mvy + mvz * mvz) ..
                     " kfv:" .. math.sqrt(
@@ -787,7 +691,7 @@ function onTick()
                         XUp[6][1] ^ 2
                     ) ..
                     " a:" .. a
-                )
+                ) ]]
                 track.X = XUp
                 track.P = PUp
                 track.epsilon = bestEpsilon

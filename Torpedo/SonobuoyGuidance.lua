@@ -38,25 +38,39 @@ oldDistance                 = 0
 closingSpeedTable           = {}
 lauchedCount                = 0
 currentTick                 = 0
-PN_FIN_STRENGTH             = property.getNumber("PN_FIN_STRENGTH")
-PPN_FIN_STRENGTH            = property.getNumber("PPN_FIN_STRENGTH")
-FUSE_LOGIC_DELAY            = property.getNumber("FUSE_LOGIC_DELAY")
-SKIMMING_ALT                = property.getNumber("SKIMMING_ALT")
-CLOSEST_DISTANCE_THRESHOLD  = property.getNumber("CLOSEST_DISTANCE_THRESHOLD")
-TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")
-DISTANCE_LOOKAHEAD          = property.getNumber("DISTANCE_LOOKAHEAD")
-
-TERMINAL_LEAD_TIME          = property.getNumber("TERMINAL_LEAD_TIME")
-TERMINAL_HEADING_GAIN       = property.getNumber("TERMINAL_HEADING_GAIN")
-MAX_FIN_COMMAND             = property.getNumber("MAX_FIN_COMMAND")
-oldLOS                      = { azimuth = 0, elevation = 0 }
-currentLOS                  = { azimuth = 0, elevation = 0 }
-LOStable                    = { old = oldLOS, current = currentLOS }
-targetCoords                = { 0, 0, 0 }
-initialTargetCoords         = { 0, 0, 0 }
-targetInfos                 = {}
+isTargetFound               = false
 chosenViewTargetID          = 0
-velocityBuffer              = { 0, 0, 0 }
+targetInfos = {}
+
+FIN_STRENGTH                = property.getNumber("FIN_STRENGTH")
+SKIMMING_ALT                = property.getNumber("SKIMMING_ALT")
+ORBIT_RADIUS                = property.getNumber("ORBIT_RADIUS")
+ORBIT_LOOKAHEAD             = property.getNumber("ORBIT_LOOKAHEAD")
+ORBIT_RADIAL_GAIN           = property.getNumber("ORBIT_RADIAL_GAIN")
+ORBIT_DIRECTION             = property.getNumber("ORBIT_DIRECTION")
+TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")
+CLOSEST_DISTANCE_THRESHOLD  = property.getNumber("CLOSEST_DISTANCE_THRESHOLD")
+-- プロパティ未設定時の既定値
+if ORBIT_RADIUS <= 0 then ORBIT_RADIUS = 500 end
+if ORBIT_LOOKAHEAD <= 0 then ORBIT_LOOKAHEAD = 100 end
+if ORBIT_RADIAL_GAIN <= 0 then ORBIT_RADIAL_GAIN = 1.5 end
+if ORBIT_DIRECTION == 0 then ORBIT_DIRECTION = 1 end -- +1:時計回り、-1:反時計回り
+ORBIT_DIRECTION = ORBIT_DIRECTION > 0 and 1 or -1
+---@class Vector3
+---@field x number
+---@field y number
+---@field z number
+
+---@class Quaternion
+---@field qw number
+---@field qx number
+---@field qy number
+---@field qz number
+
+oldLOS          = { azimuth = 0, elevation = 0 }
+currentLOS      = { azimuth = 0, elevation = 0 }
+LOStable        = { old = oldLOS, current = currentLOS }
+targetCoords    = { 0, 0, 0 }
 --- 3Dベクトル a から b を引きます (a - b)
 ---@param a Vector3 {x: number, y: number, z: number} または {number, number, number}
 ---@param b Vector3 {x: number, y: number, z: number} または {number, number, number}
@@ -271,7 +285,6 @@ end
 -- グローバル座標系での前フレームの正規化されたLOSベクトルを保存
 -- {x, y, z} 形式で保存
 oldLOS_vec_global_normalized = { x = 0, y = 0, z = 1 } -- 初期値 (例: 前方)
-oldTerminalMode = false
 
 function onTick()
     currentTick = currentTick + 1
@@ -284,9 +297,8 @@ function onTick()
     local trackingID = input.getNumber(12)
 
     if tx ~= 0 or ty ~= 0 or tz ~= 0 then
-        initialTargetCoords = { tx, ty, tz }
-        targetCoords = initialTargetCoords
-        --debug.log("Target coordinates initialized: " .. tx .. ", " .. ty .. ", " .. tz)
+        targetCoords = { tx, ty, tz }
+        debug.log("Target coordinates initialized: " .. tx .. ", " .. ty .. ", " .. tz)
     end
 
     local ownCoords = {
@@ -312,6 +324,7 @@ function onTick()
         y = ownCoords[2],
         z = ownCoords[3]
     }
+
     if isDetected then
         local receivedTarget = {
             x = input.getNumber(1),
@@ -321,27 +334,12 @@ function onTick()
             vX = input.getNumber(4),
             vY = input.getNumber(5),
             vZ = input.getNumber(6),
-            
+
             epsilon = input.getNumber(8),
             lastSeenTick = input.getNumber(10),
             detectionTickLag = input.getNumber(11),
             id = trackingID
         }
-
-        -- デバッグ
-        local trueCoordsX = input.getNumber(13)
-        local trueCoordsY = input.getNumber(14)
-        local trueCoordsZ = input.getNumber(15)
-
-        local totalDiff = math.sqrt((receivedTarget.x - trueCoordsX) ^ 2 +
-            (receivedTarget.y - trueCoordsY) ^ 2 +
-            (receivedTarget.z - trueCoordsZ) ^ 2)
-        if totalDiff < 200 then
---[[             debug.log("XDiff: " .. (receivedTarget.x - trueCoordsX) ..
-                ", YDiff: " .. (receivedTarget.y - trueCoordsY) ..
-                ", ZDiff: " .. (receivedTarget.z - trueCoordsZ) ..
-                ", totalDiff: " .. totalDiff) ]]
-        end
 
         local found = false
 
@@ -356,9 +354,6 @@ function onTick()
         if not found then
             table.insert(targetInfos, receivedTarget)
         end
-    else
-        targetCoords = { targetCoords[1] + velocityBuffer[1] * DT, targetCoords[2] + velocityBuffer[2] * DT,
-            targetCoords[3] + velocityBuffer[3] * DT }
     end
 
     --------------------------------------------------------------------------
@@ -369,8 +364,7 @@ function onTick()
 
         if currentTick - target.lastSeenTick > TARGET_LOST_THRESHOLD_TICKS then
             table.remove(targetInfos, i)
-            -- debug.log("Target ID " .. target.id .. " removed due to loss of detection.")
-            targetCoords = initialTargetCoords
+            debug.log("Target ID " .. target.id .. " removed due to loss of detection.")
         end
     end
 
@@ -378,15 +372,11 @@ function onTick()
     -- 目標座標に最も近いターゲット選択
     --------------------------------------------------------------------------
     isTargetFound = false
-    local selectedTargetVelocity = { x = 0, y = 0, z = 0 }
     for i, target in ipairs(targetInfos) do
         if target.id == chosenViewTargetID then
             isTargetFound = true -- データリンクのIDが生きている場合はフラグを立ててループを抜ける
-            targetCoords = { target.x, target.y, target.z }
-            selectedTargetVelocity = { x = target.vX, y = target.vY, z = target.vZ }
-            velocityBuffer = selectedTargetVelocity
---[[             debug.log("Target found ID: " ..
-                chosenViewTargetID .. " Coordinates: " .. target.x .. ", " .. target.y .. ", " .. target.z) ]]
+            targetCoords = {target.x, target.y, target.z}
+            debug.log("Target found ID: " .. chosenViewTargetID.." Coordinates: "..target.x..", "..target.y..", "..target.z)
             break
         end
     end
@@ -397,159 +387,90 @@ function onTick()
     if not isTargetFound and chosenViewTargetID == 0 then
         for _, target in ipairs(targetInfos) do
             local distanceDiffSq = (target.x - targetCoordsVec.x) ^ 2 + (target.y - targetCoordsVec.y) ^ 2 +
-                (target.z - targetCoordsVec.z) ^ 2
+            (target.z - targetCoordsVec.z) ^ 2
             if distanceDiffSq < closestDistanceSq then
                 closestDistanceSq = distanceDiffSq
                 if distanceDiffSq < closestDistanceThresholdSq and target.epsilon < 3 then
                     chosenViewTargetID = target.id
                     isTargetFound = true
-                    selectedTargetVelocity = { x = target.vX, y = target.vY, z = target.vZ }
-                    targetCoords = { target.x, target.y, target.z }
-                    velocityBuffer = selectedTargetVelocity
---[[                     debug.log("Target found, Distance = : " ..
-                        math.sqrt(closestDistanceSq) ..
-                        ", ID = " .. chosenViewTargetID .. " Coordinates: " .. target.x .. ", " .. target.y .. ", " ..
-                        target.z) ]]
+                    debug.log("Target found, Distance = : " .. math.sqrt(closestDistanceSq) .. ", ID = " .. chosenViewTargetID.." Coordinates: "..target.x..", "..target.y..", "..target.z)
                 end
             end
         end
     end
 
-    -- {x, y, z} 形式のベクトルテーブルに変換
-    local targetCoordsVec = { x = targetCoords[1], y = targetCoords[2], z = targetCoords[3] }
-    local ownCoordsVec    = { x = ownCoords[1], y = ownCoords[2], z = ownCoords[3] }
+    ------------------------------------------------------------------------
+    -- 目標座標を中心とする水平ベクトル場
+    --
+    -- 接線方向を基本とし、半径誤差に比例する半径方向成分を加える。
+    -- 重要: この方向をLOS角速度へ変換せず、機体座標での方位誤差として
+    --       直接フィンへ入力する。
+    ------------------------------------------------------------------------
+    local rx = ownCoordsVec.x - targetCoordsVec.x
+    local rz = ownCoordsVec.z - targetCoordsVec.z
+    local radiusNow = math.sqrt(rx * rx + rz * rz)
 
-    local LOS_vec_global
-
-    local distance        = vector_magnitude(subtract(targetCoords, ownCoords))
-    oldDistance = distance
-
-    local activeTargetCoordsVec = targetCoordsVec
-
-
-    local dx = targetCoordsVec.x - ownCoordsVec.x
-    local dz = targetCoordsVec.z - ownCoordsVec.z
-    local horizontalDist = math.sqrt(dx * dx + dz * dz)
-
-    -- 遠距離では低高度の中間点、300m未満では目標速度から作ったリード点を使用する
-    -- 近距離でも目標座標そのものを狙わないため、追尾航法への遷移を防ぐ
-    pnFinStrength = PN_FIN_STRENGTH
-    local terminalMode = horizontalDist <= 200
-    if distance >= 1000 then
-        isPPN = true
-    else
-        isPPN = false
-    end
-    if not terminalMode then
-        local dirX = dx / math.max(horizontalDist, 0.001)
-        local dirZ = dz / math.max(horizontalDist, 0.001)
-        activeTargetCoordsVec = {
-            x = ownCoordsVec.x + dirX * DISTANCE_LOOKAHEAD,
-            y = SKIMMING_ALT,
-            z = ownCoordsVec.z + dirZ * DISTANCE_LOOKAHEAD
-        }
-    else
-        local leadTime = TERMINAL_LEAD_TIME
-        leadTime = math.max(leadTime, 0)
-
-        activeTargetCoordsVec = {
-            x = targetCoordsVec.x + selectedTargetVelocity.x * leadTime,
-            y = math.min(targetCoordsVec.y + selectedTargetVelocity.y * leadTime, 0),
-            z = targetCoordsVec.z + selectedTargetVelocity.z * leadTime
-        }
-    end
-
-    -- 中間誘導/終末誘導の切替時はLOS履歴をリセットし、切替スパイクを防ぐ
-    if terminalMode ~= oldTerminalMode then
-        oldLOS_vec_global_normalized = normalize(subtract(activeTargetCoordsVec, ownCoordsVec))
-        oldTerminalMode = terminalMode
-    end
-
-    -- 3. グローバル座標系でのLOS (Line of Sight) ベクトルを計算
-    LOS_vec_global = subtract(activeTargetCoordsVec, ownCoordsVec)
-    if not isPPN then
-        -- 4. グローバルLOSベクトルを正規化
-        local currentLOS_vec_global_normalized = normalize(LOS_vec_global)
-
-        -- 5. グローバル座標系でのLOS角速度ベクトル (omega) を計算
-        --    omega_vec = (v_old x v_current)
-        --    (v_old x v_current) の大きさは sin(theta)
-        --    thetaが小さい場合, sin(theta) ~= theta (ラジアン)
-        --    角速度 (rad/s) = theta / DT
-        local omega_LOS_global_vec             = cross_product(oldLOS_vec_global_normalized,
-            currentLOS_vec_global_normalized)
-
-        -- DTで割る (角速度ベクトルにする)
-        local omega_LOS_global                 = {
-            omega_LOS_global_vec[1] / DT,
-            omega_LOS_global_vec[2] / DT,
-            omega_LOS_global_vec[3] / DT
-        }
-
-        -- 6. グローバルなLOS角速度ベクトルを、自機のローカル座標系に変換
-        --    rotateVectorByInverseQuaternion は q_conj * p * q を行い、
-        --    グローバルベクトル p をローカル座標系に変換します。
-        --    p = omega_LOS_global (グローバルでのLOS回転)
-        --    q = ownOrientation (自機の姿勢)
-        --    結果 = omega_LOS_local (自機から見たLOS回転)
-        local omega_LOS_local                  = rotateVectorByInverseQuaternion(omega_LOS_global, ownOrientation)
-
-        -- 7. ローカルなLOS角速度の各成分を取得
-        --    自機の座標系 (X:右, Y:上, Z:前) と仮定
-        --    coordsToAngle の定義 atan(x, z) [方位], atan(y, horiz) [仰角] より:
-        --    - 方位角 (Yaw) の変化は、Y軸 (Up) 周りの回転
-        --    - 仰角 (Pitch) の変化は、X軸 (Right) 周りの回転
-
-        local los_rate_pitch                   = omega_LOS_local[1] -- X軸 (Right) 周りの角速度 (rad/s)
-        local los_rate_yaw                     = omega_LOS_local[2] -- Y軸 (Up)    周りの角速度 (rad/s)
-        -- local los_rate_roll  = omega_LOS_local[3] -- Z軸 (Fwd)   周りの角速度 (通常不要)
-
-        -- PNだけでは機首がLOSから外れたままLOS角速度が小さい場合に指令が消えるため、
-        -- 終末時のみ弱い機首方向誤差フィードバックを加える
-        local headingYaw, headingPitch         = 0, 0
-        if terminalMode then
-            local targetLocalPosVec = globalToLocal(activeTargetCoordsVec, ownCoordsVec, ownOrientation)
-            local targetAngle = coordsToAngle(targetLocalPosVec)
-            local headingGain
-            if distance < 50 then
-                headingGain = 1.5
-            else
-                headingGain = TERMINAL_HEADING_GAIN
-            end
-            
-            headingGain = math.max(headingGain, 0)
-            headingYaw = targetAngle.azimuth * headingGain
-            headingPitch = targetAngle.elevation * headingGain
+    if radiusNow < 1 then
+        -- 中心にほぼ重なった場合だけ、現在の機首方向から半径方向を決める
+        local forwardGlobal =
+            rotateVectorByQuaternion({ 0, 0, 1 }, ownOrientation)
+        rx = forwardGlobal[1]
+        rz = forwardGlobal[3]
+        radiusNow = math.sqrt(rx * rx + rz * rz)
+        if radiusNow < 0.001 then
+            rx, rz, radiusNow = 0, 1, 1
         end
-
-        -- 8. 状態を更新 (次のフレームのために)
-        oldLOS_vec_global_normalized = currentLOS_vec_global_normalized
-
-        -- 9. 誘導指令として使う
-        --    ご提示のコードの変数名に合わせる
-        yawAngle                     = los_rate_yaw * DT * pnFinStrength + headingYaw
-        pitchAngle                   = -los_rate_pitch * DT * pnFinStrength + headingPitch
-
-        -- 過大なフィン指令による発散を防ぐ
-        local maxFin                 = math.max(MAX_FIN_COMMAND, 0)
-        local commandMagnitude       =
-            math.sqrt(yawAngle * yawAngle + pitchAngle * pitchAngle)
-
-        if commandMagnitude > maxFin and commandMagnitude > 0 then
-            local commandScale = maxFin / commandMagnitude
-            yawAngle = yawAngle * commandScale
-            pitchAngle = pitchAngle * commandScale
-        end
-    else
-        -- 対水上誘導は単追尾
-        local targetLocalPosVec = globalToLocal(activeTargetCoordsVec, ownCoordsVec, ownOrientation)
-        local targetAngle = coordsToAngle(targetLocalPosVec)
-        yawAngle = targetAngle.azimuth * PPN_FIN_STRENGTH
-        pitchAngle = targetAngle.elevation * PPN_FIN_STRENGTH
     end
 
-    output.setNumber(1, yawAngle)
-    output.setNumber(2, pitchAngle)
+    local radialX = rx / radiusNow
+    local radialZ = rz / radiusNow
+
+    -- +1:時計回り、-1:反時計回り
+    local tangentX = ORBIT_DIRECTION * radialZ
+    local tangentZ = -ORBIT_DIRECTION * radialX
+
+    -- 外側では内向き、内側では外向き。
+    -- 誤差を半径で正規化するため、中心位置は常に入力目標座標になる。
+    local radiusError = (radiusNow - ORBIT_RADIUS) / ORBIT_RADIUS
+    local radialCorrection =
+        math.max(-2, math.min(2, radiusError * ORBIT_RADIAL_GAIN))
+
+    local desiredX = tangentX - radialX * radialCorrection
+    local desiredZ = tangentZ - radialZ * radialCorrection
+    local desiredLength = math.sqrt(desiredX * desiredX + desiredZ * desiredZ)
+
+    if desiredLength < 0.001 then
+        desiredX, desiredZ = tangentX, tangentZ
+    else
+        desiredX = desiredX / desiredLength
+        desiredZ = desiredZ / desiredLength
+    end
+
+    ------------------------------------------------------------------------
+    -- 水平誘導と深度誘導を分離
+    --
+    -- 水平: ベクトル場の進行方向へORBIT_LOOKAHEAD先
+    -- 垂直: SKIMMING_ALTを絶対Y座標として追従
+    --
+    -- 深度誤差が大きくても水平半径計算には一切混ぜない。
+    ------------------------------------------------------------------------
+    local activeTargetCoordsVec = {
+        x = ownCoordsVec.x + desiredX * ORBIT_LOOKAHEAD,
+        y = SKIMMING_ALT,
+        z = ownCoordsVec.z + desiredZ * ORBIT_LOOKAHEAD
+    }
+
+    local targetLocalPosVec =
+        globalToLocal(activeTargetCoordsVec, ownCoordsVec, ownOrientation)
+    local targetAngle = coordsToAngle(targetLocalPosVec)
+
+    -- 方位・仰角の「角度誤差」を直接制御する。
+    -- LOS角速度のみの比例航法は、周回軌道保持には適さない。
+    local yawAngle = targetAngle.azimuth
+    local pitchAngle = targetAngle.elevation
+
+    output.setNumber(1, yawAngle * FIN_STRENGTH)
+    output.setNumber(2, pitchAngle * FIN_STRENGTH)
     output.setNumber(3, targetCoords[1])
     output.setNumber(4, targetCoords[2])
     output.setNumber(5, targetCoords[3])

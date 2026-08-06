@@ -59,7 +59,7 @@ local CLUSTER_DISTANCE_RATIO = property.getNumber("CLUSTER_DISTANCE_RATIO")
 local CLUSTER_DISTANCE_BASE = property.getNumber("CLUSTER_DISTANCE_BASE")
 if CLUSTER_ANGLE_TURNS <= 0 then CLUSTER_ANGLE_TURNS = 0.004 end
 if CLUSTER_DISTANCE_RATIO <= 0 then CLUSTER_DISTANCE_RATIO = 0.03 end
-if CLUSTER_DISTANCE_BASE <= 0 then CLUSTER_DISTANCE_BASE = 20 end
+if CLUSTER_DISTANCE_BASE <= 0 then CLUSTER_DISTANCE_BASE = 30 end
 local CLUSTER_COS = math.cos(CLUSTER_ANGLE_TURNS * PI2)
 
 -- グローバル変数
@@ -306,7 +306,7 @@ function onTick()
                 local echoReceivedTick_actual = currentTick - RECEIVE_LOGIC_DELAY
                 local pingTimeTick = echoReceivedTick_actual - pingSentTick
 
-                if pingTimeTick > 1 then -- 至近距離は出力しない
+                if pingTimeTick > 0 then -- 至近距離は出力しない
                     local measuredAziTurns = input.getNumber((i - 1) * 2 + 1)
                     local measuredEleTurns = input.getNumber((i - 1) * 2 + 2)
                     -- 角度をラジアンに変換
@@ -361,7 +361,7 @@ function onTick()
 
                     diff = vectorMagnitude(vectorSub(dataLinkCoordsVec, globalTargetCoords))
                     distFromDataLinkAvg, distAvg, distanceDiffAvg = 0, 0, 0
-                    if diff < 100 then
+--[[                     if diff < 100 then
                         diffArry[#diffArry + 1] = diff
                         distFromDataLinkArry[#distFromDataLinkArry + 1] = distanceFromDataLinkCoords
                         distanceDiffArry[#distanceDiffArry + 1] = math.abs(calculated_distance-distanceFromDataLinkCoords)
@@ -378,12 +378,7 @@ function onTick()
                                 distanceDiffAvg = distDiffSum / i
                             end
                         end
-
-                        debug.log("Samples: " ..
-                            #diffArry ..
-                            " distanceDiffAvg: " .. distanceDiffAvg .. " distAvg: " .. distAvg .. " errRaito: " ..
-                            distanceDiffAvg / distAvg)
-                    end
+                    end ]]
                 end
             end
         end
