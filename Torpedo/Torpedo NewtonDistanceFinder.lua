@@ -14,6 +14,7 @@
 
 入力 Number:
 - ch 1-16: ソナー角度。目標nは ch(2n-1)=方位角、ch(2n)=仰角（回転単位）
+- ch 17: ピンガー周期
 - ch 21-23: 検証用固定標的のグローバル座標 X,Y,Z
 - ch 24-26: Physics Sensorローカル速度 X(右),Y(上),Z(前) [m/s]
 - ch 27-29: 自機グローバル座標 X(東),Y(上),Z(北)
@@ -51,7 +52,8 @@ local PI2 = PI * 2
 local NEWTON_ITERATIONS = 1
 
 -- プロパティ読み込み
-local PING_INTERVAL_TICKS = property.getNumber("PING_INTERVAL_TICKS")
+local SORNAR_OFFSETS_VEC = { x = property.getNumber("X_RIGHT_OFFSET"), y = property.getNumber("Y_UP_OFFSET"), z = property.getNumber(
+"Z_FRONT_FFSET") } -- 物理センサーからみたソーナーのローカル座標
 local SEND_LOGIC_DELAY = property.getNumber("SEND_LOGIC_DELAY")
 local RECEIVE_LOGIC_DELAY = property.getNumber("RECEIVE_LOGIC_DELAY")
 local CLUSTER_ANGLE_TURNS = property.getNumber("CLUSTER_ANGLE_TURNS")
@@ -277,10 +279,8 @@ function onTick()
     localVel = { input.getNumber(24), input.getNumber(25), input.getNumber(26) }
 
     -- --- Ping 開始/終了処理 ---
-    local distanceFromDataLinkCoords = vectorMagnitude(vectorSub(ownGlobalPos,
-        dataLinkCoordsVec))
-    local intervalTicks = math.max(PING_INTERVAL_TICKS,
-        distanceFromDataLinkCoords / SOUND_SPEED_PER_TICK * 2 + distanceFromDataLinkCoords * 0.1)
+    local intervalTicks = input.getNumber(20)
+
     if not isPinging and currentTick >= pingSentTick + intervalTicks then
         pingSentTick = currentTick + SEND_LOGIC_DELAY
         isPinging = true
@@ -356,12 +356,15 @@ function onTick()
                         targetReachedTick = targetReachedTick
                     })
 
-                    local localTargetCoords = localAngleDistToLocalCoords(calculated_distance, A, E)
-                    local globalTargetCoords = localToGlobal(localTargetCoords, ownGlobalPos, ownOrientation)
+                    local localTargetCoordsVec = localAngleDistToLocalCoords(calculated_distance, A, E)
+                    localTargetCoordsVec.x = localTargetCoordsVec.x + SORNAR_OFFSETS_VEC.x
+                    localTargetCoordsVec.y = localTargetCoordsVec.y + SORNAR_OFFSETS_VEC.y 
+                    localTargetCoordsVec.z = localTargetCoordsVec.z + SORNAR_OFFSETS_VEC.z
+                    local globalTargetCoords = localToGlobal(localTargetCoordsVec, ownGlobalPos, ownOrientation)
 
                     diff = vectorMagnitude(vectorSub(dataLinkCoordsVec, globalTargetCoords))
                     distFromDataLinkAvg, distAvg, distanceDiffAvg = 0, 0, 0
---[[                     if diff < 100 then
+                    --[[                     if diff < 100 then
                         diffArry[#diffArry + 1] = diff
                         distFromDataLinkArry[#distFromDataLinkArry + 1] = distanceFromDataLinkCoords
                         distanceDiffArry[#distanceDiffArry + 1] = math.abs(calculated_distance-distanceFromDataLinkCoords)

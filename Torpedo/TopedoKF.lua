@@ -629,12 +629,12 @@ function onTick()
                             H = H,
                         }
                     end
-                    debug.log(
+--[[                     debug.log(
                         "rY:" .. Y[1][1] ..
                         " eY:" .. Y[2][1] ..
                         " aY:" .. Y[3][1] ..
                         " eps:" .. epsilon
-                    )
+                    ) ]]
                 end
             end
         end

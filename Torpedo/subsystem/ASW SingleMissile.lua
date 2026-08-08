@@ -34,14 +34,14 @@ PI2                          = PI * 2
 
 isLaunch                     = false
 isLaunched                   = false
-lauchedCount                 = 0
+launchedCount                 = 0
 initialGuidanceCounter       = 0
 isGuidanceStart              = false
 isPPN                        = true
 isHeadCapture                = false
 targetCoords                 = { 0, 0, 0 }
 targetVelocity               = { 0, 0, 0 }
-fuse                         = false
+parachute                         = false
 
 DIVE_START_TANJENT           = math.tan(math.rad(40))                        -- 巡航モードからダイブを開始させる角度
 PN_FIN_STRENGTH              = property.getNumber("PN_FIN_STRENGTH")         -- 比例航法時のフィンにかける係数
@@ -403,10 +403,10 @@ function onTick()
 
     -- ミサイルレーダーの有効圏内かつ対水上モードでない場合ミサイルレーダーを有効化・中間誘導用翼の出力をゼロに
     if ((distance - selfSpeed * IMPACT_DELAY < IMPACT_RADIUS) or (targetCoordsVec.y > ownCoordsVec.y)) and isGuidanceStart then
-        fuse = true
+        parachute = true
     end
 
-    output.setBool(1, fuse)
+    output.setBool(1, parachute)
     output.setNumber(1, yawAngle)
     output.setNumber(2, pitchAngle)
 end

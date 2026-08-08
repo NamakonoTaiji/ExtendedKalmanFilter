@@ -5,7 +5,7 @@ targetSpd = { 0, 0, 0 }
 targetAv = { 0, 0, 0 }
 function onTick()
     id = input.getNumber(12)
-    selectedId = math.max(input.getNumber(32),1)
+    selectedId = input.getNumber(32)
     if timeOutCounter > 30 then
         detected = false
     end
