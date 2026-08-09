@@ -55,9 +55,20 @@ DISTANCE_LOOKAHEAD          = property.getNumber("DISTANCE_LOOKAHEAD")
 
 MAX_FIN_COMMAND             = property.getNumber("MAX_FIN_COMMAND")
 
+-- 重力補償 + 高度保持
+-- pitchAngleに加算する補正量として使用
+GRAVITY_COMP_ENABLE         = property.getBool("GRAVITY_COMP_ENABLE")
+ALT_HOLD_ENABLE             = property.getBool("ALT_HOLD_ENABLE")
+ALT_HOLD_TARGET             = property.getNumber("ALT_HOLD_TARGET")
+ALT_HOLD_KP                 = property.getNumber("ALT_HOLD_KP")
+ALT_HOLD_KD                 = property.getNumber("ALT_HOLD_KD")
+GRAVITY_COMP_GAIN           = property.getNumber("GRAVITY_COMP_GAIN")
+MAX_ALTITUDE_CORRECTION     = property.getNumber("MAX_ALTITUDE_CORRECTION")
+ALT_HOLD_DISABLE_DISTANCE   = DISTANCE_LOOKAHEAD
+
 ORBIT_DIRECTION             = 1
 ORBIT_RADIUS                = property.getNumber("ORBIT_RADIUS")
-RECOVERY_RADIUS = ORBIT_RADIUS / 2
+RECOVERY_RADIUS             = ORBIT_RADIUS / 2
 ORBIT_LOOKAHEAD             = DISTANCE_LOOKAHEAD
 
 oldLOS                      = { azimuth = 0, elevation = 0 }
@@ -95,16 +106,25 @@ end
 
 --- 3Dベクトル v を正規化 (単位ベクトル化) します
 ---@param v Vector3 {x: number, y: number, z: number} または {number, number, number}
+---@param isReturnVector? boolean
 ---@return Vector3 正規化されたベクトル {x, y, z}
-function normalize(v)
+function normalize(v, isReturnVector)
     local x = v.x or v[1] or 0
     local y = v.y or v[2] or 0
     local z = v.z or v[3] or 0
     local mag = math.sqrt(x ^ 2 + y ^ 2 + z ^ 2)
     if mag > 1e-9 then -- ゼロ除算を避ける
-        return { x / mag, y / mag, z / mag }
+        if isReturnVector then
+            return { x = x / mag, y = y / mag, z = z / mag }
+        else
+            return { x / mag, y / mag, z / mag }
+        end
     else
-        return { 0, 0, 1 } -- ゼロベクトルの場合は前方 Z を返す (安全策)
+        if isReturnVector then
+            return { x = 0, y = 0, z = 1 }
+        else
+            return { 0, 0, 1 } -- ゼロベクトルの場合は前方 Z を返す (安全策)
+        end
     end
 end
 
@@ -285,6 +305,250 @@ end
 oldLOS_vec_global_normalized = { x = 0, y = 0, z = 1 } -- 初期値 (例: 前方)
 oldTerminalMode = false
 
+
+function getLocalGravity(quaternion)
+    -- ワールド座標の重力方向
+    -- World座標: Y下方向
+    local gravityWorld = { 0, -1, 0 }
+
+    -- World -> Local 変換
+    local gravityLocal =
+        rotateVectorByInverseQuaternion(
+            gravityWorld,
+            quaternion
+        )
+
+    return {
+        x = gravityLocal[1],
+        y = gravityLocal[2],
+        z = gravityLocal[3]
+    }
+end
+
+function clamp(v, min, max)
+    if v < min then
+        return min
+    elseif v > max then
+        return max
+    else
+        return v
+    end
+end
+
+function compensateRollMix(pitchCommand, yawCommand, roll)
+    local cr = math.cos(roll)
+    local sr = math.sin(roll)
+
+    local correctedPitch =
+        pitchCommand * cr +
+        yawCommand * sr
+
+
+    local correctedYaw =
+        -pitchCommand * sr +
+        yawCommand * cr
+
+
+    return correctedPitch, correctedYaw
+end
+
+--------------------------------------------------------------------------------
+-- Local座標上の「この方向へ速度を曲げたい」というベクトルを
+-- pitch/yawフィン補正へ変換
+--
+-- 重力補償・高度保持の双方で必ずこの関数を使用する
+--------------------------------------------------------------------------------
+function vectorToFinCorrection(correctionVector, velocityDir)
+    --------------------------------------------------
+    -- 速度方向成分を除去
+    --------------------------------------------------
+
+    local parallel =
+        correctionVector.x * velocityDir.x +
+        correctionVector.y * velocityDir.y +
+        correctionVector.z * velocityDir.z
+
+    local normal = {
+        x = correctionVector.x -
+            parallel * velocityDir.x,
+
+        y = correctionVector.y -
+            parallel * velocityDir.y,
+
+        z = correctionVector.z -
+            parallel * velocityDir.z
+    }
+
+    --------------------------------------------------
+    -- 必要加速度方向 → 必要旋回軸
+    --
+    -- 実機テストで確認済みの外積順
+    --------------------------------------------------
+
+    local turnAxis =
+        cross_product(
+            normal,
+            velocityDir
+        )
+
+    --------------------------------------------------
+    -- 実機テストで確認済みのフィン符号
+    --------------------------------------------------
+
+    local pitchCorrection =
+        turnAxis[1]
+
+    local yawCorrection =
+        -turnAxis[2]
+
+    return pitchCorrection, yawCorrection
+end
+
+--------------------------------------------------------------------------------
+-- 重力補償 + 高度保持
+--
+-- 戻り値:
+-- pitchCorrection : 機体X軸周りの補正
+-- yawCorrection   : 機体Y軸周りの補正
+--
+-- PN/単追尾のpitch/yawは既にロール補正済みなので、
+-- この関数も機体座標系で補正量を返す。
+--------------------------------------------------------------------------------
+
+function getGravityAltitudeCorrection(
+    ownCoordsVec,
+    localVelocity,
+    gravity,
+    horizontalDistance
+)
+    local pitchCorrection = 0
+    local yawCorrection = 0
+
+    --------------------------------------------------
+    -- Local Velocityから速度方向を作る
+    -- 重力補償・高度保持の両方で使用
+    --------------------------------------------------
+
+    local speed =
+        math.sqrt(
+            localVelocity.x * localVelocity.x +
+            localVelocity.y * localVelocity.y +
+            localVelocity.z * localVelocity.z
+        )
+
+    local velocityDir = nil
+
+    if speed > 0.1 then
+        velocityDir = {
+            x = localVelocity.x / speed,
+            y = localVelocity.y / speed,
+            z = localVelocity.z / speed
+        }
+    end
+
+
+    --------------------------------------------------
+    -- 重力補償
+    --------------------------------------------------
+
+    if GRAVITY_COMP_ENABLE and velocityDir then
+        local gravityParallel =
+            gravity.x * velocityDir.x +
+            gravity.y * velocityDir.y +
+            gravity.z * velocityDir.z
+
+        local gravityNormal = {
+            x = gravity.x - gravityParallel * velocityDir.x,
+            y = gravity.y - gravityParallel * velocityDir.y,
+            z = gravity.z - gravityParallel * velocityDir.z
+        }
+        local gravityCorrectionVector = {
+            x = -gravityNormal.x * GRAVITY_COMP_GAIN,
+            y = -gravityNormal.y * GRAVITY_COMP_GAIN,
+            z = -gravityNormal.z * GRAVITY_COMP_GAIN
+        }
+
+        local gravityPitch, gravityYaw =
+            vectorToFinCorrection(
+                gravityCorrectionVector,
+                velocityDir
+            )
+
+        pitchCorrection =
+            pitchCorrection + gravityPitch
+
+        yawCorrection =
+            yawCorrection + gravityYaw
+    end
+
+
+    --------------------------------------------------
+    -- 高度保持
+    --------------------------------------------------
+
+    if ALT_HOLD_ENABLE
+        and velocityDir
+        and horizontalDistance > ALT_HOLD_DISABLE_DISTANCE then
+        local altitudeError =
+            ALT_HOLD_TARGET - ownCoordsVec.y
+
+        --------------------------------------------------
+        -- World UpをLocal座標で表す
+        --------------------------------------------------
+
+        local worldUpLocal = {
+            x = -gravity.x,
+            y = -gravity.y,
+            z = -gravity.z
+        }
+
+        --------------------------------------------------
+        -- 世界座標基準の鉛直速度
+        --------------------------------------------------
+
+        local verticalRate =
+            localVelocity.x * worldUpLocal.x +
+            localVelocity.y * worldUpLocal.y +
+            localVelocity.z * worldUpLocal.z
+
+        --------------------------------------------------
+        -- 高度PD
+        --------------------------------------------------
+
+        local altitudeCorrection =
+            altitudeError * ALT_HOLD_KP -
+            verticalRate * ALT_HOLD_KD
+
+        altitudeCorrection =
+            clamp(
+                altitudeCorrection,
+                -MAX_ALTITUDE_CORRECTION,
+                MAX_ALTITUDE_CORRECTION
+            )
+
+        local altitudeVector = {
+            x = worldUpLocal.x * altitudeCorrection,
+            y = worldUpLocal.y * altitudeCorrection,
+            z = worldUpLocal.z * altitudeCorrection
+        }
+
+        local altitudePitch, altitudeYaw =
+            vectorToFinCorrection(
+                altitudeVector,
+                velocityDir
+            )
+
+        pitchCorrection =
+            pitchCorrection + altitudePitch
+
+        yawCorrection =
+            yawCorrection + altitudeYaw
+    end
+
+
+    return pitchCorrection, yawCorrection
+end
+
 function onTick()
     currentTick = currentTick + 1
     -- 目標座標
@@ -312,6 +576,13 @@ function onTick()
             input.getNumber(30)
         )
 
+    -- Physics Sensor Local Velocity
+    local selfLocalVelocity = {
+        x = input.getNumber(19),
+        y = input.getNumber(20),
+        z = input.getNumber(21)
+    }
+
     local targetCoordsVec = {
         x = targetCoords[1],
         y = targetCoords[2],
@@ -323,6 +594,10 @@ function onTick()
         y = ownCoords[2],
         z = ownCoords[3]
     }
+    if ownCoordsVec.y > 0 then
+        debug.log("alt: " .. ownCoordsVec.y)
+    end
+    local isTargetFound = false
     if isDetected then
         local receivedTarget = {
             x = input.getNumber(1),
@@ -339,14 +614,20 @@ function onTick()
             id = trackingID
         }
 
-        -- デバッグ
-        --[[         local trueCoordsX = input.getNumber(19)
-        local trueCoordsY = input.getNumber(20)
-        local trueCoordsZ = input.getNumber(21)
+        local selectedTargetVelocity = { x = 0, y = 0, z = 0 }
 
-        local totalDiff = math.sqrt((receivedTarget.x - trueCoordsX) ^ 2 +
-            (receivedTarget.y - trueCoordsY) ^ 2 +
-            (receivedTarget.z - trueCoordsZ) ^ 2) ]]
+        if receivedTarget.id == chosenViewTargetID then
+            isTargetFound = true -- データリンクのIDが生きている場合はフラグを立ててループを抜ける
+            targetCoords = { receivedTarget.x, receivedTarget.y, receivedTarget.z }
+            selectedTargetVelocity = { x = receivedTarget.vX, y = receivedTarget.vY, z = receivedTarget.vZ }
+            velocityBuffer = {
+                x = selectedTargetVelocity.x,
+                y = selectedTargetVelocity.y,
+                z = selectedTargetVelocity.z
+            }
+            --[[             debug.log("Target updated ID: " ..
+                chosenViewTargetID .. " Coordinates: " .. target.x .. ", " .. target.y .. ", " .. target.z) ]]
+        end
 
         local found = false
 
@@ -361,18 +642,23 @@ function onTick()
         if not found then
             table.insert(targetInfos, receivedTarget)
         end
-    else
+    end
+
+    -- 目標が見つからなかった場合は速度で更新
+    if not isTargetFound then
         targetCoords = {
             targetCoords[1] + velocityBuffer.x * DT,
             targetCoords[2] + velocityBuffer.y * DT,
             targetCoords[3] + velocityBuffer.z * DT
         }
     end
+
     local distance           = vector_magnitude(subtract(targetCoords, ownCoords))
 
     local isLaunch           = input.getNumber(23) == 1
     local isPing             = input.getNumber(22) == 1 -- ピンガーの発信信号
     local pingerIntervalTick = distance * 2.2 / SOUND_SPEED_PER_TICK + 5
+
     if isLaunch then
         launchedCount = launchedCount + 1
     end
@@ -402,24 +688,6 @@ function onTick()
     --------------------------------------------------------------------------
     -- 目標座標に最も近いターゲット選択
     --------------------------------------------------------------------------
-    isTargetFound = false
-    local selectedTargetVelocity = { x = 0, y = 0, z = 0 }
-    for i, target in ipairs(targetInfos) do
-        if target.id == chosenViewTargetID then
-            isTargetFound = true -- データリンクのIDが生きている場合はフラグを立ててループを抜ける
-            targetCoords = { target.x, target.y, target.z }
-            selectedTargetVelocity = { x = target.vX, y = target.vY, z = target.vZ }
-            velocityBuffer = {
-                x = selectedTargetVelocity.x,
-                y = selectedTargetVelocity.y,
-                z = selectedTargetVelocity.z
-            }
-            --[[             debug.log("Target updated ID: " ..
-                chosenViewTargetID .. " Coordinates: " .. target.x .. ", " .. target.y .. ", " .. target.z) ]]
-            break
-        end
-    end
-
     if initialPingCounts > 4 then
         --------------------------------------------------------------------------
         -- 消失ターゲット削除
@@ -445,7 +713,7 @@ function onTick()
                     if distanceDiffSq < closestDistanceThresholdSq then
                         chosenViewTargetID = target.id
                         isTargetFound = true
-                        selectedTargetVelocity = { x = target.vX, y = target.vY, z = target.vZ }
+                        local selectedTargetVelocity = { x = target.vX, y = target.vY, z = target.vZ }
                         targetCoords = { target.x, target.y, target.z }
                         velocityBuffer = selectedTargetVelocity
                         --[[                         debug.log("Target found, Distance = : " ..
@@ -467,30 +735,29 @@ function onTick()
 
     local activeTargetCoordsVec = targetCoordsVec
 
-
-    local dx = targetCoordsVec.x - ownCoordsVec.x
-    local dz = targetCoordsVec.z - ownCoordsVec.z
-    local horizontalDist = math.sqrt(dx * dx + dz * dz)
+    local dx                    = targetCoordsVec.x - ownCoordsVec.x
+    local dz                    = targetCoordsVec.z - ownCoordsVec.z
+    local horizontalDist        = math.sqrt(dx * dx + dz * dz)
 
     -- 遠距離では低高度の中間点、300m未満では目標速度から作ったリード点を使用する
     -- 近距離でも目標座標そのものを狙わないため、追尾航法への遷移を防ぐ
-    pnFinStrength = PN_FIN_STRENGTH
-    local dirX = dx / math.max(horizontalDist, 0.001)
-    local dirZ = dz / math.max(horizontalDist, 0.001)
-    if horizontalDist > 400 then
+    pnFinStrength               = PN_FIN_STRENGTH
+    local dirX                  = dx / math.max(horizontalDist, 0.001)
+    local dirZ                  = dz / math.max(horizontalDist, 0.001)
+    --[[     if horizontalDist > DISTANCE_LOOKAHEAD then
         activeTargetCoordsVec = {
             x = ownCoordsVec.x + dirX * DISTANCE_LOOKAHEAD,
-            y = SKIMMING_ALT,
+            y = targetCoordsVec.y,
             z = ownCoordsVec.z + dirZ * DISTANCE_LOOKAHEAD
         }
     else
         -- activeTargetCoordsVec.y = horizontalDist < 200 and math.min(targetCoordsVec.y, 1) or SKIMMING_ALT
-    end
+    end ]]
 
     -- 中間誘導/終末誘導の切替時はLOS履歴をリセットし、切替スパイクを防ぐ
     local targetChanged =
-        isTargetFound and
-        (not oldTargetFound or chosenViewTargetID ~= oldChosenViewTargetID)
+        chosenViewTargetID ~= 0 and
+        chosenViewTargetID ~= oldChosenViewTargetID
 
     if targetChanged then
         oldLOS_vec_global_normalized =
@@ -505,7 +772,7 @@ function onTick()
     LOS_vec_global = subtract(activeTargetCoordsVec, ownCoordsVec)
     if isLaunch then
         if launchedCount > 0 then
-            if isTargetFound then
+            if chosenViewTargetID ~= 0 then
                 -- 現在の機首前方をグローバル座標へ変換
                 local forwardGlobal =
                     rotateVectorByQuaternion({ 0, 0, 1 }, ownOrientation)
@@ -787,6 +1054,11 @@ function onTick()
                     --    ご提示のコードの変数名に合わせる
                     yawAngle                               = los_rate_yaw * pnFinStrength
                     pitchAngle                             = -los_rate_pitch * pnFinStrength
+                    debug.log(
+                        "PN pitchRate:" .. los_rate_pitch ..
+                        " yawRate:" .. los_rate_yaw ..
+                        " pitchCmd:" .. pitchAngle
+                    )
                 end
 
                 -- 過大なフィン指令による発散を防ぐ
@@ -855,11 +1127,11 @@ function onTick()
                 --
                 -- 深度誤差が大きくても水平半径計算には一切混ぜない。
                 ------------------------------------------------------------------------
-                local activeTargetCoordsVec = {
+                --[[                 local activeTargetCoordsVec = {
                     x = ownCoordsVec.x + desiredX * ORBIT_LOOKAHEAD,
                     y = SKIMMING_ALT,
                     z = ownCoordsVec.z + desiredZ * ORBIT_LOOKAHEAD
-                }
+                } ]]
 
                 local targetLocalPosVec =
                     globalToLocal(activeTargetCoordsVec, ownCoordsVec, ownOrientation)
@@ -872,7 +1144,6 @@ function onTick()
                 debug.log("Orbit")
             end
         else
-            -- 対水上誘導は単追尾
             local targetLocalPosVec = globalToLocal(activeTargetCoordsVec, ownCoordsVec, ownOrientation)
             local targetAngle = coordsToAngle(targetLocalPosVec)
             yawAngle = targetAngle.azimuth * PPN_FIN_STRENGTH
@@ -883,9 +1154,71 @@ function onTick()
         pitchAngle = 0
     end
 
- --[[   debug.log(" activeTargetCoordsVecY: " .. activeTargetCoordsVec.y .. " targetY: " .. targetCoords[2])
+    --[[   debug.log(" activeTargetCoordsVecY: " .. activeTargetCoordsVec.y .. " targetY: " .. targetCoords[2])
      debug.log("yaw: " .. yawAngle)
     debug.log("pitch: " .. pitchAngle) ]]
+
+
+    local pitch =
+        input.getNumber(30)
+
+    local yaw =
+        input.getNumber(31)
+
+    local roll =
+        input.getNumber(32)
+
+    local gravity =
+        getLocalGravity(
+            ownOrientation
+        )
+
+    debug.log(
+        "gravLocal " ..
+        gravity.x .. "," ..
+        gravity.y .. "," ..
+        gravity.z ..
+        " velLocal " ..
+        selfLocalVelocity.x .. "," ..
+        selfLocalVelocity.y .. "," ..
+        selfLocalVelocity.z
+    )
+
+    local gravityPitchCorrection,
+    gravityYawCorrection =
+        getGravityAltitudeCorrection(
+            ownCoordsVec,
+            selfLocalVelocity,
+            gravity,
+            horizontalDist
+        )
+
+
+
+    debug.log(
+        " BeforeAdd pitch: " ..
+        pitchAngle ..
+        " gravPitch: " ..
+        gravityPitchCorrection ..
+        " gravYaw: " ..
+        gravityYawCorrection
+    )
+    debug.log("actX: " .. activeTargetCoordsVec.x .. "actY: " ..
+        activeTargetCoordsVec.y .. "actZ: " .. activeTargetCoordsVec.z)
+
+    pitchAngle =
+        pitchAngle +
+        gravityPitchCorrection
+
+
+    yawAngle =
+        yawAngle +
+        gravityYawCorrection
+
+    -- 再度フィン上限を適用
+    if MAX_FIN_COMMAND > 0 then
+        pitchAngle = math.max(-MAX_FIN_COMMAND, math.min(MAX_FIN_COMMAND, pitchAngle))
+    end
 
     local fuse = false
     if launchedCount > 300 and isTargetFound then

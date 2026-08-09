@@ -57,8 +57,10 @@ MAX_FIN_COMMAND             = property.getNumber("MAX_FIN_COMMAND")
 
 ORBIT_DIRECTION             = 1
 ORBIT_RADIUS                = property.getNumber("ORBIT_RADIUS")
-RECOVERY_RADIUS = ORBIT_RADIUS / 2
+RECOVERY_RADIUS             = ORBIT_RADIUS / 2
 ORBIT_LOOKAHEAD             = DISTANCE_LOOKAHEAD
+TERMINAL_PN_DISTANCE = 400
+TERMINAL_ELEVATION_GAIN= 3
 
 oldLOS                      = { azimuth = 0, elevation = 0 }
 currentLOS                  = { azimuth = 0, elevation = 0 }
@@ -472,22 +474,47 @@ function onTick()
     local dz = targetCoordsVec.z - ownCoordsVec.z
     local horizontalDist = math.sqrt(dx * dx + dz * dz)
 
-    -- 遠距離では低高度の中間点、300m未満では目標速度から作ったリード点を使用する
-    -- 近距離でも目標座標そのものを狙わないため、追尾航法への遷移を防ぐ
+    --------------------------------------------------------------------------
+    -- 誘導軸を分離
+    --
+    -- Yaw PN:
+    --   常に実目標へのLOSを使用する。
+    --
+    -- Pitch:
+    --   巡航中はSKIMMING_ALTへの高度制御。
+    --   TERMINAL_PN_DISTANCE以内だけ実目標LOSの3D PNを使用する。
+    --
+    -- X/ZだけLOOKAHEADへ縮めてYだけ実高度を残す仮想LOSは作らない。
+    -- これにより至近距離で水平LOS回転がPitch PNへ混入する問題を防ぐ。
+    --------------------------------------------------------------------------
     pnFinStrength = PN_FIN_STRENGTH
-    local dirX = dx / math.max(horizontalDist, 0.001)
-    local dirZ = dz / math.max(horizontalDist, 0.001)
-    if horizontalDist > 400 then
-        activeTargetCoordsVec = {
-            x = ownCoordsVec.x + dirX * DISTANCE_LOOKAHEAD,
-            y = SKIMMING_ALT,
-            z = ownCoordsVec.z + dirZ * DISTANCE_LOOKAHEAD
-        }
-    else
-        -- activeTargetCoordsVec.y = horizontalDist < 200 and math.min(targetCoordsVec.y, 1) or SKIMMING_ALT
-    end
+    local terminalMode = horizontalDist < TERMINAL_PN_DISTANCE
 
-    -- 中間誘導/終末誘導の切替時はLOS履歴をリセットし、切替スパイクを防ぐ
+    --------------------------------------------------------------------------
+    -- 共通深度維持コントローラ
+    --
+    -- 目標有無やOrbit/Recoveryに関係なく同じPitch制御を使用する。
+    -- 深度誤差を直接フィンへ掛けず、まず緩やかな目標昇降角へ変換する。
+    --------------------------------------------------------------------------
+    local altitudeError = SKIMMING_ALT - ownCoordsVec.y
+    local altitudeLookahead = math.max(DISTANCE_LOOKAHEAD, ALT_MIN_LOOKAHEAD)
+    local desiredAltitudeAngle = math.atan(altitudeError, altitudeLookahead)
+
+    local altitudeHoldPitch =
+        desiredAltitudeAngle
+
+    local altitudeMaxCommand =
+        math.max(MAX_FIN_COMMAND, 0) * ALT_MAX_COMMAND_RATIO
+
+    altitudeHoldPitch =
+        math.max(
+            -altitudeMaxCommand,
+            math.min(altitudeMaxCommand, altitudeHoldPitch)
+        )
+
+    -- PNが見るLOSは常に実目標
+    activeTargetCoordsVec = targetCoordsVec
+    -- 目標切替時だけLOS履歴をリセットし、別目標への切替スパイクを防ぐ
     local targetChanged =
         isTargetFound and
         (not oldTargetFound or chosenViewTargetID ~= oldChosenViewTargetID)
@@ -786,7 +813,58 @@ function onTick()
                     -- 9. 誘導指令として使う
                     --    ご提示のコードの変数名に合わせる
                     yawAngle                               = los_rate_yaw * pnFinStrength
-                    pitchAngle                             = -los_rate_pitch * pnFinStrength
+                    if terminalMode then
+                        ------------------------------------------------------------
+                        -- 終末誘導: 実目標LOSによる3D PN
+                        --
+                        -- 至近距離ではLOS角速度が急増しやすいため、80m以下から
+                        -- Pitch PNだけを距離比例で弱め、さらにLPFを通す。
+                        -- Yaw PNは従来通り。
+                        ------------------------------------------------------------
+                        local terminalPitchScale =
+                            math.max(
+                                TERMINAL_PITCH_MIN_SCALE,
+                                math.min(
+                                    1,
+                                    horizontalDist / TERMINAL_PITCH_TAPER_DISTANCE
+                                )
+                            )
+
+                        ------------------------------------------------------------
+                        -- 純PN + 垂直捕捉補助
+                        --
+                        -- PNはLOS角速度しか見ないため、例えば魚雷が目標の下を
+                        -- ほぼ平行に走っている場合、目標が上に見えていても
+                        -- Pitch指令が不足することがある。
+                        --
+                        -- そこで実目標の「機体から見た仰角」を小さく加算する。
+                        -- 水平Yawは純PNのままなので、単追尾化は垂直軸だけに限定。
+                        ------------------------------------------------------------
+                        local targetLocalForPitch =
+                            globalToLocal(
+                                targetCoordsVec,
+                                ownCoordsVec,
+                                ownOrientation
+                            )
+
+                        local targetElevation =
+                            coordsToAngle(targetLocalForPitch).elevation
+
+                        local elevationCapture =
+                            targetElevation * TERMINAL_ELEVATION_GAIN
+
+                        local rawTerminalPitch =
+                            -los_rate_pitch * pnFinStrength * terminalPitchScale
+                            + elevationCapture
+
+                        pitchAngle = rawTerminalPitch
+                    else
+                        ------------------------------------------------------------
+                        -- 巡航誘導: 共通深度維持
+                        ------------------------------------------------------------
+                        pitchAngle = altitudeHoldPitch
+                        terminalPitchFiltered = altitudeHoldPitch
+                    end
                 end
 
                 -- 過大なフィン指令による発散を防ぐ
@@ -883,7 +961,7 @@ function onTick()
         pitchAngle = 0
     end
 
- --[[   debug.log(" activeTargetCoordsVecY: " .. activeTargetCoordsVec.y .. " targetY: " .. targetCoords[2])
+    --[[   debug.log(" activeTargetCoordsVecY: " .. activeTargetCoordsVec.y .. " targetY: " .. targetCoords[2])
      debug.log("yaw: " .. yawAngle)
     debug.log("pitch: " .. pitchAngle) ]]
 
