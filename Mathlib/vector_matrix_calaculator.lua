@@ -139,3 +139,27 @@ function matrixSubtract(matA, matB)
         end
     end; return rM
 end
+
+--- 3Dベクトル v を正規化 (単位ベクトル化) します
+---@param v Vector3 {x: number, y: number, z: number} または {number, number, number}
+---@param isReturnVector? boolean
+---@return Vector3 正規化されたベクトル {x, y, z}
+function normalize(v, isReturnVector)
+    local x = v.x or v[1] or 0
+    local y = v.y or v[2] or 0
+    local z = v.z or v[3] or 0
+    local mag = math.sqrt(x ^ 2 + y ^ 2 + z ^ 2)
+    if mag > 1e-9 then -- ゼロ除算を避ける
+        if isReturnVector then
+            return { x = x / mag, y = y / mag, z = z / mag }
+        else
+            return { x / mag, y / mag, z / mag }
+        end
+    else
+        if isReturnVector then
+            return { x = 0, y = 0, z = 1 }
+        else
+            return { 0, 0, 1 } -- ゼロベクトルの場合は前方 Z を返す (安全策)
+        end
+    end
+end

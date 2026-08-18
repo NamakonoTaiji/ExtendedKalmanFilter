@@ -1,0 +1,34 @@
+base: lua53
+
+globals:
+  math.atan:
+    args:
+      - type: number
+      - type: number
+        required: false
+  onTick:
+    any: true
+
+  onDraw:
+    any: true
+
+  input:
+    any: true
+
+  output:
+    any: true
+
+  property:
+    any: true
+
+  screen:
+    any: true
+
+  map:
+    any: true
+
+  http:
+    any: true
+  
+  debug:
+    any: true

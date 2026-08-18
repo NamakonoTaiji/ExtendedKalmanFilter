@@ -32,16 +32,13 @@ DT                           = 1 / 60
 PI                           = math.pi
 PI2                          = PI * 2
 
-isLaunch                     = false
-isLaunched                   = false
-launchedCount                 = 0
 initialGuidanceCounter       = 0
 isGuidanceStart              = false
 isPPN                        = true
 isHeadCapture                = false
 targetCoords                 = { 0, 0, 0 }
 targetVelocity               = { 0, 0, 0 }
-parachute                         = false
+parachute                    = false
 
 DIVE_START_TANJENT           = math.tan(math.rad(40))                        -- 巡航モードからダイブを開始させる角度
 PN_FIN_STRENGTH              = property.getNumber("PN_FIN_STRENGTH")         -- 比例航法時のフィンにかける係数
@@ -54,10 +51,6 @@ IMPACT_RADIUS                = property.getNumber("IMPACT_RADIUS")
 -- グローバル座標系での前フレームの正規化されたLOSベクトルを保存
 -- {x, y, z} 形式で保存
 oldLOS_vec_global_normalized = { x = 0, y = 0, z = 1 } -- 初期値 (例: 前方)
-
-oldLOS                       = { azimuth = 0, elevation = 0 }
-currentLOS                   = { azimuth = 0, elevation = 0 }
-LOStable                     = { old = oldLOS, current = currentLOS }
 
 --- 3Dベクトル a から b を引きます (a - b)
 ---@param a Vector3 {x: number, y: number, z: number} または {number, number, number}
@@ -284,9 +277,12 @@ end
 
 function onTick()
     -- 1. 座標・オイラー角の取得
-
-    local targetCoords          = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
-    local targetVelocity        = { input.getNumber(4), input.getNumber(5), input.getNumber(6) }
+    if input.getBool(1) then
+        targetCoords   = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
+        targetVelocity = { input.getNumber(4), input.getNumber(5), input.getNumber(6) }
+    else
+        targetCoords = {targetCoords[1] + targetVelocity[1] * DT, targetCoords[2] + targetVelocity[2] * DT, targetCoords[3] + targetVelocity[3] * DT}
+    end
     local ownCoords             = { input.getNumber(27), input.getNumber(28), input.getNumber(29) }
     local selfSpeed             = input.getNumber(26) * DT
     local ownEuler              = { pitch = input.getNumber(30), yaw = input.getNumber(31), roll = input.getNumber(32) }
@@ -320,7 +316,6 @@ function onTick()
 
     -- 水平距離が急降下開始水平距離より離れている場合は自機から目標方向へ100m先を仮の目標にする
     if (horizontalDist > diveStartDistance) and isGuidanceStart then
-        isPPN = true
         local dirX = dx / horizontalDist
         local dirZ = dz / horizontalDist
         activeTargetCoordsVec = {
@@ -330,7 +325,7 @@ function onTick()
         }
     end
 
-
+    local yawAngle, pitchAngle = 0, 0
     -- 3. グローバル座標系でのLOS (Line of Sight) ベクトルを計算
     LOS_vec_global = subtract(activeTargetCoordsVec, ownCoordsVec)
     if not isPPN and isGuidanceStart then

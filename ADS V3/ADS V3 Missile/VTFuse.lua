@@ -1,7 +1,8 @@
 iN = input.getNumber
 iB = input.getBool
 oB = output.setBool
-LogicDeley = property.getNumber("LogicDeley")
+LogicDelay = property.getNumber("LogicDelay")
+if LogicDelay == 0 then LogicDelay = 4 end
 
 approach_Velocity = 0
 oldDistance = 0
@@ -13,7 +14,7 @@ function onTick()
     local distance = iN(1)
     local isDetected = iB(1)
 
-    if isDetected and distance > 1000 then
+    if isDetected and distance > 500 then
         vtStart = true
     end
 
@@ -34,7 +35,7 @@ function onTick()
         oldDistance = distance
 
         -- ロジック遅延を考慮した起爆判定
-        if distance + approach_Velocity * LogicDeley < 0 then
+        if distance + approach_Velocity * LogicDelay < 0 then
             VTfuse = true
         end
     end

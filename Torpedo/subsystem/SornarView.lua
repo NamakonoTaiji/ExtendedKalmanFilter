@@ -312,7 +312,6 @@ function onTick()
 
             epsilon = input.getNumber(8),
             lastSeenTick = input.getNumber(10),
-            detectionTickLag = input.getNumber(11),
             id = trackingID
         }
 

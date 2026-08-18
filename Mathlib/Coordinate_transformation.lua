@@ -12,24 +12,6 @@
 --------------------------------------------------------------------------------
 -- クォータニオン演算関数
 --------------------------------------------------------------------------------
-function multiplyQuaternions(q_a, q_b)
-    local w1, x1, y1, z1, w2, x2, y2, z2, w_result, x_result, y_result, z_result
-    -- nilチェックは原則削除
-    w1 = q_a[1]
-    x1 = q_a[2]
-    y1 = q_a[3]
-    z1 = q_a[4]
-    w2 = q_b[1]
-    x2 = q_b[2]
-    y2 = q_b[3]
-    z2 = q_b[4]
-    -- nilチェックは原則削除
-    w_result = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
-    x_result = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
-    y_result = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
-    z_result = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
-    return { w_result, x_result, y_result, z_result }
-end
 
 -- 物理センサーのロールピッチヨーからクォータニオンへ変換
 function eulerZYX_to_quaternion(roll, yaw, pitch)
@@ -117,9 +99,9 @@ function globalToLocal(globalTargetPos, objectGlobalPos, objectOrientationQuat)
     }
 
     -- 2. 逆クォータニオンを使ってグローバルな相対ベクトルを回転させ、ローカル座標系でのベクトルに変換
-    local localVec = rotateVectorByInverseQuaternion(
+    local localVec = rotateVectorByQuaternion(
         { relativeVecGlobal.x, relativeVecGlobal.y, relativeVecGlobal.z },
-        objectOrientationQuat
+        objectOrientationQuat,true
     )
 
     -- 3. ローカル座標ベクトルを {x, y, z} 形式のテーブルとして返す

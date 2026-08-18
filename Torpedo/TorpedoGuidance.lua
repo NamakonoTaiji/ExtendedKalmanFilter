@@ -286,6 +286,7 @@ oldLOS_vec_global_normalized = { x = 0, y = 0, z = 1 } -- 初期値 (例: 前方
 oldTerminalMode = false
 
 function onTick()
+    local yawAngle,pitchAngle
     currentTick = currentTick + 1
     -- 目標座標
     -- X=0を通過する目標も扱えるよう、3軸のどれかが入力されていれば更新する
@@ -483,8 +484,6 @@ function onTick()
             y = SKIMMING_ALT,
             z = ownCoordsVec.z + dirZ * DISTANCE_LOOKAHEAD
         }
-    else
-        -- activeTargetCoordsVec.y = horizontalDist < 200 and math.min(targetCoordsVec.y, 1) or SKIMMING_ALT
     end
 
     -- 中間誘導/終末誘導の切替時はLOS履歴をリセットし、切替スパイクを防ぐ
@@ -504,7 +503,7 @@ function onTick()
     -- 3. グローバル座標系でのLOS (Line of Sight) ベクトルを計算
     LOS_vec_global = subtract(activeTargetCoordsVec, ownCoordsVec)
     if isLaunch then
-        if launchedCount > 0 then
+        if launchedCount > 60 then
             if isTargetFound then
                 -- 現在の機首前方をグローバル座標へ変換
                 local forwardGlobal =
@@ -542,7 +541,7 @@ function onTick()
                     headingError = math.acos(headingDot)
                 end
 
-
+                local reorientOrbitDirection
                 if reorientMode then
                     -- 十分に目標方向へ戻ったらPNへ復帰
                     if headingError < REORIENT_EXIT_ANGLE then
@@ -855,14 +854,14 @@ function onTick()
                 --
                 -- 深度誤差が大きくても水平半径計算には一切混ぜない。
                 ------------------------------------------------------------------------
-                local activeTargetCoordsVec = {
+                local orbitActiveCoordsVec = {
                     x = ownCoordsVec.x + desiredX * ORBIT_LOOKAHEAD,
                     y = SKIMMING_ALT,
                     z = ownCoordsVec.z + desiredZ * ORBIT_LOOKAHEAD
                 }
 
                 local targetLocalPosVec =
-                    globalToLocal(activeTargetCoordsVec, ownCoordsVec, ownOrientation)
+                    globalToLocal(orbitActiveCoordsVec, ownCoordsVec, ownOrientation)
                 local targetAngle = coordsToAngle(targetLocalPosVec)
 
                 -- 方位・仰角の「角度誤差」を直接制御する。

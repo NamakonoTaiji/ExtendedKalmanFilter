@@ -34,25 +34,21 @@ DT                          = 1 / 60
 PI                          = math.pi
 PI2                         = PI * 2
 
-closingSpeedTable           = {}
 launchedCount               = 0
 currentTick                 = 0
-oldTargetFound              = false
 oldChosenViewTargetID       = 0
 reorientMode                = false
 
 REORIENT_ENTER_ANGLE        = 70 * PI / 180
-REORIENT_EXIT_ANGLE         = 40 * PI / 180
+REORIENT_EXIT_ANGLE         = 20 * PI / 180
 
 SOUND_SPEED_PER_TICK        = 24.666
 
 PN_FIN_STRENGTH             = property.getNumber("PN_FIN_STRENGTH")
 PPN_FIN_STRENGTH            = property.getNumber("PPN_FIN_STRENGTH")
-SKIMMING_ALT                = property.getNumber("SKIMMING_ALT")
 CLOSEST_DISTANCE_THRESHOLD  = property.getNumber("CLOSEST_DISTANCE_THRESHOLD")
 TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")
 DISTANCE_LOOKAHEAD          = property.getNumber("DISTANCE_LOOKAHEAD")
-
 MAX_FIN_COMMAND             = property.getNumber("MAX_FIN_COMMAND")
 
 -- 重力補償 + 高度保持
@@ -64,22 +60,38 @@ ALT_HOLD_KP                 = property.getNumber("ALT_HOLD_KP")
 ALT_HOLD_KD                 = property.getNumber("ALT_HOLD_KD")
 GRAVITY_COMP_GAIN           = property.getNumber("GRAVITY_COMP_GAIN")
 MAX_ALTITUDE_CORRECTION     = property.getNumber("MAX_ALTITUDE_CORRECTION")
-ALT_HOLD_DISABLE_DISTANCE   = DISTANCE_LOOKAHEAD
+ALT_HOLD_DISABLE_DISTANCE   = property.getNumber("ALT_HOLD_DISABLE_DISTANCE")
 
 ORBIT_DIRECTION             = 1
 ORBIT_RADIUS                = property.getNumber("ORBIT_RADIUS")
-RECOVERY_RADIUS             = ORBIT_RADIUS / 2
+RECOVERY_RADIUS             = ORBIT_RADIUS * 1.5
 ORBIT_LOOKAHEAD             = DISTANCE_LOOKAHEAD
+RECOVERY_BOOST_START_ANGLE  = 120 * PI / 180
+-- 前方に入るほど目標中心へ切り込む強さ
+RECOVERY_ATTACK_GAIN        = 1.4
+-- 前方に入ったとき接線成分をどれだけ減らすか
+RECOVERY_TANGENT_REDUCTION  = 0.65
+-- Recovery中の旋回ゲイン
+RECOVERY_YAW_BASE_GAIN      = 0.25
+RECOVERY_YAW_BOOST          = 1.75
+RECOVERY_BACK_LIMIT_RATIO   = 0.25
 
-oldLOS                      = { azimuth = 0, elevation = 0 }
-currentLOS                  = { azimuth = 0, elevation = 0 }
-LOStable                    = { old = oldLOS, current = currentLOS }
+IS_VTFUSE_ENABLED           = property.getBool("VTFUSE_ENABLE")
+VT_FUSE_IMPACT_DIST         = property.getNumber("VT_FUSE_IMPACT_DIST")
+
 targetCoords                = { 0, 0, 0 }
 initialTargetCoords         = { 0, 0, 0 }
 targetInfos                 = {}
 chosenViewTargetID          = 0
 velocityBuffer              = { x = 0, y = 0, z = 0 }
 initialPingCounts           = 0
+reorientOrbitDirection      = 1
+targetUpdatedCounter        = math.huge
+---@class Vector3
+---@field x number
+---@field y number
+---@field z number
+
 --- 3Dベクトル a から b を引きます (a - b)
 ---@param a Vector3 {x: number, y: number, z: number} または {number, number, number}
 ---@param b Vector3 {x: number, y: number, z: number} または {number, number, number}
@@ -150,24 +162,6 @@ end
 --------------------------------------------------------------------------------
 -- クォータニオン演算関数
 --------------------------------------------------------------------------------
-function multiplyQuaternions(q_a, q_b)
-    local w1, x1, y1, z1, w2, x2, y2, z2, w_result, x_result, y_result, z_result
-    -- nilチェックは原則削除
-    w1 = q_a[1]
-    x1 = q_a[2]
-    y1 = q_a[3]
-    z1 = q_a[4]
-    w2 = q_b[1]
-    x2 = q_b[2]
-    y2 = q_b[3]
-    z2 = q_b[4]
-    -- nilチェックは原則削除
-    w_result = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
-    x_result = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
-    y_result = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
-    z_result = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
-    return { w_result, x_result, y_result, z_result }
-end
 
 -- 物理センサーのロールピッチヨーからクォータニオンへ変換
 function eulerZYX_to_quaternion(roll, yaw, pitch)
@@ -189,66 +183,30 @@ function eulerZYX_to_quaternion(roll, yaw, pitch)
     return { w, x, y, z }
 end
 
-function rotateVectorByQuaternion(vector, quaternion)
-    local px, py, pz, p, q, q_conj, temp, p_prime
-    -- nilチェックは原則削除
-    px = vector[1] or vector.x or 0
-    py = vector[2] or vector.y or 0
-    pz = vector[3] or vector.z or 0
-    -- nilチェックは原則削除
-    p = { 0, px, py, pz }
-    q = quaternion
-    q_conj = { q[1], -q[2], -q[3], -q[4] }
-    -- nilチェックは原則削除
-    temp = multiplyQuaternions(q, p)
-    -- nilチェックは原則削除
-    p_prime = multiplyQuaternions(temp, q_conj)
-    -- nilチェックは原則削除
-    return { p_prime[2], p_prime[3], p_prime[4] }
-end
+---3次元ベクトルをクォータニオンで回転させる関数（軽量化版）
+---@param vector table {x, y, z} または {1, 2, 3} 形式の回転対象ベクトル
+---@param quaternion table {w, x, y, z} (インデックス 1, 2, 3, 4) 形式のクォータニオン
+---@param isInverse? boolean true を渡すと逆回転を実行（省略時は false/順回転）
+---@return number[] @回転後の 3次元ベクトル {x, y, z}
+function rotateVectorByQuaternion(vector, quaternion, isInverse)
+    local w, x, y, z = quaternion[1], quaternion[2], quaternion[3], quaternion[4]
+    local vx, vy, vz = vector[1] or vector.x, vector[2] or vector.y, vector[3] or vector.z
 
-function rotateVectorByInverseQuaternion(vector, quaternion)
-    local px, py, pz, p, q, q_conj, temp, p_prime
-    -- nilチェックは原則削除
-    px = vector[1] or vector.x or 0
-    py = vector[2] or vector.y or 0
-    pz = vector[3] or vector.z or 0
-    -- nilチェックは原則削除
-    p = { 0, px, py, pz }
-    q = quaternion
-    q_conj = { q[1], -q[2], -q[3], -q[4] }
-    -- nilチェックは原則削除
-    temp = multiplyQuaternions(q_conj, p)
-    -- nilチェックは原則削除
-    p_prime = multiplyQuaternions(temp, q)
-    -- nilチェックは原則削除
-    return { p_prime[2], p_prime[3], p_prime[4] }
-end
+    -- 外積演算の共通部分（軽量化計算）
+    local tx = 2 * (y * vz - z * vy)
+    local ty = 2 * (z * vx - x * vz)
+    local tz = 2 * (x * vy - y * vx)
 
---- 乗り物などのローカル座標を、ワールド座標系のグローバル座標に変換します。
----@description 基準となるオブジェクトのグローバル位置と姿勢（クォータニオン）を用いて、
---              オブジェクト上の相対的な位置（ローカル座標）を絶対的な位置（グローバル座標）に変換します。
----@param localPosition Vector3 {x: number, y: number, z: number} 変換したいオブジェクト上のローカル座標。
----@param objectGlobalPos Vector3 {x: number, y: number, z: number} 基準オブジェクト自体のグローバル座標。
----@param objectOrientationQuat Quaternion {w: number, x: number, y: number, z: number} 基準オブジェクトの姿勢を表すクォータニオン。
----@return Vector3 {x: number, y: number, z: number} 変換後のグローバル座標。
-function localToGlobal(localPosition, objectGlobalPos, objectOrientationQuat)
-    -- 1. 入力テーブルからローカル座標の各成分を取得
-    --    {x,y,z} 形式と {1,2,3} 形式の両方に対応します。
-    local lx = localPosition.x or localPosition[1] or 0
-    local ly = localPosition.y or localPosition[2] or 0
-    local lz = localPosition.z or localPosition[3] or 0
-    local localVec = { lx, ly, lz }
+    -- 逆回転なら w の符号を反転
+    if isInverse then
+        w = -w
+    end
 
-    -- 2. クォータニオンでローカル座標ベクトルを回転させ、グローバル座標系での相対ベクトルを計算
-    local relativeGlobalVec = rotateVectorByQuaternion(localVec, objectOrientationQuat)
-
-    -- 3. オブジェクトのグローバル座標に相対ベクトルを加算し、最終的なグローバル座標を算出
-    local gx = relativeGlobalVec[1] + objectGlobalPos.x
-    local gy = relativeGlobalVec[2] + objectGlobalPos.y
-    local gz = relativeGlobalVec[3] + objectGlobalPos.z
-
-    return { x = gx, y = gy, z = gz }
+    return {
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx)
+    }
 end
 
 --- ワールド座標系のグローバル座標を、特定のオブジェクトを基準としたローカル座標に変換します。
@@ -267,44 +225,32 @@ function globalToLocal(globalTargetPos, objectGlobalPos, objectOrientationQuat)
     }
 
     -- 2. 逆クォータニオンを使ってグローバルな相対ベクトルを回転させ、ローカル座標系でのベクトルに変換
-    local localVec = rotateVectorByInverseQuaternion(
+    local localVec = rotateVectorByQuaternion(
         { relativeVecGlobal.x, relativeVecGlobal.y, relativeVecGlobal.z },
-        objectOrientationQuat
+        objectOrientationQuat, true
     )
 
     -- 3. ローカル座標ベクトルを {x, y, z} 形式のテーブルとして返す
     return { x = localVec[1], y = localVec[2], z = localVec[3] }
 end
 
---- ローカル座標から方位角と仰角へ変換
----@param localPosVec Vector3 変換したいローカル座標(X右方向, Y上方向, Z前方向)
----@return table azimuthとelevationを返します(ラジアン)
+---ローカル座標から方位角と仰角へ変換
+---@param localPosVec {x:number,y:number,z:number}
+---@return {azimuth:number,elevation:number}
 function coordsToAngle(localPosVec)
     local horizontalDistance, currentLocalAzimuth, currentLocalElevation
     horizontalDistance = math.sqrt(localPosVec.x ^ 2 + localPosVec.z ^ 2)
-    currentLocalAzimuth = math.atan(localPosVec.x, localPosVec.z)        -- atan(左右, 前後)
-    currentLocalElevation = math.atan(localPosVec.y, horizontalDistance) -- atan(上下, 水平距離)
-    return { azimuth = currentLocalAzimuth, elevation = currentLocalElevation }
-end
-
--- ローカル極座標からローカル直交座標へ
----@param dist number 距離
----@param localAziRad number 方位角(ラジアン)
----@param localEleRad number 仰角(ラジアン)
----@return Vector3 ローカル座標(x右方向, y上方向, z前方向)
-function localAngleDistToLocalCoords(dist, localAziRad, localEleRad)
-    local localX, localY, localZ
-    localX = dist * math.cos(localEleRad) * math.sin(localAziRad)
-    localY = dist * math.sin(localEleRad)
-    localZ = dist * math.cos(localEleRad) * math.cos(localAziRad)
-    return { x = localX, y = localY, z = localZ }
+    currentLocalAzimuth = math.atan(localPosVec.x, localPosVec.z)
+    currentLocalElevation = math.atan(localPosVec.y, horizontalDistance)
+    return {
+        azimuth = currentLocalAzimuth,
+        elevation = currentLocalElevation
+    }
 end
 
 -- グローバル座標系での前フレームの正規化されたLOSベクトルを保存
 -- {x, y, z} 形式で保存
 oldLOS_vec_global_normalized = { x = 0, y = 0, z = 1 } -- 初期値 (例: 前方)
-oldTerminalMode = false
-
 
 function getLocalGravity(quaternion)
     -- ワールド座標の重力方向
@@ -313,9 +259,9 @@ function getLocalGravity(quaternion)
 
     -- World -> Local 変換
     local gravityLocal =
-        rotateVectorByInverseQuaternion(
+        rotateVectorByQuaternion(
             gravityWorld,
-            quaternion
+            quaternion, true
         )
 
     return {
@@ -333,23 +279,6 @@ function clamp(v, min, max)
     else
         return v
     end
-end
-
-function compensateRollMix(pitchCommand, yawCommand, roll)
-    local cr = math.cos(roll)
-    local sr = math.sin(roll)
-
-    local correctedPitch =
-        pitchCommand * cr +
-        yawCommand * sr
-
-
-    local correctedYaw =
-        -pitchCommand * sr +
-        yawCommand * cr
-
-
-    return correctedPitch, correctedYaw
 end
 
 --------------------------------------------------------------------------------
@@ -550,7 +479,9 @@ function getGravityAltitudeCorrection(
 end
 
 function onTick()
+    local yawAngle, pitchAngle
     currentTick = currentTick + 1
+    targetUpdatedCounter = targetUpdatedCounter + 1
     -- 目標座標
     -- X=0を通過する目標も扱えるよう、3軸のどれかが入力されていれば更新する
     local tx = input.getNumber(24)
@@ -583,20 +514,11 @@ function onTick()
         z = input.getNumber(21)
     }
 
-    local targetCoordsVec = {
-        x = targetCoords[1],
-        y = targetCoords[2],
-        z = targetCoords[3]
-    }
-
     local ownCoordsVec = {
         x = ownCoords[1],
         y = ownCoords[2],
         z = ownCoords[3]
     }
-    if ownCoordsVec.y > 0 then
-        debug.log("alt: " .. ownCoordsVec.y)
-    end
     local isTargetFound = false
     if isDetected then
         local receivedTarget = {
@@ -625,6 +547,7 @@ function onTick()
                 y = selectedTargetVelocity.y,
                 z = selectedTargetVelocity.z
             }
+            targetUpdatedCounter = 0
             --[[             debug.log("Target updated ID: " ..
                 chosenViewTargetID .. " Coordinates: " .. target.x .. ", " .. target.y .. ", " .. target.z) ]]
         end
@@ -653,11 +576,11 @@ function onTick()
         }
     end
 
-    local distance           = vector_magnitude(subtract(targetCoords, ownCoords))
+    local DISTANCE           = vector_magnitude(subtract(targetCoords, ownCoords))
 
     local isLaunch           = input.getNumber(23) == 1
     local isPing             = input.getNumber(22) == 1 -- ピンガーの発信信号
-    local pingerIntervalTick = distance * 2.2 / SOUND_SPEED_PER_TICK + 5
+    local pingerIntervalTick = DISTANCE * 2.2 / SOUND_SPEED_PER_TICK + 5
 
     if isLaunch then
         launchedCount = launchedCount + 1
@@ -682,7 +605,7 @@ function onTick()
     if initialPingCounts < 4 or not selectedTargetExists then
         chosenViewTargetID = 0
         pingerIntervalTick =
-            (distance + CLOSEST_DISTANCE_THRESHOLD) * 2 / SOUND_SPEED_PER_TICK
+            (DISTANCE + CLOSEST_DISTANCE_THRESHOLD) * 2 / SOUND_SPEED_PER_TICK
     end
 
     --------------------------------------------------------------------------
@@ -706,8 +629,8 @@ function onTick()
         local closestDistanceThresholdSq = CLOSEST_DISTANCE_THRESHOLD ^ 2
         if not isTargetFound and chosenViewTargetID == 0 then
             for _, target in ipairs(targetInfos) do
-                local distanceDiffSq = (target.x - targetCoordsVec.x) ^ 2 + (target.y - targetCoordsVec.y) ^ 2 +
-                    (target.z - targetCoordsVec.z) ^ 2
+                local distanceDiffSq = (target.x - targetCoords[1]) ^ 2 + (target.y - targetCoords[2]) ^ 2 +
+                    (target.z - targetCoords[3]) ^ 2
                 if distanceDiffSq < closestDistanceSq then
                     closestDistanceSq = distanceDiffSq
                     if distanceDiffSq < closestDistanceThresholdSq then
@@ -716,6 +639,7 @@ function onTick()
                         local selectedTargetVelocity = { x = target.vX, y = target.vY, z = target.vZ }
                         targetCoords = { target.x, target.y, target.z }
                         velocityBuffer = selectedTargetVelocity
+                        targetUpdatedCounter = 0
                         --[[                         debug.log("Target found, Distance = : " ..
                             math.sqrt(closestDistanceSq) ..
                             ", ID = " ..
@@ -727,10 +651,11 @@ function onTick()
         end
     end
 
-    -- {x, y, z} 形式のベクトルテーブルに変換
-    local targetCoordsVec       = { x = targetCoords[1], y = targetCoords[2], z = targetCoords[3] }
-    local ownCoordsVec          = { x = ownCoords[1], y = ownCoords[2], z = ownCoords[3] }
-
+    local targetCoordsVec       = {
+        x = targetCoords[1],
+        y = targetCoords[2],
+        z = targetCoords[3]
+    }
     local LOS_vec_global
 
     local activeTargetCoordsVec = targetCoordsVec
@@ -742,36 +667,21 @@ function onTick()
     -- 遠距離では低高度の中間点、300m未満では目標速度から作ったリード点を使用する
     -- 近距離でも目標座標そのものを狙わないため、追尾航法への遷移を防ぐ
     pnFinStrength               = PN_FIN_STRENGTH
-    local dirX                  = dx / math.max(horizontalDist, 0.001)
-    local dirZ                  = dz / math.max(horizontalDist, 0.001)
-    --[[     if horizontalDist > DISTANCE_LOOKAHEAD then
-        activeTargetCoordsVec = {
-            x = ownCoordsVec.x + dirX * DISTANCE_LOOKAHEAD,
-            y = targetCoordsVec.y,
-            z = ownCoordsVec.z + dirZ * DISTANCE_LOOKAHEAD
-        }
-    else
-        -- activeTargetCoordsVec.y = horizontalDist < 200 and math.min(targetCoordsVec.y, 1) or SKIMMING_ALT
-    end ]]
 
     -- 中間誘導/終末誘導の切替時はLOS履歴をリセットし、切替スパイクを防ぐ
-    local targetChanged =
-        chosenViewTargetID ~= 0 and
-        chosenViewTargetID ~= oldChosenViewTargetID
+    local targetChanged         = chosenViewTargetID ~= 0 and chosenViewTargetID ~= oldChosenViewTargetID
 
     if targetChanged then
         oldLOS_vec_global_normalized =
             normalize(subtract(activeTargetCoordsVec, ownCoordsVec))
     end
 
-    oldTargetFound = isTargetFound
     oldChosenViewTargetID = chosenViewTargetID
-
 
     -- 3. グローバル座標系でのLOS (Line of Sight) ベクトルを計算
     LOS_vec_global = subtract(activeTargetCoordsVec, ownCoordsVec)
     if isLaunch then
-        if launchedCount > 0 then
+        if launchedCount > 240 then
             if chosenViewTargetID ~= 0 then
                 -- 現在の機首前方をグローバル座標へ変換
                 local forwardGlobal =
@@ -808,7 +718,6 @@ function onTick()
 
                     headingError = math.acos(headingDot)
                 end
-
 
                 if reorientMode then
                     -- 十分に目標方向へ戻ったらPNへ復帰
@@ -928,23 +837,78 @@ function onTick()
                     ------------------------------------------------------------
                     -- ORBIT_RADIUSへ収束させる
                     ------------------------------------------------------------
-                    local radiusError =
-                        (radiusNow - RECOVERY_RADIUS) / RECOVERY_RADIUS
+                    ------------------------------------------------------------
+                    -- 目標が前方へ入るほど、周回から攻撃コースへ移行する
+                    ------------------------------------------------------------
 
-                    local radialCorrection =
+                    -- 120°以上:
+                    --   ほぼ純粋な周回
+                    --
+                    -- 120° → 40°:
+                    --   徐々に中心方向への切り込みを強くする
+                    local frontFactor =
+                        (RECOVERY_BOOST_START_ANGLE - headingError) /
+                        (RECOVERY_BOOST_START_ANGLE - REORIENT_EXIT_ANGLE)
+
+                    frontFactor =
+                        math.max(0, math.min(1, frontFactor))
+
+                    -- smoothstep
+                    -- 境界で指令が急変しないようにする
+                    frontFactor =
+                        frontFactor * frontFactor *
+                        (3 - 2 * frontFactor)
+
+                    ------------------------------------------------------------
+                    -- 周回半径維持
+                    --
+                    -- 目標が後ろにいる間は従来通りRECOVERY_RADIUSへ収束。
+                    -- 前方に入るほど半径維持を弱める。
+                    ------------------------------------------------------------
+                    local radiusError =
+                        (radiusNow - RECOVERY_RADIUS) /
+                        RECOVERY_RADIUS
+
+                    local radiusHold =
+                        radiusError *
+                        PPN_FIN_STRENGTH *
+                        (1 - frontFactor)
+
+                    radiusHold =
                         math.max(
                             -2,
-                            math.min(
-                                2,
-                                radiusError * PPN_FIN_STRENGTH
-                            )
+                            math.min(2, radiusHold)
                         )
 
+                    ------------------------------------------------------------
+                    -- 前方へ入るほど目標中心への内向き成分を追加
+                    ------------------------------------------------------------
+                    local attackCorrection =
+                        RECOVERY_ATTACK_GAIN *
+                        frontFactor
+
+                    local inwardCorrection =
+                        radiusHold +
+                        attackCorrection
+
+                    ------------------------------------------------------------
+                    -- 接線成分も前方ほど弱める
+                    ------------------------------------------------------------
+                    local tangentScale =
+                        1 -
+                        RECOVERY_TANGENT_REDUCTION *
+                        frontFactor
+
+                    ------------------------------------------------------------
+                    -- 最終的なRecovery進行方向
+                    ------------------------------------------------------------
                     local desiredX =
-                        tangentX - radialX * radialCorrection
+                        tangentX * tangentScale -
+                        radialX * inwardCorrection
 
                     local desiredZ =
-                        tangentZ - radialZ * radialCorrection
+                        tangentZ * tangentScale -
+                        radialZ * inwardCorrection
 
                     local desiredLength =
                         math.sqrt(
@@ -965,14 +929,14 @@ function onTick()
 
                     ------------------------------------------------------------
                     -- 水平は旋回ベクトル
-                    -- 垂直はSKIMMING_ALTを維持
+                    -- 垂直はALT_HOLD_TARGETを維持
                     ------------------------------------------------------------
                     local reorientTarget = {
                         x =
                             ownCoordsVec.x +
                             desiredX * ORBIT_LOOKAHEAD,
 
-                        y = SKIMMING_ALT,
+                        y = ALT_HOLD_TARGET,
 
                         z =
                             ownCoordsVec.z +
@@ -992,8 +956,26 @@ function onTick()
                     ------------------------------------------------------------
                     -- Radiusモードと同じ角度制御
                     ------------------------------------------------------------
+                    local recoveryYawGain =
+                        RECOVERY_YAW_BASE_GAIN +
+                        RECOVERY_YAW_BOOST * frontFactor
+
+                    local recoveryYawLimit =
+                        MAX_FIN_COMMAND *
+                        (
+                            RECOVERY_BACK_LIMIT_RATIO +
+                            (1 - RECOVERY_BACK_LIMIT_RATIO) * frontFactor
+                        )
+
                     yawAngle =
-                        targetAngle.azimuth
+                        targetAngle.azimuth *
+                        recoveryYawGain
+
+                    yawAngle =
+                        math.max(
+                            -recoveryYawLimit,
+                            math.min(recoveryYawLimit, yawAngle)
+                        )
 
                     pitchAngle =
                         targetAngle.elevation
@@ -1003,13 +985,12 @@ function onTick()
                     ------------------------------------------------------------
                     oldLOS_vec_global_normalized =
                         normalize(LOS_vec_global)
-
-                    debug.log(
+                    --[[                     debug.log(
                         "Recovery Orbit: " ..
                         headingError * 180 / PI
-                    )
+                    ) ]]
                 else
-                    debug.log("PN")
+                    -- debug.log("PN")
                     -- 4. グローバルLOSベクトルを正規化
                     local currentLOS_vec_global_normalized = normalize(LOS_vec_global)
 
@@ -1034,8 +1015,8 @@ function onTick()
                     --    p = omega_LOS_global (グローバルでのLOS回転)
                     --    q = ownOrientation (自機の姿勢)
                     --    結果 = omega_LOS_local (自機から見たLOS回転)
-                    local omega_LOS_local                  = rotateVectorByInverseQuaternion(omega_LOS_global,
-                        ownOrientation)
+                    local omega_LOS_local                  = rotateVectorByQuaternion(omega_LOS_global,
+                        ownOrientation, true)
 
                     -- 7. ローカルなLOS角速度の各成分を取得
                     --    自機の座標系 (X:右, Y:上, Z:前) と仮定
@@ -1054,11 +1035,6 @@ function onTick()
                     --    ご提示のコードの変数名に合わせる
                     yawAngle                               = los_rate_yaw * pnFinStrength
                     pitchAngle                             = -los_rate_pitch * pnFinStrength
-                    debug.log(
-                        "PN pitchRate:" .. los_rate_pitch ..
-                        " yawRate:" .. los_rate_yaw ..
-                        " pitchCmd:" .. pitchAngle
-                    )
                 end
 
                 -- 過大なフィン指令による発散を防ぐ
@@ -1102,7 +1078,37 @@ function onTick()
                 local tangentX = ORBIT_DIRECTION * radialZ
                 local tangentZ = -ORBIT_DIRECTION * radialX
 
-                -- 外側では内向き、内側では外向き。
+                local transitionDistance = 500
+
+                -- Orbit半径からどれだけ外側にいるか
+                local outsideDistance =
+                    math.max(radiusNow - ORBIT_RADIUS, 0)
+
+                -- 0: Orbit半径上
+                -- 1: 十分な遠距離
+                local approachFactor =
+                    math.max(0, math.min(1,
+                        outsideDistance / transitionDistance
+                    ))
+
+                -- smoothstep
+                approachFactor =
+                    approachFactor * approachFactor *
+                    (3 - 2 * approachFactor)
+
+                -- 遠距離ほど内向き、Orbit半径付近ほど接線方向
+                local tangentScale = 1 - approachFactor
+                local inwardScale = approachFactor
+
+                local desiredX =
+                    tangentX * tangentScale -
+                    radialX * inwardScale
+
+                local desiredZ =
+                    tangentZ * tangentScale -
+                    radialZ * inwardScale
+
+--[[                 -- 外側では内向き、内側では外向き。
                 -- 誤差を半径で正規化するため、中心位置は常に入力目標座標になる。
                 local radiusError = (radiusNow - ORBIT_RADIUS) / ORBIT_RADIUS
                 local radialCorrection =
@@ -1117,31 +1123,31 @@ function onTick()
                 else
                     desiredX = desiredX / desiredLength
                     desiredZ = desiredZ / desiredLength
-                end
+                end ]]
 
                 ------------------------------------------------------------------------
                 -- 水平誘導と深度誘導を分離
                 --
                 -- 水平: ベクトル場の進行方向へORBIT_LOOKAHEAD先
-                -- 垂直: SKIMMING_ALTを絶対Y座標として追従
+                -- 垂直: ALT_HOLD_TARGETを絶対Y座標として追従
                 --
                 -- 深度誤差が大きくても水平半径計算には一切混ぜない。
                 ------------------------------------------------------------------------
-                --[[                 local activeTargetCoordsVec = {
+                local activeOrbitCoordsVec = {
                     x = ownCoordsVec.x + desiredX * ORBIT_LOOKAHEAD,
-                    y = SKIMMING_ALT,
+                    y = ALT_HOLD_TARGET,
                     z = ownCoordsVec.z + desiredZ * ORBIT_LOOKAHEAD
-                } ]]
+                }
 
                 local targetLocalPosVec =
-                    globalToLocal(activeTargetCoordsVec, ownCoordsVec, ownOrientation)
+                    globalToLocal(activeOrbitCoordsVec, ownCoordsVec, ownOrientation)
                 local targetAngle = coordsToAngle(targetLocalPosVec)
 
                 -- 方位・仰角の「角度誤差」を直接制御する。
                 -- LOS角速度のみの比例航法は、周回軌道保持には適さない。
                 yawAngle = targetAngle.azimuth
                 pitchAngle = targetAngle.elevation
-                debug.log("Orbit")
+                --debug.log("Orbit")
             end
         else
             local targetLocalPosVec = globalToLocal(activeTargetCoordsVec, ownCoordsVec, ownOrientation)
@@ -1154,35 +1160,10 @@ function onTick()
         pitchAngle = 0
     end
 
-    --[[   debug.log(" activeTargetCoordsVecY: " .. activeTargetCoordsVec.y .. " targetY: " .. targetCoords[2])
-     debug.log("yaw: " .. yawAngle)
-    debug.log("pitch: " .. pitchAngle) ]]
-
-
-    local pitch =
-        input.getNumber(30)
-
-    local yaw =
-        input.getNumber(31)
-
-    local roll =
-        input.getNumber(32)
-
     local gravity =
         getLocalGravity(
             ownOrientation
         )
-
-    debug.log(
-        "gravLocal " ..
-        gravity.x .. "," ..
-        gravity.y .. "," ..
-        gravity.z ..
-        " velLocal " ..
-        selfLocalVelocity.x .. "," ..
-        selfLocalVelocity.y .. "," ..
-        selfLocalVelocity.z
-    )
 
     local gravityPitchCorrection,
     gravityYawCorrection =
@@ -1192,19 +1173,6 @@ function onTick()
             gravity,
             horizontalDist
         )
-
-
-
-    debug.log(
-        " BeforeAdd pitch: " ..
-        pitchAngle ..
-        " gravPitch: " ..
-        gravityPitchCorrection ..
-        " gravYaw: " ..
-        gravityYawCorrection
-    )
-    debug.log("actX: " .. activeTargetCoordsVec.x .. "actY: " ..
-        activeTargetCoordsVec.y .. "actZ: " .. activeTargetCoordsVec.z)
 
     pitchAngle =
         pitchAngle +
@@ -1221,10 +1189,13 @@ function onTick()
     end
 
     local fuse = false
-    if launchedCount > 300 and isTargetFound then
+    if launchedCount > 300 and isTargetFound and not IS_VTFUSE_ENABLED then
         fuse = true
     end
 
+    if targetUpdatedCounter < 20 and DISTANCE < VT_FUSE_IMPACT_DIST then
+        fuse = true
+    end
     output.setBool(1, fuse)
     output.setNumber(1, yawAngle)
     output.setNumber(2, pitchAngle)

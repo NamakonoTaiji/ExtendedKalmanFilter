@@ -1,6 +1,18 @@
 {
   "folders": [
     {
+      "name": "GPTWorkspace",
+      "path": "GPTWorkspace"
+    },
+    {
+      "name": "ShipControl",
+      "path": "ShipControl"
+    },
+    {
+      "name": "Multi Sornars",
+      "path": "Multi Sornars"
+    },
+    {
       "name": "ADS V3 CIWS",
       "path": "ADS V3/ADS V3 CIWS"
     },

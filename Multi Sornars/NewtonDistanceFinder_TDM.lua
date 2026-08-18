@@ -7,30 +7,30 @@
 - 同一Tickに複数のエコーが入った場合、方向の近い観測を1目標へ統合する。
 - 統合時は視線単位ベクトルを平均し、方位角・仰角の±π境界を正しく扱う。
 - 統合した距離と反射時刻はクラスタ内観測の算術平均を使用する。
-- 最大6目標を、後段の6状態カルマンフィルター用4ch形式で出力する。
+- クラスタリング後の目標をFIFOキューへ格納し、1tickにつき1目標だけ4ch形式で出力する。
+- 同一tickに複数目標が成立した場合、あふれた目標は次tick以降へ時分割して順次出力する。
+- 遅延出力されても targetReachedTick は観測時に算出した値を保持する。
 
 入力 On/Off:
 - ch 1-8: ソナー目標1-8のエコー受信パルス（受信TickのみOn）
 
 入力 Number:
 - ch 1-16: ソナー角度。目標nは ch(2n-1)=方位角、ch(2n)=仰角（回転単位）
-- ch 17: ピンガー周期
+- ch 20: ピンガー周期
 - ch 21-23: 検証用固定標的のグローバル座標 X,Y,Z
 - ch 24-26: Physics Sensorローカル速度 X(右),Y(上),Z(前) [m/s]
-- ch 27-29: 自機グローバル座標 X(東),Y(上),Z(北)
-- ch 30-32: 自機姿勢 Pitch,Yaw,Roll [rad]
+- ch 26-29: 自機グローバル座標 X(東),Y(上),Z(北)
+- ch 29-32: 自機姿勢 クォータニオン w, x, y, z
 
 出力 On/Off:
 - ch 1: ソナーActive/Ping信号（ソナー入力ch2へ）
 
 出力 Number:
-- 目標n（n=1-6）:
-  ch(4n-3): 推定距離 [m]
-  ch(4n-2): ローカル方位角 [rad]
-  ch(4n-1): ローカル仰角 [rad]
-  ch(4n):   音波が目標へ到達した推定絶対Tick
-- ch 25-27: 自機グローバル座標 X,Y,Z
-- ch 28-30: 自機姿勢 Pitch,Yaw,Roll [rad]
+- ch 1: 推定距離 [m]
+- ch 2: ローカル方位角 [rad]
+- ch 3: ローカル仰角 [rad]
+- ch 4: 音波が目標へ到達した推定絶対Tick (targetReachedTick)
+- 1tickにつき最大1目標のみ出力。未出力目標はFIFOで次tick以降へ送る。
 
 プロパティ:
 - PING_INTERVAL_TICKS: Ping周期の最低値
@@ -45,7 +45,6 @@
 local SOUND_SPEED = 1480
 local TICKS_PER_SECOND = 60
 local MAX_TARGETS = 8
-local MAX_OUTPUT_TARGETS = 6
 local PI = math.pi
 local PI2 = PI * 2
 local NEWTON_ITERATIONS = 2
@@ -54,14 +53,14 @@ local NEWTON_ITERATIONS = 2
 local SORNAR_OFFSETS_VEC = {
     x = property.getNumber("X_RIGHT_OFFSET"),
     y = property.getNumber("Y_UP_OFFSET"),
-    z = property.getNumber(
-        "Z_FRONT_FFSET")
+    z = property.getNumber("Z_FRONT_FFSET")
 } -- 物理センサーからみたソーナーのローカル座標
 local SEND_LOGIC_DELAY = property.getNumber("SEND_LOGIC_DELAY")
 local RECEIVE_LOGIC_DELAY = property.getNumber("RECEIVE_LOGIC_DELAY")
 local CLUSTER_ANGLE_TURNS = property.getNumber("CLUSTER_ANGLE_TURNS")
 local CLUSTER_DISTANCE_RATIO = property.getNumber("CLUSTER_DISTANCE_RATIO")
 local CLUSTER_DISTANCE_BASE = property.getNumber("CLUSTER_DISTANCE_BASE")
+local DISTANCE_STEP = property.getNumber("DIST_STEP")
 if CLUSTER_ANGLE_TURNS <= 0 then
     CLUSTER_ANGLE_TURNS = 0.004
 end
@@ -78,6 +77,36 @@ local pingSentTick = 0
 local isPinging = false
 local currentTick = 0
 local pingGlobalPosition = { x = 0, y = 0, z = 0 }
+
+-- 時分割出力用FIFOキュー
+-- queueHead/queueTailを使い、table.remove(1)による全要素シフトを避ける。
+local outputQueue = {}
+local queueHead = 1
+local queueTail = 0
+
+function enqueueDetection(d)
+    queueTail = queueTail + 1
+    outputQueue[queueTail] = d
+end
+
+function dequeueDetection()
+    if queueHead > queueTail then
+        return nil
+    end
+
+    local d = outputQueue[queueHead]
+    outputQueue[queueHead] = nil
+    queueHead = queueHead + 1
+
+    -- 空になったら添字をリセットして長時間運用時の増大を防ぐ。
+    if queueHead > queueTail then
+        queueHead = 1
+        queueTail = 0
+    end
+
+    return d
+end
+
 -- === ヘルパー関数 (ベクトル, クォータニオン, ニュートン法, 座標変換) ===
 function vectorMagnitude(v)
     local x = v[1] or v.x or 0
@@ -347,8 +376,110 @@ function clusterDetections(detections)
     return result
 end
 
+function packTarget(
+    distance,
+    azimuth,
+    elevation,
+    targetReachedTick
+)
+    local pi = math.pi
+    local pi2 = pi * 2
+
+    ----------------------------------------------------------
+    -- 距離
+    -- 12bit / 2m刻み
+    -- 0 ～ 8190m
+    ----------------------------------------------------------
+    local d = math.floor(distance / DISTANCE_STEP  + 0.5)
+
+    if d < 0 then
+        d = 0
+    elseif d > 4095 then
+        d = 4095
+    end
+
+
+    ----------------------------------------------------------
+    -- 観測の古さ
+    -- 11bit / 1tick刻み
+    -- 0 ～ 2047tick
+    ----------------------------------------------------------
+    local age = math.floor(
+        currentTick - targetReachedTick + 0.5
+    )
+
+    if age < 0 then
+        age = 0
+    elseif age > 2047 then
+        age = 2047
+    end
+
+
+    ----------------------------------------------------------
+    -- 方位角
+    -- 13bit
+    -- -pi ～ +pi を 0 ～ 8191 に変換
+    ----------------------------------------------------------
+    local a = math.floor(
+        ((azimuth + pi) % pi2)
+        / pi2
+        * 8192
+        + 0.5
+    ) % 8192
+
+
+    ----------------------------------------------------------
+    -- 仰角
+    -- 12bit
+    -- -pi/2 ～ +pi/2 を 0 ～ 4095 に変換
+    ----------------------------------------------------------
+    if elevation < -pi / 2 then
+        elevation = -pi / 2
+    elseif elevation > pi / 2 then
+        elevation = pi / 2
+    end
+
+    local e = math.floor(
+        (elevation + pi / 2)
+        / pi
+        * 4095
+        + 0.5
+    )
+
+
+    ----------------------------------------------------------
+    -- 方位角13bitを
+    -- 上位1bit + 下位12bit に分割
+    ----------------------------------------------------------
+    local aLow = a % 4096
+    local aHigh = math.floor(a / 4096)
+
+
+    ----------------------------------------------------------
+    -- 24bit整数 × 2ch
+    ----------------------------------------------------------
+    local packed1 =
+        d
+        + age * 4096
+        + aHigh * 8388608
+
+    local packed2 =
+        aLow
+        + e * 4096
+
+
+    return packed1, packed2
+end
+
 -- === メイン処理 ===
 function onTick()
+    -- 出力ノード初期化
+    -- Bool ch1 はPing制御、Number ch1-4 は時分割された単一目標。
+    for i = 1, 32 do
+        output.setBool(i, false)
+        output.setNumber(i, 0)
+    end
+
     currentTick = currentTick + 1
     local ownGlobalPos, pitch, yaw, roll, ownOrientation, localVel
     -- 自機状態読み取り
@@ -357,35 +488,42 @@ function onTick()
     yaw = input.getNumber(31)
     roll = input.getNumber(32)
     localVel = { input.getNumber(24), input.getNumber(25), input.getNumber(26) }
+    ownOrientation = eulerZYX_to_quaternion(roll, yaw, pitch)
 
+    output.setNumber(26, ownGlobalPos.x)
+    output.setNumber(27, ownGlobalPos.y)
+    output.setNumber(28, ownGlobalPos.z)
+    output.setNumber(29, ownOrientation[1])
+    output.setNumber(30, ownOrientation[2])
+    output.setNumber(31, ownOrientation[3])
+    output.setNumber(32, ownOrientation[4])
+
+    local isPingerRequest = input.getBool(1)
     -- --- Ping 開始/終了処理 ---
-    local intervalTicks = input.getNumber(20)
 
-    if not isPinging and currentTick >= pingSentTick + intervalTicks then
-        pingSentTick = currentTick + SEND_LOGIC_DELAY
+    if not isPingerRequest then
+        if not isPinging then
+            pingSentTick = currentTick + SEND_LOGIC_DELAY
+        end
         isPinging = true
         pingGlobalPosition.x = ownGlobalPos.x
         pingGlobalPosition.y = ownGlobalPos.y
         pingGlobalPosition.z = ownGlobalPos.z
-    elseif isPinging then
-        if currentTick >= pingSentTick + intervalTicks then
-            isPinging = false
-        end
+    else
+        isPinging = false
     end
 
     local detectionsThisTick = {}
 
     -- --- エコー受信 & 距離計算 & 角度比較処理 ---
-    ownOrientation = eulerZYX_to_quaternion(roll, yaw, pitch)
     if isPinging then
         -- 各ソナー入力チャンネル(1-8)をチェック
         for i = 1, MAX_TARGETS do
-            local echoDetected = input.getBool(i)
+            local echoDetected = input.getNumber(i * 2) ~= 0
 
             if echoDetected then
                 local echoReceivedTick_actual = currentTick - RECEIVE_LOGIC_DELAY
                 local pingTimeTick = echoReceivedTick_actual - pingSentTick
-
                 if pingTimeTick > 0 then -- 至近距離は出力しない
                     local measuredAziTurns = input.getNumber((i - 1) * 2 + 1)
                     local measuredEleTurns = input.getNumber((i - 1) * 2 + 2)
@@ -433,10 +571,41 @@ function onTick()
                         echoReceivedTick_actual -
                         calculated_distance / sSpeed_tick
 
+                    -- ソナー原点基準の目標座標
+                    local v = localAngleDistToLocalCoords(
+                        calculated_distance,
+                        A,
+                        E
+                    )
+
+                    -- ソナー設置位置 → 共通機体原点へ補正
+                    v.x = v.x + SORNAR_OFFSETS_VEC.x
+                    v.y = v.y + SORNAR_OFFSETS_VEC.y
+                    v.z = v.z + SORNAR_OFFSETS_VEC.z
+
+                    -- 共通原点からの極座標に変換し直す
+                    local horizontal =
+                        math.sqrt(v.x * v.x + v.z * v.z)
+
+                    local correctedDistance =
+                        math.sqrt(
+                            v.x * v.x +
+                            v.y * v.y +
+                            v.z * v.z
+                        )
+
+                    local correctedAzimuth =
+                        math.atan(v.x, v.z)
+
+                    local correctedElevation =
+                        math.atan(v.y, horizontal)
+
                     table.insert(detectionsThisTick, {
-                        distance = calculated_distance,
-                        azimuth = A,
-                        elevation = E,
+                        distance = correctedDistance,
+                        azimuth = correctedAzimuth,
+                        elevation = correctedElevation,
+
+                        -- 音響計算で求めた時刻なのでこれはそのまま
                         targetReachedTick = targetReachedTick
                     })
 
@@ -474,25 +643,21 @@ function onTick()
     -- 同一Tick内の近接観測を統合する。
     detectionsThisTick = clusterDetections(detectionsThisTick)
 
-    -- 出力ノード初期化
-    for i = 1, 32 do
-        output.setBool(i, false)
-        output.setNumber(i, 0)
+    -- クラスタリング済み目標をFIFOへ積む。
+    -- backlogがある場合も新規観測は末尾へ追加され、観測順を維持する。
+    for i = 1, #detectionsThisTick do
+        enqueueDetection(detectionsThisTick[i])
     end
+
     output.setBool(1, isPinging)
-    -- --- 距離データの出力 ---
-    for i = 1, math.min(#detectionsThisTick, MAX_OUTPUT_TARGETS) do
-        local d = detectionsThisTick[i]
-        local b = (i - 1) * 4
-        output.setNumber(b + 1, d.distance)
-        output.setNumber(b + 2, d.azimuth)
-        output.setNumber(b + 3, d.elevation)
-        output.setNumber(b + 4, d.targetReachedTick)
+
+    -- 1tickにつき1目標だけ出力する。
+    -- targetReachedTickはキュー投入時の値を保持するため、
+    -- 時分割による出力遅延が発生しても元の音波到達時刻を復元できる。
+    local d = dequeueDetection()
+    if d then
+        pack1, pack2 = packTarget(d.distance, d.azimuth, d.elevation, d.targetReachedTick)
+        output.setNumber(1, pack1)
+        output.setNumber(2, pack2)
     end
-    output.setNumber(25, ownGlobalPos.x)
-    output.setNumber(26, ownGlobalPos.y)
-    output.setNumber(27, ownGlobalPos.z)
-    output.setNumber(28, pitch)
-    output.setNumber(29, yaw)
-    output.setNumber(30, roll)
 end

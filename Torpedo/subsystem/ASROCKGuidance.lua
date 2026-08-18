@@ -32,17 +32,11 @@ DT                           = 1 / 60
 PI                           = math.pi
 PI2                          = PI * 2
 
-isLaunch                     = false
-isLaunched                   = false
-launchedCount                 = 0
 initialGuidanceCounter       = 0
 isGuidanceStart              = false
 isPPN                        = true
-isHeadCapture                = false
-targetCoords                 = { 0, 0, 0 }
-targetVelocity               = { 0, 0, 0 }
-parachute                         = false
-deploy                         = false
+parachute                    = false
+deploy                       = false
 DIVE_START_TANJENT           = math.tan(math.rad(40))                        -- 巡航モードからダイブを開始させる角度
 PN_FIN_STRENGTH              = property.getNumber("PN_FIN_STRENGTH")         -- 比例航法時のフィンにかける係数
 PPN_FIN_STRENGTH             = property.getNumber("PPN_FIN_STRENGTH")        -- 単追尾時のフィンにかける係数
@@ -52,11 +46,7 @@ GUIDANCE_START_ALTITUDE      = property.getNumber("GUIDANCE_START_ALTITUDE") -- 
 -- グローバル座標系での前フレームの正規化されたLOSベクトルを保存
 -- {x, y, z} 形式で保存
 oldLOS_vec_global_normalized = { x = 0, y = 0, z = 1 } -- 初期値 (例: 前方)
-
-oldLOS                       = { azimuth = 0, elevation = 0 }
-currentLOS                   = { azimuth = 0, elevation = 0 }
-LOStable                     = { old = oldLOS, current = currentLOS }
-
+isTerminalCourse             = false
 --- 3Dベクトル a から b を引きます (a - b)
 ---@param a Vector3 {x: number, y: number, z: number} または {number, number, number}
 ---@param b Vector3 {x: number, y: number, z: number} または {number, number, number}
@@ -282,7 +272,6 @@ end
 
 function onTick()
     -- 1. 座標・オイラー角の取得
-
     local targetCoords          = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
     -- local targetVelocity        = { input.getNumber(4), input.getNumber(5), input.getNumber(6) }
     local ownCoords             = { input.getNumber(27), input.getNumber(28), input.getNumber(29) }
@@ -290,7 +279,7 @@ function onTick()
     local ownEuler              = { pitch = input.getNumber(30), yaw = input.getNumber(31), roll = input.getNumber(32) }
     local ownOrientation        = eulerZYX_to_quaternion(ownEuler.roll, ownEuler.yaw, ownEuler.pitch)
     -- local distance              = vector_magnitude(subtract(targetCoords, ownCoords))
-
+    local selfSpeed             = input.getNumber(26)
     -- {x, y, z} 形式のベクトルテーブルに変換
     local targetCoordsVec       = { x = targetCoords[1], y = targetCoords[2], z = targetCoords[3] }
     local ownCoordsVec          = { x = ownCoords[1], y = ownCoords[2], z = ownCoords[3] }
@@ -300,37 +289,45 @@ function onTick()
     -- 指定された高度mまで垂直上昇
 
     if (ownCoordsVec.y < GUIDANCE_START_ALTITUDE) and not isGuidanceStart then
-        activeTargetCoordsVec = { x = ownCoordsVec.x, y = ownCoordsVec.y + 50, z = ownCoordsVec.z }
+        activeTargetCoordsVec = { x = ownCoordsVec.x, y = ownCoordsVec.y + 500, z = ownCoordsVec.z }
     elseif ownCoordsVec.y >= GUIDANCE_START_ALTITUDE then
         isGuidanceStart = true
     end
 
     if isGuidanceStart then
         initialGuidanceCounter = initialGuidanceCounter + 1
-        if initialGuidanceCounter > 30 then
-            -- isPPN = false
-        end
     end
+
     local dx = targetCoordsVec.x - ownCoordsVec.x
     local dz = targetCoordsVec.z - ownCoordsVec.z
     local horizontalDist = math.sqrt(dx * dx + dz * dz)
-    local diveStartDistance = SKIMMING_ALT / DIVE_START_TANJENT
 
-    -- 水平距離が急降下開始水平距離より離れている場合は自機から目標方向へ100m先を仮の目標にする
-    if (horizontalDist > diveStartDistance) and isGuidanceStart then
-        isPPN = true
-        local dirX = dx / horizontalDist
-        local dirZ = dz / horizontalDist
-        activeTargetCoordsVec = {
-            x = ownCoordsVec.x + dirX * 900,
-            y = math.max(ownCoords[2] / 1.3, SKIMMING_ALT),
-            z = ownCoordsVec.z + dirZ * 900
-        }
+    -- 現在高度と目標高度から実際の降下量を計算
+    local verticalDist = math.max(ownCoordsVec.y - targetCoordsVec.y, 0)
+    local diveStartDistance = verticalDist / DIVE_START_TANJENT
+
+    isPPN = true
+
+    -- 巡航 → 終末突入
+    if isGuidanceStart and not isTerminalCourse then
+        if horizontalDist <= diveStartDistance then
+            isTerminalCourse = true
+        else
+            local dirX = dx / horizontalDist
+            local dirZ = dz / horizontalDist
+
+            activeTargetCoordsVec = {
+                x = ownCoordsVec.x + dirX * 500,
+                y = math.max(ownCoordsVec.y / 1.3, SKIMMING_ALT),
+                z = ownCoordsVec.z + dirZ * 500
+            }
+        end
     end
 
 
     -- 3. グローバル座標系でのLOS (Line of Sight) ベクトルを計算
     LOS_vec_global = subtract(activeTargetCoordsVec, ownCoordsVec)
+    local yawAngle, pitchAngle
     if not isPPN and isGuidanceStart then
         -- 4. グローバルLOSベクトルを正規化
         local currentLOS_vec_global_normalized = normalize(LOS_vec_global)
@@ -373,8 +370,8 @@ function onTick()
         -- 9. 誘導指令として使う
 
         --    ご提示のコードの変数名に合わせる
-        yawAngle                               = los_rate_yaw * DT * PN_FIN_STRENGTH    -- (rad/tick)
-        pitchAngle                             = -los_rate_pitch * DT * PN_FIN_STRENGTH -- (rad/tick)
+        yawAngle                               = los_rate_yaw * PN_FIN_STRENGTH    -- (rad/tick)
+        pitchAngle                             = -los_rate_pitch * PN_FIN_STRENGTH -- (rad/tick)
     else
         local targetLocalPosVec =
             globalToLocal(
@@ -396,17 +393,26 @@ function onTick()
         oldLOS_vec_global_normalized =
             normalize(LOS_vec_global)
     end
-    
-    if (selfAltitude < 250 or horizontalDist < 500) and initialGuidanceCounter > 300 then
-        parachute = true
-    else
-        parachute = false
-    end
+
+
+    local parachuteDeployDist = 250
     local deployAltitude = 100
-    if launchedCount > 960 then
+
+    if initialGuidanceCounter > 120 and selfSpeed < 30 then
+        parachuteDeployDist = 150
         deployAltitude = 20
     end
-    if selfAltitude < deployAltitude and initialGuidanceCounter > deployAltitude then
+
+    if isTerminalCourse
+        and (horizontalDist < parachuteDeployDist
+        or selfAltitude < deployAltitude)
+        and initialGuidanceCounter > 120 then
+        parachute = true
+    end
+
+    if isTerminalCourse and selfAltitude < deployAltitude
+        and initialGuidanceCounter > 60
+        and parachute then
         deploy = true
     end
     output.setBool(1, parachute)

@@ -1,0 +1,5 @@
+std = "stormworks"
+
+[lints]
+undefined_variable = "allow"
+unscoped_variables = "allow"

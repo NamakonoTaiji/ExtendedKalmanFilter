@@ -274,21 +274,22 @@ function onTick()
     -- -----------------------------------------------------------------
     -- 対水上モードの処理
     -- -----------------------------------------------------------------
-                                                                                           -- ミサイル側の受信周波数                                                                                                 -- 対水上モードで戦闘する場合の無線周波数
+    -- ミサイル側の受信周波数                                                                                                 -- 対水上モードで戦闘する場合の無線周波数
     local isAntiShipModeActive = input.getBool(1)                                                              -- trueになる度に対水上モードで一発発射
     local antiShipTargetCoords = { x = input.getNumber(15), y = input.getNumber(16), z = input.getNumber(17) } -- 対水上モードで発射する目標の座標
     local id = input.getNumber(18)                                                                             -- 火器管制レーダーから送られてくる目標ID
     local targetShipId = id +
-        190000                                                                                                 -- 脅威度判定/火器管制マイコンであることを示すために + 100000, 対水上モードであることを示すために + 90000する
+        190000
+    local antiShipTargetInfos = nil
+    -- 脅威度判定/火器管制マイコンであることを示すために + 100000, 対水上モードであることを示すために + 90000する
     if isAntiShipModeActive and id ~= 0 then
-        local antiShipTargetInfos = {
+        antiShipTargetInfos = {
             x = antiShipTargetCoords.x,
             y = antiShipTargetCoords.y,
             z = antiShipTargetCoords.z,
             id =
                 targetShipId
         }
-        table.insert(antiShipModeTargetQueue, antiShipTargetInfos)
     end
 
     -- -----------------------------------------------------------------
@@ -296,7 +297,6 @@ function onTick()
     -- -----------------------------------------------------------------
 
     local ownWorldCoords = { x = input.getNumber(27), y = input.getNumber(28), z = input.getNumber(29) }          -- 自機座標 {x -> 東, y -> 高度, z -> 北}
-    local ownEulerAngles = { pitch = input.getNumber(30), yaw = input.getNumber(31), roll = input.getNumber(32) } -- 自機姿勢
 
     local isDetected = input.getNumber(9) == 1
     local trackingID = input.getNumber(7)
@@ -310,8 +310,7 @@ function onTick()
         vY = input.getNumber(5),
         vZ = input.getNumber(6),
     }
-    local ownOrientationQuat = eulerZYX_to_quaternion(ownEulerAngles.roll, ownEulerAngles.yaw, ownEulerAngles.pitch)
-    if isDetected or #antiShipModeTargetQueue > 0 then -- 防空システムが目標を検出中もしくは対水上モードでの発射キューがある場合
+    if isDetected or antiShipTargetInfos then -- 防空システムが目標を検出中もしくは対水上モードでの発射キューがある場合
         detectedTarget.epsilon          = input.getNumber(8)
         detectedTarget.lastSeenTick     = input.getNumber(10)
         detectedTarget.detectionTickLag = input.getNumber(11)
@@ -388,9 +387,10 @@ function onTick()
             output.setNumber(12, detectedTarget.id) -- 目標ID
             output.setNumber(13, assignedMissileID) -- ミサイルの個別識別用ID
             output.setNumber(14, assignedFreq)      -- ミサイルに割り当てる専用周波数
+            output.setNumber(15, detectedTarget.detectionTickLag)
             -- ミサイルが受信する無線の周波数
             output.setNumber(31, ADS_SEND_FREQ)
-        elseif #antiShipModeTargetQueue > 0 then -- 対水上モードの発射シーケンス
+        elseif antiShipTargetInfos then -- 対水上モードの発射シーケンス
             local assignedMissileID = nextMissileID
             nextMissileID = nextMissileID + 1
 
@@ -399,15 +399,15 @@ function onTick()
             launchChannel = launchChannel + 1
             output.setBool(launchChannel, true)
 
-            output.setNumber(1, antiShipModeTargetQueue[1].x)
-            output.setNumber(2, antiShipModeTargetQueue[1].y)
-            output.setNumber(3, antiShipModeTargetQueue[1].z)
-            output.setNumber(12, antiShipModeTargetQueue[1].id)
+            output.setNumber(1, antiShipTargetInfos.x)
+            output.setNumber(2, antiShipTargetInfos.y)
+            output.setNumber(3, antiShipTargetInfos.z)
+            output.setNumber(12, antiShipTargetInfos.id)
             output.setNumber(13, assignedMissileID)
             output.setNumber(14, assignedFreq)
             -- ミサイルが受信する無線の周波数
             output.setNumber(31, ANTI_SHIP_FREQ)
-            table.remove(antiShipModeTargetQueue, 1)
+            table.remove(antiShipTargetInfos, 1)
         end
     end
     output.setNumber(32, 114514) -- 火器管制マイコンからの通信が途絶えたときにわかるようにするための信号

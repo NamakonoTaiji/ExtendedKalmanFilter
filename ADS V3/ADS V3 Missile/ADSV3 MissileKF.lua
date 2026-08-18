@@ -87,7 +87,8 @@ nextTrackID = 1     -- 新規トラックに割り当てるID
 currentTick = 0
 trackingID = nil
 dataLinkTrackingID = nil
-isDataLinkTrackingIDValidate = false
+isLaunch = false
+isTargetTrackMode = false
 radarManualSweepX = 0
 radarManualSweepY = 0
 dataLinkGlobalPos = { 0, 0, 0 }
@@ -773,25 +774,26 @@ function onTick()
 
     -- データリンク目標座標,トラッキングID
     trackIDFromADS = input.getNumber(32)
-    isLaunch = trackIDFromADS < 100000 and trackIDFromADS ~= 0
     if trackIDFromADS > 100000 then
         trackIDFromADS = trackIDFromADS - 100000
-        dataLinkTrackingID = trackIDFromADS
-        if dataLinkTrackingID > 90000 then -- dataLinkTrackingID > 90000(対水上モードで発射された)を示す場合
-            isAntiShipMode = true
-            dataLinkTrackingID = dataLinkTrackingID - 90000
-        else
-            isAntiShipMode = false
+        if not isLaunch then
+            dataLinkTrackingID = trackIDFromADS
+            if dataLinkTrackingID > 90000 then
+                isAntiShipMode = true
+                dataLinkTrackingID = dataLinkTrackingID - 90000
+            else
+                isAntiShipMode = false
+            end
         end
+    elseif dataLinkTrackingID and trackIDFromADS == dataLinkTrackingID then
+        isLaunch = true
     end
     isDataLinkUpdate = trackIDFromADS == dataLinkTrackingID
     dataLinkGlobalPos = { dataLinkGlobalPos[1] + dataLinkTargetVelocity[1] * DT, dataLinkGlobalPos[2] +
     dataLinkTargetVelocity[2] * DT, dataLinkGlobalPos[3] + dataLinkTargetVelocity[3] * DT }
     if isDataLinkUpdate then
-        if input.getNumber(22) ~= 0 then
-            dataLinkGlobalPos = { input.getNumber(22), input.getNumber(23), input.getNumber(24) }
-            dataLinkTargetVelocity = { input.getNumber(19), input.getNumber(20), input.getNumber(21) }
-        end
+        dataLinkGlobalPos = { input.getNumber(22), input.getNumber(23), input.getNumber(24) }
+        dataLinkTargetVelocity = { input.getNumber(19), input.getNumber(20), input.getNumber(21) }
     end
     dataLinkLocalPos = globalToLocalCoords(dataLinkGlobalPos, ownGlobalPos, ownOrientation)
     dataLinkLocalAngle = localCoordsToLocalAngle(dataLinkLocalPos)
@@ -802,8 +804,8 @@ function onTick()
 
     isTargetInsideEffectiveRange = dataLinkDist < RADAR_EFFECTIVE_RANGE - 150 and dataLinkDist ~= 0
 
-    -- レーダー有効範囲圏内かつデータリンクの更新が来たタイミングでアクティブ誘導を開始
-    isTargetTrackMode = (isLaunch or isDataLinkUpdate) and isTargetInsideEffectiveRange
+    -- 一度アクティブ誘導へ入ったら通信瞬断では解除しない
+    isTargetTrackMode = isTargetTrackMode or isLaunch and isTargetInsideEffectiveRange
     -- 自機姿勢をクォータニオンに変換
 
     --  (エラー発生時は単位クォータニオンで代替)
@@ -811,7 +813,7 @@ function onTick()
 
     -- レーダー観測値の処理
     currentObservations = {} -- このTickで有効なレーダー観測リスト
-    if isTargetInsideEffectiveRange and isLaunch then
+    if isTargetTrackMode then
         for i = 1, MAX_RADAR_TARGETS do
             dist = input.getNumber(BASE_CHANNEL * i - 2) -- 距離
             if dist > 0 then
@@ -893,11 +895,6 @@ function onTick()
                 predTrack.X_pred, predTrack.P_pred, obs, ownGlobalPos
             )
 
-            -- 前回と同じ観測インデックスなら epsilon を割引して優先する
-            if track.lastAssignedObsIndex == obsIndex then
-                epsilon = epsilon * 0.6
-            end
-
             if epsilon < DATA_ASSOCIATION_EPSILON_THRESHOLD then
                 -- 閾値以下のペアを候補に追加
                 table.insert(associations, {
@@ -953,11 +950,9 @@ function onTick()
                 track.lastSeenTick = currentTick
                 track.hits = track.hits + 1
                 track.misses = 0 -- ミスカウントリセット
-                track.lastAssignedObsIndex = obsIndex
             else
                 -- 更新失敗 -> ミス扱い
                 track.misses = track.misses + 1
-                track.lastAssignedObsIndex = nil
             end
         else
             -- === マッチしなかった: ミス処理 ===
@@ -966,7 +961,6 @@ function onTick()
             -- track.P = predTrack.P_pred
             track.misses = track.misses + 1
             track.hits = 0 -- 連続ヒット数をリセット (新規トラック判定用)
-            track.lastAssignedObsIndex = nil
         end
 
         -- ロスト判定 (連続ミス回数)
@@ -1093,4 +1087,17 @@ function onTick()
     output.setNumber(17, ownOrientation[2])
     output.setNumber(18, ownOrientation[3])
     output.setNumber(19, ownOrientation[4])
+
+--[[             debug.log(
+        "ID=" .. input.getNumber(32) ..
+        " DL=" .. tostring(dataLinkTrackingID) ..
+        " L=" .. tostring(isLaunch) ..
+        " D=" .. math.floor(dataLinkDist) ..
+        " M=" .. tostring(isTargetTrackMode) ..
+        " SX=" .. radarManualSweepX ..
+        " SY=" .. radarManualSweepY ..
+        " R1=" .. input.getNumber(1) ..
+        " R2=" .. input.getNumber(4) ..
+        " R3=" .. input.getNumber(7)
+    ) ]]
 end

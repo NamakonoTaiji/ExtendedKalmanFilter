@@ -40,6 +40,7 @@ initialGuidanceCounter         = 0
 isGuidanceStart                = false
 isPPN                          = true
 isHeadCapture                  = false
+mainRadarIO = false
 targetCoords                   = { 0, 0, 0 }
 targetVelocity                 = { 0, 0, 0 }
 -- debugCounter                   = 0
@@ -333,6 +334,7 @@ function onTick()
 
     -- 指定された高度に到達したら一秒間単追尾で目標に指向
     if isGuidanceStart then
+        mainRadarIO = true
         initialGuidanceCounter = initialGuidanceCounter + 1
         if initialGuidanceCounter > 60 then
             isPPN = false
@@ -342,6 +344,7 @@ function onTick()
     ----------------------------------------------------------------------------
     -- 対水上モード時の低空巡航 (シースキミング) 処理
     ----------------------------------------------------------------------------
+    local yawAngle,pitchAngle
     if isGuidanceStart then
         local dx = targetCoordsVec.x - ownCoordsVec.x
         local dz = targetCoordsVec.z - ownCoordsVec.z
@@ -474,7 +477,7 @@ function onTick()
         else -- 対空モード
             -- 海ポチャ対策として水平距離が500mより離れている場合は「自機から目標方向へ500m先、高度下限30m」を仮の目標にする
             isHeadCapture = false
-            if horizontalDist > 1000 then
+            if horizontalDist > 1500 then
                 local dirX = dx / horizontalDist
                 local dirZ = dz / horizontalDist
                 activeTargetCoordsVec = {
@@ -530,8 +533,8 @@ function onTick()
         -- 9. 誘導指令として使う
 
         --    ご提示のコードの変数名に合わせる
-        yawAngle                               = los_rate_yaw * DT * PN_FIN_STRENGTH    -- (rad/tick)
-        pitchAngle                             = -los_rate_pitch * DT * PN_FIN_STRENGTH -- (rad/tick)
+        yawAngle                               = los_rate_yaw * PN_FIN_STRENGTH    -- (rad/tick)
+        pitchAngle                             = -los_rate_pitch * PN_FIN_STRENGTH -- (rad/tick)
     else
         local targetLocalPosVec =
             globalToLocal(
@@ -558,7 +561,7 @@ function onTick()
         oldDistance = distance
         isInit = false
     end
-
+    local approach_Velocity
     if not isInit then
         approach_Velocity = distance - oldDistance
     else
@@ -576,6 +579,7 @@ function onTick()
 
     output.setBool(1, missileRadarIO)
     output.setBool(2, isAntiShipMode)
+    output.setBool(3, mainRadarIO)
     output.setNumber(1, yawAngle)
     output.setNumber(2, pitchAngle)
     output.setNumber(3, approach_Velocity)
