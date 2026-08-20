@@ -4,8 +4,8 @@
 
 -- 入力:
 - bool 1: 目標を検出中
-- bool 2: 対水上モードか否か
-- bool 3: 発射済みか否か
+- bool 2: 第一ピンガーリクエスト
+- bool 3: 第二ピンガーリクエスト
 - num 1: 推定目標座標 X
 - num 2: 推定目標座標 Y
 - num 3: 推定目標座標 Z
@@ -36,6 +36,8 @@ PI2                         = PI * 2
 
 launchedCount               = 0
 currentTick                 = 0
+isPingerRequested           = false
+pingerRequestedTick         = 0
 oldChosenViewTargetID       = 0
 reorientMode                = false
 
@@ -90,6 +92,7 @@ previousPingState           = false
 previousLaunchState         = false
 reorientOrbitDirection      = 1
 targetUpdatedCounter        = math.huge
+
 ---@class Vector3
 ---@field x number
 ---@field y number
@@ -585,8 +588,8 @@ function onTick()
         }
     end
 
-    local isLaunch           = input.getNumber(23) == 1
-    local isPing             = input.getNumber(22) == 1 -- ピンガーの発信信号
+    local isLaunch = input.getNumber(23) == 1
+    local isPing   = input.getNumber(22) == 1 -- ピンガーの発信信号
 
     if isLaunch then
         launchedCount = launchedCount + 1
@@ -742,11 +745,14 @@ function onTick()
     end
 
     oldChosenViewTargetID = chosenViewTargetID
-
+    local isPPN = false
+    if DISTANCE > 1000 then
+        isPPN = true
+    end
     -- 3. グローバル座標系でのLOS (Line of Sight) ベクトルを計算
     LOS_vec_global = subtract(activeTargetCoordsVec, ownCoordsVec)
     if isLaunch then
-        if launchedCount > 240 then
+        if launchedCount > 240 and not isPPN then
             if chosenViewTargetID ~= 0 then
                 -- 現在の機首前方をグローバル座標へ変換
                 local forwardGlobal =
@@ -1143,7 +1149,7 @@ function onTick()
                 local tangentX = ORBIT_DIRECTION * radialZ
                 local tangentZ = -ORBIT_DIRECTION * radialX
 
-                local transitionDistance = 100
+                local transitionDistance = 500
 
                 -- Orbit半径からどれだけ外側にいるか
                 local outsideDistance =
@@ -1173,7 +1179,7 @@ function onTick()
                     tangentZ * tangentScale -
                     radialZ * inwardScale
 
---[[                 -- 外側では内向き、内側では外向き。
+                --[[                 -- 外側では内向き、内側では外向き。
                 -- 誤差を半径で正規化するため、中心位置は常に入力目標座標になる。
                 local radiusError = (radiusNow - ORBIT_RADIUS) / ORBIT_RADIUS
                 local radialCorrection =
@@ -1225,6 +1231,7 @@ function onTick()
         pitchAngle = 0
     end
 
+    -- 重力、高度補正適用
     local gravity =
         getLocalGravity(
             ownOrientation
@@ -1268,4 +1275,19 @@ function onTick()
     output.setNumber(4, targetCoords[2])
     output.setNumber(5, targetCoords[3])
     output.setNumber(6, pingerIntervalTick)
+
+    -- booleanで直接ピンガーをリクエストすることもできる
+    local isSecondPingerRequest = false
+    if currentTick == pingerRequestedTick + math.floor(pingerIntervalTick / 2) then
+        isSecondPingerRequest = true
+    end
+
+    local isPingerRequest = false
+    if currentTick >= pingerRequestedTick + pingerIntervalTick then
+        isPingerRequest = true
+        pingerRequestedTick = currentTick
+    end
+
+    output.setBool(2, isPingerRequest)
+    output.setBool(3, isSecondPingerRequest)
 end

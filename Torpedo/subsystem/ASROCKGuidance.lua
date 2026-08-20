@@ -37,16 +37,19 @@ isGuidanceStart              = false
 isPPN                        = true
 parachute                    = false
 deploy                       = false
-DIVE_START_TANJENT           = math.tan(math.rad(40))                        -- 巡航モードからダイブを開始させる角度
+DIVE_START_TANJENT           = math.tan(math.rad(30))                        -- 巡航モードからダイブを開始させる角度
 PN_FIN_STRENGTH              = property.getNumber("PN_FIN_STRENGTH")         -- 比例航法時のフィンにかける係数
 PPN_FIN_STRENGTH             = property.getNumber("PPN_FIN_STRENGTH")        -- 単追尾時のフィンにかける係数
 SKIMMING_ALT                 = property.getNumber("SKIMMING_ALT")            -- 対水上モード巡航高度
 GUIDANCE_START_ALTITUDE      = property.getNumber("GUIDANCE_START_ALTITUDE") -- 誘導開始高度
+PARACHUTE_DEPLOY_MIN_DIST    = property.getNumber("PARACHUTE_DEPLOY_MIN_DIST")
+DEPLOY_TORP_MIN_ALT          = property.getNumber("DEPLOY_TORP_MIN_ALT")
 
 -- グローバル座標系での前フレームの正規化されたLOSベクトルを保存
 -- {x, y, z} 形式で保存
 oldLOS_vec_global_normalized = { x = 0, y = 0, z = 1 } -- 初期値 (例: 前方)
 isTerminalCourse             = false
+targetCoords                 = { 0, 0, 0 }
 --- 3Dベクトル a から b を引きます (a - b)
 ---@param a Vector3 {x: number, y: number, z: number} または {number, number, number}
 ---@param b Vector3 {x: number, y: number, z: number} または {number, number, number}
@@ -272,7 +275,9 @@ end
 
 function onTick()
     -- 1. 座標・オイラー角の取得
-    local targetCoords          = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
+    if input.getNumber(1) ~= 0 then
+        targetCoords = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
+    end
     -- local targetVelocity        = { input.getNumber(4), input.getNumber(5), input.getNumber(6) }
     local ownCoords             = { input.getNumber(27), input.getNumber(28), input.getNumber(29) }
     local selfAltitude          = ownCoords[2]
@@ -304,7 +309,7 @@ function onTick()
 
     -- 現在高度と目標高度から実際の降下量を計算
     local verticalDist = math.max(ownCoordsVec.y - targetCoordsVec.y, 0)
-    local diveStartDistance = verticalDist / DIVE_START_TANJENT
+    local diveStartDistance = math.min(500, verticalDist / DIVE_START_TANJENT)
 
     isPPN = true
 
@@ -395,17 +400,16 @@ function onTick()
     end
 
 
-    local parachuteDeployDist = 250
-    local deployAltitude = 100
+    local parachuteDeployDist = PARACHUTE_DEPLOY_MIN_DIST
+    local deployAltitude = DEPLOY_TORP_MIN_ALT * 2
 
     if initialGuidanceCounter > 120 and selfSpeed < 30 then
-        parachuteDeployDist = 150
-        deployAltitude = 20
+        deployAltitude = DEPLOY_TORP_MIN_ALT
     end
 
     if isTerminalCourse
         and (horizontalDist < parachuteDeployDist
-        or selfAltitude < deployAltitude)
+            or selfAltitude < deployAltitude)
         and initialGuidanceCounter > 120 then
         parachute = true
     end

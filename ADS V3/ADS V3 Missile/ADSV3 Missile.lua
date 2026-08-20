@@ -25,6 +25,10 @@
 - num 1: Yaw軸フィン
 - num 2: Pitch軸フィン
 - num 3: 近接速度
+
+-- 追加プロパティ:
+- bool GRAVITY_COMP_ENABLE: 重力補償の有効化
+- num GRAVITY_COMP_GAIN: 重力補償のフィン加算ゲイン
 ]]
 
 
@@ -40,9 +44,10 @@ initialGuidanceCounter         = 0
 isGuidanceStart                = false
 isPPN                          = true
 isHeadCapture                  = false
-mainRadarIO = false
+mainRadarIO                    = false
 targetCoords                   = { 0, 0, 0 }
 targetVelocity                 = { 0, 0, 0 }
+previousOwnCoords              = nil
 -- debugCounter                   = 0
 
 DIVE_START_TANJENT             = math.tan(math.rad(70))                               -- 巡航モードからダイブを開始させる角度
@@ -53,13 +58,16 @@ SKIMMING_ALT                   = property.getNumber("SKIMMING_ALT")             
 GUIDANCE_START_ALTITUDE        = property.getNumber("GUIDANCE_START_ALTITUDE")        -- 誘導開始高度
 LOGIC_DELAY                    = property.getNumber("LOGIC_DELAY")
 
-HEAD_CAPTURE_DISTANCE          = property.getNumber("HEAD_CAPTURE_DISTANCE")                          -- 目標の現在位置から、目標の進行方向へ何m先に待ち伏せ点を置くか
+-- 重力補償（高度保持は行わない）
+GRAVITY_COMP_ENABLE            = property.getBool("GRAVITY_COMP_ENABLE")
+GRAVITY_COMP_GAIN              = property.getNumber("GRAVITY_COMP_GAIN")
+
 HEAD_CORRIDOR_RADIUS           = property.getNumber("HEAD_CORRIDOR_RADIUS")                           -- 目標の進行軸を中心とした、終末誘導へ切り替えてよい円筒状の回廊半径
 HEAD_UP_OFFSET                 = math.min(property.getNumber("HEAD_UP_OFFSET"), HEAD_CORRIDOR_RADIUS) -- 待ち伏せ点を、目標の進行方向上の点からさらに垂直上方へ何mずらすか
 HEAD_RELEASE_DISTANCE          = property.getNumber("HEAD_RELEASE_DISTANCE")                          -- 目標から見て、迎撃ミサイルが進行方向前方へ何m出たら待ち伏せ完了と判定するか
 BALLISTIC_MIN_SPEED            = property.getNumber("BALLISTIC_MIN_SPEED")                            -- 高高度目標へ待ち伏せ誘導を適用するための、最低速度判定
-HEAD_LEAD_MIN_SCALE = property.getNumber("HEAD_LEAD_MIN_SCALE")
-HEAD_LEAD_MAX_SCALE = property.getNumber("HEAD_LEAD_MAX_SCALE")
+HEAD_LEAD_MIN_SCALE            = property.getNumber("HEAD_LEAD_MIN_SCALE")
+HEAD_LEAD_MAX_SCALE            = property.getNumber("HEAD_LEAD_MAX_SCALE")
 
 -- グローバル座標系での前フレームの正規化されたLOSベクトルを保存
 -- {x, y, z} 形式で保存
@@ -217,6 +225,92 @@ function rotateVectorByInverseQuaternion(vector, quaternion)
     return { p_prime[2], p_prime[3], p_prime[4] }
 end
 
+--------------------------------------------------------------------------------
+-- 重力補償
+--------------------------------------------------------------------------------
+
+-- ワールド座標の重力方向を機体ローカル座標へ変換する。
+function getLocalGravity(quaternion)
+    local gravityLocal =
+        rotateVectorByInverseQuaternion(
+            { 0, -1, 0 },
+            quaternion
+        )
+
+    return {
+        x = gravityLocal[1],
+        y = gravityLocal[2],
+        z = gravityLocal[3]
+    }
+end
+
+-- ローカル座標上の補正加速度方向をpitch/yawフィン補正へ変換する。
+function vectorToFinCorrection(correctionVector, velocityDir)
+    -- 速度方向成分は進行方向を変えないため除去する。
+    local parallel =
+        correctionVector.x * velocityDir.x +
+        correctionVector.y * velocityDir.y +
+        correctionVector.z * velocityDir.z
+
+    local normal = {
+        x = correctionVector.x - parallel * velocityDir.x,
+        y = correctionVector.y - parallel * velocityDir.y,
+        z = correctionVector.z - parallel * velocityDir.z
+    }
+
+    -- 魚雷側と同じ座標軸・フィン符号。
+    local turnAxis = cross_product(normal, velocityDir)
+
+    return turnAxis[1], -turnAxis[2]
+end
+
+-- 速度に直交する重力成分だけを打ち消す。
+-- 高度目標や高度誤差は使用しない。
+function getGravityCorrection(localVelocity, gravity)
+    if not GRAVITY_COMP_ENABLE then
+        return 0, 0
+    end
+
+    local speed =
+        math.sqrt(
+            localVelocity.x * localVelocity.x +
+            localVelocity.y * localVelocity.y +
+            localVelocity.z * localVelocity.z
+        )
+
+    if speed <= 0.1 then
+        return 0, 0
+    end
+
+    local velocityDir = {
+        x = localVelocity.x / speed,
+        y = localVelocity.y / speed,
+        z = localVelocity.z / speed
+    }
+
+    local gravityParallel =
+        gravity.x * velocityDir.x +
+        gravity.y * velocityDir.y +
+        gravity.z * velocityDir.z
+
+    local gravityNormal = {
+        x = gravity.x - gravityParallel * velocityDir.x,
+        y = gravity.y - gravityParallel * velocityDir.y,
+        z = gravity.z - gravityParallel * velocityDir.z
+    }
+
+    local gravityCorrectionVector = {
+        x = -gravityNormal.x * GRAVITY_COMP_GAIN,
+        y = -gravityNormal.y * GRAVITY_COMP_GAIN,
+        z = -gravityNormal.z * GRAVITY_COMP_GAIN
+    }
+
+    return vectorToFinCorrection(
+        gravityCorrectionVector,
+        velocityDir
+    )
+end
+
 --- 乗り物などのローカル座標を、ワールド座標系のグローバル座標に変換します。
 ---@description 基準となるオブジェクトのグローバル位置と姿勢（クォータニオン）を用いて、
 --              オブジェクト上の相対的な位置（ローカル座標）を絶対的な位置（グローバル座標）に変換します。
@@ -305,9 +399,31 @@ function onTick()
     local ownCoords      = { input.getNumber(13), input.getNumber(14), input.getNumber(15) }
     local ownOrientation = { input.getNumber(16), input.getNumber(17), input.getNumber(18), input.getNumber(19) }
 
-    local isAntiShipMode = input.getBool(2)
-    local isLaunch       = input.getBool(3)
-    local distance       = vector_magnitude(subtract(targetCoords, ownCoords))
+    -- 追加の速度入力を使わず、自機座標の差分から速度を求める。
+    local worldVelocity  = { 0, 0, 0 }
+    if previousOwnCoords then
+        worldVelocity = {
+            (ownCoords[1] - previousOwnCoords[1]) / DT,
+            (ownCoords[2] - previousOwnCoords[2]) / DT,
+            (ownCoords[3] - previousOwnCoords[3]) / DT
+        }
+    end
+    previousOwnCoords        = { ownCoords[1], ownCoords[2], ownCoords[3] }
+
+    local localVelocityArray =
+        rotateVectorByInverseQuaternion(
+            worldVelocity,
+            ownOrientation
+        )
+    local selfLocalVelocity  = {
+        x = localVelocityArray[1],
+        y = localVelocityArray[2],
+        z = localVelocityArray[3]
+    }
+
+    local isAntiShipMode     = input.getBool(2)
+    local isLaunch           = input.getBool(3)
+    local distance           = vector_magnitude(subtract(targetCoords, ownCoords))
 
     if isLaunch and not isLaunched then
         lauchedCount = lauchedCount + 1
@@ -344,7 +460,7 @@ function onTick()
     ----------------------------------------------------------------------------
     -- 対水上モード時の低空巡航 (シースキミング) 処理
     ----------------------------------------------------------------------------
-    local yawAngle,pitchAngle
+    local yawAngle, pitchAngle
     if isGuidanceStart then
         local dx = targetCoordsVec.x - ownCoordsVec.x
         local dz = targetCoordsVec.z - ownCoordsVec.z
@@ -356,13 +472,13 @@ function onTick()
             targetCoordsVec.y = 0
             isHeadCapture = false
             -- 水平距離が急降下開始水平距離より離れている場合は自機から目標方向へ100m先を仮の目標にする
-            if horizontalDist > diveStartDistance or (horizontalDist > 500 and ownCoordsVec.y < 20) then
+            if horizontalDist > diveStartDistance then
                 isPPN = true
                 local dirX = dx / horizontalDist
                 local dirZ = dz / horizontalDist
                 activeTargetCoordsVec = {
                     x = ownCoordsVec.x + dirX * 100,
-                    y = math.max(ownCoords[2] / 1.3, SKIMMING_ALT),
+                    y = math.max(ownCoords[2] / 1.5, SKIMMING_ALT),
                     z = ownCoordsVec.z + dirZ * 100
                 }
             end
@@ -477,7 +593,7 @@ function onTick()
         else -- 対空モード
             -- 海ポチャ対策として水平距離が500mより離れている場合は「自機から目標方向へ500m先、高度下限30m」を仮の目標にする
             isHeadCapture = false
-            if horizontalDist > 1500 then
+            --[[             if horizontalDist > 1500 then
                 local dirX = dx / horizontalDist
                 local dirZ = dz / horizontalDist
                 activeTargetCoordsVec = {
@@ -485,7 +601,7 @@ function onTick()
                     y = math.max(targetCoords[2], 30),
                     z = ownCoordsVec.z + dirZ * 1000
                 }
-            end
+            end ]]
         end
     end
 
@@ -568,18 +684,38 @@ function onTick()
         approach_Velocity = 0
     end
     oldDistance = distance
-    -- ミサイルレーダーの有効圏内かつ対水上モードでない場合ミサイルレーダーを有効化・中間誘導用翼の出力をゼロに
-    if distance + approach_Velocity * LOGIC_DELAY < MISSILE_FIN_DISTANCE_THRESHOLD and not isAntiShipMode and isLaunched then
-        missileRadarIO = true
-    end
+
+    -- 重力補償だけは常に効かせたいので重力補正の前で誘導を無効化
     if missileRadarIO then
         yawAngle = 0
         pitchAngle = 0
     end
 
+    -- 誘導指令へ重力補償だけを加算する。
+    -- 発射前は母機の移動を拾わないよう無効化する。
+    if isLaunch then
+        local gravity = getLocalGravity(ownOrientation)
+        local gravityPitchCorrection,
+        gravityYawCorrection =
+            getGravityCorrection(
+                selfLocalVelocity,
+                gravity
+            )
+
+        pitchAngle = pitchAngle + gravityPitchCorrection
+        yawAngle = yawAngle + gravityYawCorrection
+    end
+    -- ミサイルレーダーの有効圏内かつ対水上モードでない場合ミサイルレーダーを有効化・中間誘導用翼の出力をゼロに
+    local isFuseEnable = false
+    if distance + approach_Velocity * LOGIC_DELAY < MISSILE_FIN_DISTANCE_THRESHOLD and not isAntiShipMode and isLaunched then
+        missileRadarIO = true
+        isFuseEnable = true
+    end
+
     output.setBool(1, missileRadarIO)
     output.setBool(2, isAntiShipMode)
     output.setBool(3, mainRadarIO)
+    output.setBool(4, isFuseEnable)
     output.setNumber(1, yawAngle)
     output.setNumber(2, pitchAngle)
     output.setNumber(3, approach_Velocity)

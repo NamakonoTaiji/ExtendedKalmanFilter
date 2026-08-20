@@ -41,30 +41,31 @@
 PI = math.pi
 PI2 = PI * 2
 DT = 1 / 60           -- EKF更新の時間ステップ (秒)
-MAX_RADAR_TARGETS = 8 -- 処理するレーダー目標の最大数
+MAX_RADAR_TARGETS = 7 -- 処理するレーダー目標の最大数
 NUM_STATES = 9        -- EKF状態数 (x, vx, ax, y, vy, ay, z, vz, az)
 BASE_CHANNEL = 3
 
 -- EKF パラメータ (プロパティから読み込む想定)
 DATA_ASSOCIATION_EPSILON_THRESHOLD = property.getNumber("D_ASOC_EPS") -- データアソシエーションのε閾値
-TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")            -- 目標ロスト判定のTick数
+TARGET_LOST_THRESHOLD_TICKS = math.max(property.getNumber("T_LOST"), 8) -- 最低2レーダー周期は保持
 --PROCESS_NOISE_BASE = property.getNumber("P_BASE")                     -- プロセスノイズの大きさを調整
 --PROCESS_NOISE_ADAPTIVE_SCALE = property.getNumber("P_ADPT")                      -- epsilon が非常に大きい（機動時）に、P_BASE に追加されるノイズの最大量
 --PROCESS_NOISE_EPSILON_THRESHOLD = property.getNumber("P_NOISE_EPS_THRS")         -- P_ADPTによるスケーリングを開始するεの閾値。εがこれを超えると適応的調整が入り始める。
 --PROCESS_NOISE_EPSILON_SLOPE = property.getNumber("P_NOISE_EPS_SLOPE")            -- プロセスノイズ適応調整のε傾き。これが大きいほどプロセスノイズの増加が急になる。
 PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") -- 観測が無い間に予測の信頼を下げる係数。値が大きいほど観測がない間に予測を信頼しなくなる。
-INITIAL_ACCELERATION_VARIANCE = 1e+3
-INITIAL_VELOCITY_VARIANCE = 1e+3
+INITIAL_ACCELERATION_VARIANCE = 1e4
+INITIAL_VELOCITY_VARIANCE = 3.6e5
 
 -- ★ PI制御パラメータ (新規追加)
 NOISE_TARGET_EPSILON = property.getNumber("NOISE_TARGET_EPS") -- PI制御の目標epsilon値
 NOISE_INTEGRAL_GAIN = property.getNumber("NOISE_I_GAIN")      -- PI制御の積分ゲイン
-NOISE_OUTPUT_MIN = -8                                         -- PI制御出力の下限
-NOISE_OUTPUT_MAX = 5                                          -- PI制御出力の上限
+NOISE_OUTPUT_MIN = -3                                         -- PI制御出力の下限
+NOISE_OUTPUT_MAX = 3                                          -- PI制御出力の上限
 
 LOGIC_DELAY = property.getNumber("LOGIC_DELAY")
-R0_DIST_VAR_FACTOR = 6.67e-3 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
-R0_ANGLE_VAR = 2.63e-3       --((2e-3 * PI2) ^ 2) / 12(文字数対策のため直接計算)
+-- レーダ単体の理論値ではなく、4台間の取付・姿勢・時刻差を含めた実効共分散
+R0_DIST_VAR_FACTOR = 6.67e-3
+R0_ANGLE_VAR = 2.63e-3
 OBSERVATION_NOISE_MATRIX_TEMPLATE = { { R0_DIST_VAR_FACTOR, 0, 0 }, { 0, R0_ANGLE_VAR, 0 }, { 0, 0, R0_ANGLE_VAR } }
 
 
@@ -640,13 +641,19 @@ end
 ---@param ownPosition table 自機位置
 ---@return number epsilon, table Y, table S_inv, table H , table R_matrix (マハラノビス距離), table Y (イノベーション), table S_inv (イノベーション共分散の逆), table H, table R_matrix (更新ステップ用)
 function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
-    local Z, epsilon, Y, S_inv, H, R_matrix, h, S, epsilon_matrix
+    local Z, epsilon, Y, S_inv, H, R_matrix, h, S, epsilon_matrix, azimuthWeight
     -- 観測ベクトル Z = [距離, グローバル仰角, グローバル方位角]^T
     Z = { { observation.distance }, { observation.elevation }, { observation.azimuth } }
 
     -- ヤコビアン H と 観測予測 h を計算
     H, h = getObservationJacobianAndPrediction(X_predicted, ownPosition)
     -- if H == nil then return math.huge, nil, nil, nil, nil end
+
+    -- 天頂・天底付近では方位角が定義できないため、仰角75.5度付近から
+    -- 方位角の寄与を連続的に弱める（cos(elevation) = 水平距離 / 距離）
+    azimuthWeight = math.min(1, math.cos(h[2][1]) * 4, math.cos(Z[2][1]) * 4) ^ 2
+    H[3][1] = H[3][1] * azimuthWeight
+    H[3][7] = H[3][7] * azimuthWeight
 
     -- 観測ノイズ R
     R_matrix = MatrixCopy(OBSERVATION_NOISE_MATRIX_TEMPLATE)
@@ -656,16 +663,12 @@ function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
     Y = zeros(3, 1)
     Y[1][1] = Z[1][1] - h[1][1]                          -- 距離
     Y[2][1] = calculateAngleDifference(h[2][1], Z[2][1]) -- 仰角
-    Y[3][1] = calculateAngleDifference(h[3][1], Z[3][1]) -- 方位角
+    Y[3][1] = calculateAngleDifference(h[3][1], Z[3][1]) * azimuthWeight -- 方位角
 
     -- イノベーション共分散 S = H * P_pred * H^T + R
     S = sum(mul(H, P_predicted, T(H)), R_matrix)
     S_inv = inv3(S)
-
-    -- if S_inv == nil then
-    --     -- 逆行列計算失敗
-    --     return math.huge, nil, nil, nil, nil
-    -- end
+    if S_inv == nil then return math.huge end
 
     -- 誤差指標 epsilon (マハラノビス距離) の計算: epsilon = Y^T * S^-1 * Y
     epsilon = 1.0
@@ -673,31 +676,6 @@ function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
     if epsilon_matrix and epsilon_matrix[1] and epsilon_matrix[1][1] then
         epsilon = epsilon_matrix[1][1]
     end
-    -- (既存の epsilon 計算の直後に追加)
-
-    -- 1. トラックの現在推測速度を取得 (Vx, Vy, Vz)
-    local vx, vy, vz = X_predicted[2][1], X_predicted[5][1], X_predicted[8][1]
-    local vSpeed = math.sqrt(vx ^ 2 + vy ^ 2 + vz ^ 2)
-
-    -- 2. ミサイル等、一定以上の速度（例: 50m/s以上）で移動している目標の場合のみ適用
-    if vSpeed > 50 then
-        -- 予測位置から今回の観測位置への方向ベクトル
-        local dx = observation.globalX - X_predicted[1][1]
-        local dy = observation.globalY - X_predicted[4][1]
-        local dz = observation.globalZ - X_predicted[7][1]
-        local dDist = math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
-
-        if dDist > 1e-3 then
-            -- 速度ベクトルと移動ベクトルのコサイン類似度 (1.0 = 進行方向と完全に一致)
-            local cosTheta = (vx * dx + vy * dy + vz * dz) / (vSpeed * dDist)
-
-            -- 進行方向から外れているほど epsilon を激しく倍増させるペナルティ
-            if cosTheta < 0.8 then
-                epsilon = epsilon * (2.0 - cosTheta)
-            end
-        end
-    end
-
     return epsilon, Y, S_inv, H, R_matrix
 end
 
@@ -874,16 +852,10 @@ function onTick()
 
     -- (B-1) 全ての組み合わせのマハラノビス距離を計算 (Gating含む)
     for trackID, predTrack in pairs(predictedTracks) do
-        local track = predTrack.originalTrack -- ★ 元のトラックオブジェクトを参照
         for obsIndex, obs in ipairs(currentObservations) do
             local epsilon, Y, S_inv, H, R_matrix = calculateInnovation(
                 predTrack.X_pred, predTrack.P_pred, obs, ownGlobalPos
             )
-
-            -- 前回と同じ観測インデックスなら epsilon を割引して優先する
-            if track.lastAssignedObsIndex == obsIndex then
-                epsilon = epsilon * 0.6
-            end
 
             if epsilon < DATA_ASSOCIATION_EPSILON_THRESHOLD then
                 -- 閾値以下のペアを候補に追加
@@ -940,11 +912,9 @@ function onTick()
                 track.lastSeenTick = currentTick
                 track.hits = track.hits + 1
                 track.misses = 0 -- ミスカウントリセット
-                track.lastAssignedObsIndex = obsIndex
             else
                 -- 更新失敗 -> ミス扱い
                 track.misses = track.misses + 1
-                track.lastAssignedObsIndex = nil
             end
         else
             -- === マッチしなかった: ミス処理 ===
@@ -952,11 +922,10 @@ function onTick()
             -- track.X = predTrack.X_pred -- lastTick を更新しないので予測状態は保持しない方が良い
             -- track.P = predTrack.P_pred
             track.misses = track.misses + 1
-            track.lastAssignedObsIndex = nil
         end
 
-        -- ロスト判定 (連続ミス回数)
-        if track.misses > TARGET_LOST_THRESHOLD_TICKS then
+        -- ロスト判定 (別方位レーダーの3tickをミス扱いして即削除しない)
+        if currentTick - track.lastSeenTick > TARGET_LOST_THRESHOLD_TICKS then
             table.insert(trackIDsToDelete, trackID)
         end
     end
@@ -983,7 +952,8 @@ function onTick()
     local sortedTracks = {}
 
     for trackID, track in pairs(trackedTargets) do
-        table.insert(sortedTracks, track)
+        -- 1回だけの誤観測・重複トラックは仮トラックとして出力しない
+        if track.hits > 1 then table.insert(sortedTracks, track) end
     end
 
     local targetToOutput = nil

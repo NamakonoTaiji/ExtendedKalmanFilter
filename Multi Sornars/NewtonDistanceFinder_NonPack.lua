@@ -677,14 +677,8 @@ function onTick()
 
     if #pendingDetections > 0 and
         (closingPing or pongSettled) then
-        debug.log(
-            "ClusterInput: " .. #pendingDetections
-        )
         completedDetections =
             clusterDetections(pendingDetections)
-        debug.log(
-            "Clusters: " .. #completedDetections
-        )
         pendingDetections = {}
         lastDetectionTick = -1
     end
@@ -709,12 +703,5 @@ function onTick()
         output.setNumber(3, d.z)
         output.setNumber(4, d.targetReachedTick)
         output.setNumber(5, d.merges)
-        debug.log(
-            "Output XYZ/Merge: " ..
-            d.x .. ", " ..
-            d.y .. ", " ..
-            d.z .. " / " ..
-            d.merges
-        )
     end
 end

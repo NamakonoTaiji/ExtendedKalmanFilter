@@ -49,18 +49,13 @@ DT = 1 / 60           -- EKF更新の時間ステップ (秒)
 MAX_RADAR_TARGETS = 6 -- 一次フィルターから受け取る最大目標数
 NUM_STATES = 6        -- EKF状態数 (x, vx, y, vy, z, vz)
 BASE_CHANNEL = 4
-
+MIN_DISTANCE = property.getNumber("MIN_DISTANCE") -- 観測する最低距離
 -- EKF パラメータ (プロパティから読み込む想定)
 DATA_ASSOCIATION_EPSILON_THRESHOLD = property.getNumber("D_ASOC_EPS")            -- データアソシエーションのε閾値
 TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")                       -- 目標ロスト判定のTick数
 
-PREDICTION_UNCERTAINTY_FACTOR_BASE = property.getNumber("PRED_UNCERTAINTY_FACT") -- 観測が無い間に予測の信頼を下げる係数。値が大きいほど観測がない間に予測を信頼しなくなる。
 INITIAL_VELOCITY_VARIANCE = 10000
 PROCESS_NOISE = property.getNumber("PROCESS_NOISE")
--- ★ PI制御パラメータ (新規追加)
-NOISE_TARGET_EPSILON = property.getNumber("NOISE_TARGET_EPS") -- PI制御の目標epsilon値
-NOISE_INTEGRAL_GAIN = property.getNumber("NOISE_I_GAIN")      -- PI制御の積分ゲイン
-
 LOGIC_DELAY = property.getNumber("LOGIC_DELAY")
 
 R0_DIST_VAR_FACTOR = 0.005 --(0.02 ^ 2) / 12(文字数対策のため直接計算)
@@ -650,7 +645,7 @@ function onTick()
     for i = 1, MAX_RADAR_TARGETS do
         local dist, localAziRad, localEleRad, targetReachedTick, localPos, globalPos, relative, distCheck
         dist = input.getNumber(BASE_CHANNEL * i - 3)
-        if dist > 0 then
+        if dist > MIN_DISTANCE then
             localAziRad = input.getNumber(BASE_CHANNEL * i - 2)
             localEleRad = input.getNumber(BASE_CHANNEL * i - 1)
             targetReachedTick = input.getNumber(BASE_CHANNEL * i)

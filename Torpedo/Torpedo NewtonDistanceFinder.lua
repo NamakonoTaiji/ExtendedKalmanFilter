@@ -10,11 +10,10 @@
 - 最大6目標を、後段の6状態カルマンフィルター用4ch形式で出力する。
 
 入力 On/Off:
-- ch 1-8: ソナー目標1-8のエコー受信パルス（受信TickのみOn）
+- ch 1: ピンガーリクエスト
 
 入力 Number:
 - ch 1-16: ソナー角度。目標nは ch(2n-1)=方位角、ch(2n)=仰角（回転単位）
-- ch 17: ピンガー周期
 - ch 21-23: 検証用固定標的のグローバル座標 X,Y,Z
 - ch 24-26: Physics Sensorローカル速度 X(右),Y(上),Z(前) [m/s]
 - ch 27-29: 自機グローバル座標 X(東),Y(上),Z(北)
@@ -359,18 +358,18 @@ function onTick()
     localVel = { input.getNumber(24), input.getNumber(25), input.getNumber(26) }
 
     -- --- Ping 開始/終了処理 ---
-    local intervalTicks = input.getNumber(20)
+    local isPingerRequest = input.getBool(1)
 
-    if not isPinging and currentTick >= pingSentTick + intervalTicks then
-        pingSentTick = currentTick + SEND_LOGIC_DELAY
+    if not isPingerRequest then
+        if not isPinging then
+            pingSentTick = currentTick + SEND_LOGIC_DELAY
+        end
         isPinging = true
         pingGlobalPosition.x = ownGlobalPos.x
         pingGlobalPosition.y = ownGlobalPos.y
         pingGlobalPosition.z = ownGlobalPos.z
-    elseif isPinging then
-        if currentTick >= pingSentTick + intervalTicks then
-            isPinging = false
-        end
+    else
+        isPinging = false
     end
 
     local detectionsThisTick = {}
@@ -380,13 +379,13 @@ function onTick()
     if isPinging then
         -- 各ソナー入力チャンネル(1-8)をチェック
         for i = 1, MAX_TARGETS do
-            local echoDetected = input.getBool(i)
+            local echoDetected = input.getNumber(i*2) ~= 0
 
             if echoDetected then
                 local echoReceivedTick_actual = currentTick - RECEIVE_LOGIC_DELAY
                 local pingTimeTick = echoReceivedTick_actual - pingSentTick
 
-                if pingTimeTick > 0 then -- 至近距離は出力しない
+                if pingTimeTick > 0 then
                     local measuredAziTurns = input.getNumber((i - 1) * 2 + 1)
                     local measuredEleTurns = input.getNumber((i - 1) * 2 + 2)
                     -- 角度をラジアンに変換

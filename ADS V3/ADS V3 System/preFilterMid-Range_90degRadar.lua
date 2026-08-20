@@ -6,7 +6,8 @@
 -- カルマンフィルターに送る情報に一次処理を行うスクリプト
 -- 仕様 --
 -- * ミッドレンジフィルターによりノイズを除去
--- * 観測をクラスタリングする。ローカル座標間の距離が近い目標は同じ目標とみなし、それぞれを平均した位置を観測とする。距離が長いほどクラスタリングさせる距離の閾値が増える
+-- * 4tick分の観測をローカル直交座標でミッドレンジ平滑化する
+-- * 同一レーダーが返す近接目標同士は統合せず、別目標としてカルマンフィルターへ渡す
 -- * ローカル座標での変換を行い物理センサ基準での観測にする
 -- * 最後に座標変換を行った距離、方位角、仰角を出力
 -- * 出力は4tick目のみ行い他のtickは常に0を出力
@@ -28,7 +29,7 @@
 -- num1: 距離(m)
 -- num2: 方位角(ラジアン)
 -- num3: 仰角(ラジアン)
--- これを最大8目標分24chまで繰り返す
+-- これを最大7目標分21chまで繰り返す
 -- num25: 自機ワールド座標X
 -- num26: 自機ワールド座標Y
 -- num27: 自機ワールド座標Z
@@ -54,24 +55,6 @@ local RADAR_ANGLE_OFFSET = 0.25
 --------------------------------------------------------------------------------
 -- ヘルパー関数 (ベクトル演算)
 --------------------------------------------------------------------------------
-
---- ベクトル加算
-function vectorAdd(v1, v2)
-    return { x = (v1.x or 0) + (v2.x or 0), y = (v1.y or 0) + (v2.y or 0), z = (v1.z or 0) + (v2.z or 0) }
-end
-
---- ベクトル・スカラー乗算
-function vectorScalarMul(s, v)
-    return { x = s * (v.x or 0), y = s * (v.y or 0), z = s * (v.z or 0) }
-end
-
---- 2点間の距離 (ローカル座標)
-function vectorDistance(v1, v2)
-    local dx = (v1.x or 0) - (v2.x or 0)
-    local dy = (v1.y or 0) - (v2.y or 0)
-    local dz = (v1.z or 0) - (v2.z or 0)
-    return math.sqrt(dx ^ 2 + dy ^ 2 + dz ^ 2)
-end
 
 --- ベクトルの大きさ（原点からの距離）
 function vectorMagnitude(v)
@@ -100,102 +83,73 @@ function maxMin(numList)
     return (max + min) / 2
 end
 
---- 1. 時間軸の平滑化 (ミッドレンジフィルター)
--- スイープバッファ [targetIdx][tick] から、ターゲットごとの平均値を計算
+function addSweepSample(cluster, pos)
+    table.insert(cluster.x, pos.x)
+    table.insert(cluster.y, pos.y)
+    table.insert(cluster.z, pos.z)
+    local n = #cluster.x
+    cluster.cx = cluster.cx + (pos.x - cluster.cx) / n
+    cluster.cy = cluster.cy + (pos.y - cluster.cy) / n
+    cluster.cz = cluster.cz + (pos.z - cluster.cz) / n
+end
+
+--- 時間軸の平滑化 (ローカル直交座標のミッドレンジフィルター)
+-- 角度境界を跨ぐ観測でも破綻しないよう、極座標をXYZに変換してから平滑化する
+-- 最初のtickの目標数を維持した一対一対応とし、高速目標を別クラスタへ分裂させない
 ---@param sweepBuffer table [targetIdx][tick] = {obs}
 ---@return table フィルター後のリスト { distance, azimuthRad, elevationRad }
 function applyMidRangeFilter(sweepBuffer)
-    local filteredTargets = {}
-
-    -- ターゲットインデックス (1～8) ごとにループ
-    for targetIdx, tickData in pairs(sweepBuffer) do
-        local distList = {}
-        local aziList = {}
-        local eleList = {}
-
-        -- スイープ(時間軸)を走査
-        for tick, obs in pairs(tickData) do
-            table.insert(distList, obs.distance)
-            table.insert(aziList, obs.azimuthRad)
-            table.insert(eleList, obs.elevationRad)
-        end
-
-        if #distList > 0 then
-            table.insert(filteredTargets, {
-                distance = maxMin(distList),
-                azimuthRad = maxMin(aziList),
-                elevationRad = maxMin(eleList)
-            })
-        end
-    end
-    return filteredTargets
-end
-
---- 2. 空間軸の平滑化 (クラスタリング)
--- ミッドレンジフィルター後の観測値リストをクラスタリング
----@param obsList table 観測値 { distance, azimuthRad, elevationRad } のリスト
----@return table クラスタリング・平均化された観測値 { distance, azimuthRad, elevationRad }
-function clusterTargets(obsList)
-    local CLUSTER_THRESHOLD_BASE = 15      -- 基準閾値 (15m)
-    local CLUSTER_THRESHOLD_FACTOR = 0.012 -- 距離係数
-
-    -- 1. 観測値をローカル座標に変換 (計算用)
-    local localObsList = {}
-    for _, obs in ipairs(obsList) do
-        local pos = localAngleDistToLocalCoords(obs.distance, obs.azimuthRad, obs.elevationRad)
-        table.insert(localObsList, {
-            originalDistance = obs.distance, -- 閾値計算用に元の距離を保持
-            pos = pos
-        })
-    end
-
-    local clusteredList = {}
-    local i = 1
-    while i <= #localObsList do
-        local g = localObsList[i]
-
-        -- 2. グループ化 (基準点g と 仲間Y)
-        local clusterPosSum = { x = g.pos.x, y = g.pos.y, z = g.pos.z }
-        local clusterCount = 1
-
-        -- 3. 動的閾値 cV の計算
-        local cV = (CLUSTER_THRESHOLD_FACTOR * g.originalDistance) + CLUSTER_THRESHOLD_BASE
-
-        local j = i + 1
-        while j <= #localObsList do
-            local N = localObsList[j]
-            -- 3. 空間距離の計算
-            local dist = vectorDistance(g.pos, N.pos)
-
-            if dist < cV then
-                -- 仲間とみなす
-                clusterPosSum = vectorAdd(clusterPosSum, N.pos)
-                clusterCount = clusterCount + 1
-                table.remove(localObsList, j)
-                -- j はデクリメントしない (table.remove で j 番目が次に来るため)
-            else
-                j = j + 1 -- 次へ
+    local observationsByTick, clusters = {}, {}
+    for targetIdx = 1, DETECTION_MAX do
+        local tickData = sweepBuffer[targetIdx]
+        if tickData then
+            for tick, obs in pairs(tickData) do
+                local pos = localAngleDistToLocalCoords(obs.distance, obs.azimuthRad, obs.elevationRad)
+                observationsByTick[tick] = observationsByTick[tick] or {}
+                table.insert(observationsByTick[tick], pos)
             end
         end
+    end
 
-        -- 4. 平均化
-        local avgPos = vectorScalarMul(1 / clusterCount, clusterPosSum)
+    for tick = 0, DETECTION_INTERVAL - 1 do
+        local observations = observationsByTick[tick] or {}
+        if #clusters == 0 then
+            for _, pos in ipairs(observations) do
+                local cluster = { x = {}, y = {}, z = {}, cx = pos.x, cy = pos.y, cz = pos.z }
+                addSweepSample(cluster, pos)
+                table.insert(clusters, cluster)
+            end
+        else
+            local candidates, usedClusters, usedObservations = {}, {}, {}
+            for clusterIndex, cluster in ipairs(clusters) do
+                for observationIndex, pos in ipairs(observations) do
+                    local dx, dy, dz = pos.x - cluster.cx, pos.y - cluster.cy, pos.z - cluster.cz
+                    table.insert(candidates, { dx ^ 2 + dy ^ 2 + dz ^ 2, clusterIndex, observationIndex })
+                end
+            end
+            table.sort(candidates, function(a, b) return a[1] < b[1] end)
+            for _, candidate in ipairs(candidates) do
+                local clusterIndex, observationIndex = candidate[2], candidate[3]
+                if not usedClusters[clusterIndex] and not usedObservations[observationIndex] then
+                    addSweepSample(clusters[clusterIndex], observations[observationIndex])
+                    usedClusters[clusterIndex] = true
+                    usedObservations[observationIndex] = true
+                end
+            end
+        end
+    end
 
-        -- 5. 逆変換 (平均化された座標から 距離, 方位, 仰角 を再計算)
-        local avgDist = vectorMagnitude(avgPos)
-        local angles = localCoordsToLocalAngle(avgPos)
-
-        -- 6. 結果リストに追加
-        table.insert(clusteredList, {
-            distance = avgDist,
+    local filteredTargets = {}
+    for _, cluster in ipairs(clusters) do
+        local pos = { x = maxMin(cluster.x), y = maxMin(cluster.y), z = maxMin(cluster.z) }
+        local angles = localCoordsToLocalAngle(pos)
+        table.insert(filteredTargets, {
+            distance = vectorMagnitude(pos),
             azimuthRad = angles.azimuth,
             elevationRad = angles.elevation
         })
-
-        i = i + 1 -- 次の基準点へ
     end
-
-    return clusteredList
+    return filteredTargets
 end
 
 --- ローカル座標から方位角と仰角へ変換
@@ -282,14 +236,11 @@ function onTick()
         -- (sweepDataBuffer には t=0, 1, 2, 3 のデータが揃っている)
         local filteredTargets = applyMidRangeFilter(sweepDataBuffer)
 
-        -- 5. クラスタリング (空間軸の平滑化)
-        local clusteredTargets = clusterTargets(filteredTargets)
+        -- 5. オフセット適用 & 出力 (仕様: スイープ完了tickのみ出力)
+        for i = 1, #filteredTargets do
+            if i > DETECTION_MAX then break end -- 7目標まで
 
-        -- 6. オフセット適用 & 出力 (仕様: スイープ完了tickのみ出力)
-        for i = 1, #clusteredTargets do
-            if i > DETECTION_MAX then break end -- 8目標まで
-
-            local target = clusteredTargets[i]
+            local target = filteredTargets[i]
 
             -- (A) ローカル座標に変換
             local pos = localAngleDistToLocalCoords(target.distance, target.azimuthRad, target.elevationRad)
@@ -308,14 +259,13 @@ function onTick()
             output.setNumber(i * OUTPUT_CHANNEL_BASE - 2, newDist)
             output.setNumber(i * OUTPUT_CHANNEL_BASE - 1, newAngles.azimuth)
             output.setNumber(i * OUTPUT_CHANNEL_BASE, newAngles.elevation)
-            -- 7. パススルー等の出力
+            -- 6. パススルー等の出力
             output.setNumber(25, ownWorldX)
             output.setNumber(26, ownWorldY)
             output.setNumber(27, ownWorldZ)
             output.setNumber(28, ownEulerX)
             output.setNumber(29, ownEulerY)
             output.setNumber(30, ownEulerZ)
-            output.setNumber(21, 1)
         end
     end
 

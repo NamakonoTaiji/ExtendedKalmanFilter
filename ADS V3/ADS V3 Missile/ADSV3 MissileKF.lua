@@ -94,6 +94,7 @@ radarManualSweepY = 0
 dataLinkGlobalPos = { 0, 0, 0 }
 dataLinkTargetVelocity = { 0, 0, 0 }
 isAntiShipMode = false
+hasPrelaunchTargetData = false
 --------------------------------------------------------------------------------
 -- ベクトル演算ヘルパー関数
 --------------------------------------------------------------------------------
@@ -686,7 +687,7 @@ end
 
 -- ★【新関数 3】EKF 更新ステップ
 ---@return table X_updated, table P_updated, number epsilon, boolean success
-function updateStep(X_predicted, P_predicted, observation, ownPosition, Y, S_inv, H, R_matrix)
+function updateStep(X_predicted, P_predicted, Y, S_inv, H, R_matrix)
     local K, X_updated, I_minus_KH, P_up_term1, P_up_term2, P_updated, epsilon, epsilon_matrix
     -- カルマンゲイン K = P_pred * H^T * S^-1
     K = mul(P_predicted, T(H), S_inv)
@@ -762,7 +763,6 @@ function onTick()
     -- 関数冒頭でローカル変数を宣言
 
     currentTick = currentTick + 1
-    isTracking = false -- Tick開始時にリセット
 
     -- 1. 入力読み込み
 
@@ -773,27 +773,47 @@ function onTick()
     ownOrientation = eulerZYX_to_quaternion(ownEuler.Roll, ownEuler.Yaw, ownEuler.Pitch)
 
     -- データリンク目標座標,トラッキングID
-    trackIDFromADS = input.getNumber(32)
-    if trackIDFromADS > 100000 then
-        trackIDFromADS = trackIDFromADS - 100000
-        if not isLaunch then
-            dataLinkTrackingID = trackIDFromADS
-            if dataLinkTrackingID > 90000 then
-                isAntiShipMode = true
-                dataLinkTrackingID = dataLinkTrackingID - 90000
-            else
-                isAntiShipMode = false
+    -- 発射前フレーム(ID > 100000)はID・座標・速度を同じtickで一括保存する。
+    local receivedTargetID = input.getNumber(32)
+    local receivedTargetPos = { input.getNumber(22), input.getNumber(23), input.getNumber(24) }
+    local receivedTargetVelocity = { input.getNumber(19), input.getNumber(20), input.getNumber(21) }
+    local decodedTargetID = receivedTargetID
+    local isPrelaunchFrame = receivedTargetID > 100000
+    local shouldAcceptData = false
+
+    if isPrelaunchFrame then
+        decodedTargetID = receivedTargetID - 100000
+        local receivedAntiShipMode = decodedTargetID > 90000
+        if receivedAntiShipMode then decodedTargetID = decodedTargetID - 90000 end
+
+        if not isLaunch and decodedTargetID > 0 then
+            if dataLinkTrackingID ~= decodedTargetID then
+                -- 別目標の古い座標を、新しいIDの受信完了データとして扱わない。
+                hasPrelaunchTargetData = false
+            end
+            dataLinkTrackingID = decodedTargetID
+            isAntiShipMode = receivedAntiShipMode
+
+            -- IDだけが先に到着した不完全なフレームは採用せず、次tick以降の完全なデータを待つ。
+            local hasTargetCoordinates = receivedTargetPos[1] ~= 0 or receivedTargetPos[2] ~= 0 or
+                receivedTargetPos[3] ~= 0
+            if hasTargetCoordinates then
+                shouldAcceptData = true
+                hasPrelaunchTargetData = true
             end
         end
-    elseif dataLinkTrackingID and trackIDFromADS == dataLinkTrackingID then
+    elseif hasPrelaunchTargetData and dataLinkTrackingID and decodedTargetID == dataLinkTrackingID then
+        -- 発射後に防空システムから同じ生IDを受け取った時点でデータリンクへ移行する。
         isLaunch = true
+        shouldAcceptData = true
     end
-    isDataLinkUpdate = trackIDFromADS == dataLinkTrackingID
+
+    isDataLinkUpdate = shouldAcceptData
     dataLinkGlobalPos = { dataLinkGlobalPos[1] + dataLinkTargetVelocity[1] * DT, dataLinkGlobalPos[2] +
     dataLinkTargetVelocity[2] * DT, dataLinkGlobalPos[3] + dataLinkTargetVelocity[3] * DT }
     if isDataLinkUpdate then
-        dataLinkGlobalPos = { input.getNumber(22), input.getNumber(23), input.getNumber(24) }
-        dataLinkTargetVelocity = { input.getNumber(19), input.getNumber(20), input.getNumber(21) }
+        dataLinkGlobalPos = receivedTargetPos
+        dataLinkTargetVelocity = receivedTargetVelocity
     end
     dataLinkLocalPos = globalToLocalCoords(dataLinkGlobalPos, ownGlobalPos, ownOrientation)
     dataLinkLocalAngle = localCoordsToLocalAngle(dataLinkLocalPos)
@@ -889,7 +909,6 @@ function onTick()
 
     -- (B-1) 全ての組み合わせのマハラノビス距離を計算 (Gating含む)
     for trackID, predTrack in pairs(predictedTracks) do
-        local track = predTrack.originalTrack -- ★ 元のトラックオブジェクトを参照
         for obsIndex, obs in ipairs(currentObservations) do
             local epsilon, Y, S_inv, H, R_matrix = calculateInnovation(
                 predTrack.X_pred, predTrack.P_pred, obs, ownGlobalPos
@@ -933,12 +952,10 @@ function onTick()
 
         if predTrack.assignedObsIndex then
             -- === マッチした: 更新ステップを実行 ===
-            local obsIndex = predTrack.assignedObsIndex
-            local obs = currentObservations[obsIndex]
             local cache = predTrack.cache
 
             local X_up, P_up, eps_up, success_update = updateStep(
-                predTrack.X_pred, predTrack.P_pred, obs, ownGlobalPos,
+                predTrack.X_pred, predTrack.P_pred,
                 cache.Y, cache.S_inv, cache.H, cache.R_matrix
             )
 
@@ -1026,9 +1043,6 @@ function onTick()
     output.setBool(3, isLaunch)
     if primaryTrackID and trackedTargets[primaryTrackID] then
         targetToOutput = trackedTargets[primaryTrackID]
-        isTracking = true -- プライマリターゲットがいれば Tracking フラグ ON
-    else
-        isTracking = false
     end
 
     if targetToOutput ~= nil then

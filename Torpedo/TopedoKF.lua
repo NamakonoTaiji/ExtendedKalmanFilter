@@ -49,7 +49,7 @@ DT = 1 / 60           -- 更新時間の基準 (秒)
 MAX_RADAR_TARGETS = 6 -- 一次フィルターから受け取る最大目標数
 NUM_STATES = 6        -- EKF状態数 (x, vx, y, vy, z, vz)
 BASE_CHANNEL = 4
-
+MIN_DISTANCE = property.getNumber("MIN_DISTANCE")
 -- カルマンフィルターパラメータ
 DATA_ASSOCIATION_EPSILON_THRESHOLD = property.getNumber("D_ASOC_EPS") -- データアソシエーションのε閾値
 TARGET_LOST_THRESHOLD_TICKS = property.getNumber("T_LOST")            -- 目標ロスト判定のTick数
@@ -549,7 +549,7 @@ function onTick()
     for i = 1, MAX_RADAR_TARGETS do
         local dist, localAziRad, localEleRad, targetReachedTick, localPos, globalPos, relative, distCheck
         dist = input.getNumber(BASE_CHANNEL * i - 3)
-        if dist > 0 then
+        if dist > MIN_DISTANCE then
             localAziRad = input.getNumber(BASE_CHANNEL * i - 2)
             localEleRad = input.getNumber(BASE_CHANNEL * i - 1)
             targetReachedTick = input.getNumber(BASE_CHANNEL * i)

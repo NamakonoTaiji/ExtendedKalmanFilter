@@ -1,9 +1,9 @@
 ---KalmanFilterから時分割で受け取った目標情報から脅威を選別しVLSの発射、データリンクを行うスクリプト
----detectionTickLagが1の時かつhitsが一定値以上超えている場合は撃墜するべき脅威として判定、VLSに目標情報、ID、発射信号が送信される。
+---detectionTickLagが1の時かつ速度・XZ平面の指向条件を満たした同定成功回数が閾値以上の場合、VLSに目標情報、ID、発射信号が送信される。
 ---ミサイルはこの情報を受取ったのちはカルマンフィルターと直接交信を行い目標IDの座標へ中間誘導する。
 --[[
 入力:
-- bool 1: ミサイル対水上モード発射フラグ
+- bool 1..N: 各VLSセルのハッチ開放完了信号
 - num 1-3: 全周防空システムからの目標情報 (X座標E-W,Y座標Altitude,Z座標N-S)
 - num 4-6: 全周防空システムからの目標情報(X軸速度,Y軸速度,Z軸速度,m/s)
 - num 7: 全周防空システムから目標に割り当てられたID
@@ -18,6 +18,7 @@
 - num 16: 対水上目標座標Y
 - num 17: 対水上目標座標Z
 - num 18: 対水上目標ID
+- num 19: ミサイル対水上モード発射フラグ（1 -> On）
 - num 27: 自機X座標
 - num 28: 自機Y座標
 - num 29: 自機Z座標
@@ -25,37 +26,49 @@
 - num 31: 自機オイラー角 Yaw (ラジアン)
 - num 32: 自機オイラー角 Roll (ラジアン)
 出力
-- bool 1..N: VLS発射セル (1 -> On)
-- num 1-6: 目標位置・速度 (X, Y, Z, Vx, Vy, Vz)
+ - bool 1..N: VLS射出セル（ハッチ開放完了後に1tickだけOn）
+ - num 1-6: 目標位置・速度 (X, Y, Z, Vx, Vy, Vz)
 - num 12: 目標ID
 - num 13: 発射するミサイルに割り当てる個別のミサイルID
-- num 14: ミサイルに割り当てる専用周波数
+ - num 14: ミサイルに割り当てる専用周波数
+ - num 16: VLSハッチ開放ビットマスク（bit 0 = セル1、bit 1 = セル2 ...）
 - num 30: 無線機へ出力する周波数
 - num 31: ミサイルが受信する無線周波数
 - num 32: ミサイルへの接続が脅威度判定/火器管制スクリプトであることを識別させるために個別の信号を出力
 ]]
-launchChannel = 0
-
 PI = math.pi
 PI2 = math.pi * 2
 
-INTERCEPT_THREAT_SPEED = property.getNumber("INTERCEPT_THREAT_SPEED") or 150 -- 迎撃する目標の近接速度
--- 「こちらを向いている」と判定する角度の閾値 (コサイン値)
+INTERCEPT_THREAT_SPEED = property.getNumber("INTERCEPT_THREAT_SPEED")
+-- Physics Sensor座標系のXZ平面で「こちらを向いている」と判定する角度の閾値 (コサイン値)
 -- 0.0 = 90度以内, 0.5 = 60度以内, 0.866 = 30度以内
-THREAT_FACING_THRESHOLD = property.getNumber("THREAT_FACING_THRESHOLD") or 0.5
-THREAT_HITS_THRESHOLD = property.getNumber("THREAT_HITS_THRESHOLD") or 5 -- 迎撃に必要な最低ヒット数 (Hits)
-MISSILE_TIMEOUT_TICKS = property.getNumber("MISSILE_TIMEOUT_TICKS") or 30
+THREAT_FACING_THRESHOLD = property.getNumber("THREAT_FACING_THRESHOLD")
+THREAT_HITS_THRESHOLD = property.getNumber("THREAT_HITS_THRESHOLD")
+MISSILE_TIMEOUT_TICKS = property.getNumber("MISSILE_TIMEOUT_TICKS")
+if MISSILE_TIMEOUT_TICKS <= 0 then MISSILE_TIMEOUT_TICKS = 120 end
+MISSILE_INITIAL_CONTACT_TIMEOUT_TICKS = property.getNumber("MISSILE_INITIAL_CONTACT_TIMEOUT_TICKS")
+if MISSILE_INITIAL_CONTACT_TIMEOUT_TICKS <= 0 then MISSILE_INITIAL_CONTACT_TIMEOUT_TICKS = 300 end
+LAUNCH_CANCEL_TICKS = property.getNumber("LAUNCH_CANCEL_TICKS")
+if LAUNCH_CANCEL_TICKS <= 0 then LAUNCH_CANCEL_TICKS = 30 end -- 未設定時は0.5秒
+DATA_PRELOAD_TICKS = property.getNumber("DATA_PRELOAD_TICKS")
+if DATA_PRELOAD_TICKS <= 0 then DATA_PRELOAD_TICKS = 5 end -- 未設定時は約0.08秒
+DATA_POSTLAUNCH_HOLD_TICKS = property.getNumber("DATA_POSTLAUNCH_HOLD_TICKS")
+if DATA_POSTLAUNCH_HOLD_TICKS <= 0 then DATA_POSTLAUNCH_HOLD_TICKS = 15 end -- 射出後も約0.25秒は同じデータを保持
 BASE_FREQUENCY = property.getNumber("BASE_FREQUENCY")
 ADS_SEND_FREQ = property.getNumber("AirDefenceSystemFreq")
 ANTI_SHIP_FREQ = math.floor(ADS_SEND_FREQ / 2)
 
 -- ミサイル管理用データ構造
 nextMissileID = 1            -- 次に割り当てるミサイルID
+launchQueue = {}             -- 発射待ちキュー（先頭から共有データバスを割り当てて連射する）
+queuedThreatTargets = {}     -- 発射待ち中の対空目標ID
 activeMissiles = {}          -- 飛行中のミサイル情報 [missileID] = { targetID, freq, lastSeenTick }
 freqRotList = {}             -- 周波数巡回用のテーブル [1] = 1001, [2] = 1002 ...
 currentRotIndex = 1
 threatTargetsID = {}         -- 追跡中の目標IDとミサイルIDの対応 [targetID] = missileID
+threatHitStates = {}         -- 目標別の脅威条件成立ヒット状態 [targetID] = { count, lastKalmanHits }
 currentTick = 0
+previousAntiShipRequest = false
 antiShipModeTargetQueue = {} -- 対水上モードで発射待ちのミサイルのキュー {antiShipTargetCoordX, antiShipTargetCoordY, antiShipTargetCoordY}
 
 ---@class Vector3
@@ -230,8 +243,62 @@ function calculateAngleDifference(angle1, angle2)
     return diff
 end
 
+-- 時分割で届く各目標について、カルマンフィルターのhitsが増えた時だけ脅威ヒットを数える。
+-- 初回受信時やhitsが複数増えていた場合も、未受信期間の状態は不明なので1回として数える。
+function updateThreatHitCount(targetID, kalmanHits, meetsThreatCondition)
+    local state = threatHitStates[targetID]
+    if state == nil then
+        state = { count = 0, lastKalmanHits = 0 }
+        threatHitStates[targetID] = state
+    elseif kalmanHits < state.lastKalmanHits then
+        -- カルマンフィルター側でヒット数がリセットされた場合は、脅威ヒットもリセットする。
+        state.count = 0
+        state.lastKalmanHits = 0
+    end
+
+    if kalmanHits > state.lastKalmanHits then
+        if meetsThreatCondition then
+            state.count = state.count + 1
+        else
+            state.count = 0
+        end
+    end
+
+    state.lastKalmanHits = kalmanHits
+    return state.count
+end
+
+-- キュー順と物理セル番号を対応させる。先頭がnextMissileID、以後は連番になる。
+function updateLaunchQueueCellAssignments()
+    for index, launch in ipairs(launchQueue) do
+        local assignedMissileID = nextMissileID + index - 1
+        launch.cellID = assignedMissileID
+        launch.missileID = assignedMissileID
+        launch.freq = BASE_FREQUENCY + assignedMissileID
+    end
+end
+
+-- Number 16で複数ハッチを同時に指定するためのビットマスクを作る。
+function buildHatchOpenMask()
+    local mask = 0
+    for _, launch in ipairs(launchQueue) do
+        if launch.cellID >= 1 and launch.cellID <= 32 then
+            mask = mask + 2 ^ (launch.cellID - 1)
+        end
+    end
+    return mask
+end
+
 function onTick()
     currentTick = currentTick + 1
+
+    -- Bool出力は実射出用の1tickパルス。前tickの射出信号を必ず解除する。
+    for channel = 1, 32 do
+        output.setBool(channel, false)
+    end
+    -- Number 16はハッチ開放ビットマスク。後半で発射待ちセルをまとめて指定する。
+    output.setNumber(16, 0)
+
     -- -----------------------------------------------------------------
     -- 1. 受信機から届いたIDの処理（遅延があろうが届いたIDを生かす！）
     -- -----------------------------------------------------------------
@@ -240,6 +307,7 @@ function onTick()
     if rxMissileID > 0 and activeMissiles[rxMissileID] then
         -- 届いたIDの生存時刻を更新（何色の電波で拾ったかどうかも関係なし）
         activeMissiles[rxMissileID].lastSeenTick = currentTick
+        activeMissiles[rxMissileID].hasBeenSeen = true
     end
 
     -- -----------------------------------------------------------------
@@ -261,10 +329,13 @@ function onTick()
     -- 無線受信機の周波数へ出力
     output.setNumber(30, listeningFreq)
     -- -----------------------------------------------------------------
-    -- 3. タイムアウト判定（120tick間一度も通信が届かなかった場合）
+    -- 3. タイムアウト判定
+    -- 発射直後は無線切替に時間がかかるため、最初の返信までは長い猶予を与える。
     -- -----------------------------------------------------------------
     for mID, mData in pairs(activeMissiles) do
-        if currentTick - mData.lastSeenTick > MISSILE_TIMEOUT_TICKS then
+        local timeoutTicks = mData.hasBeenSeen and MISSILE_TIMEOUT_TICKS or MISSILE_INITIAL_CONTACT_TIMEOUT_TICKS
+        local timeoutBaseTick = mData.hasBeenSeen and mData.lastSeenTick or mData.launchTick
+        if currentTick - timeoutBaseTick > timeoutTicks then
             -- 迎撃失敗とみなして目標のロック解除（再迎撃を許可）
             threatTargetsID[mData.targetID] = nil
             activeMissiles[mID] = nil
@@ -275,14 +346,17 @@ function onTick()
     -- 対水上モードの処理
     -- -----------------------------------------------------------------
     -- ミサイル側の受信周波数                                                                                                 -- 対水上モードで戦闘する場合の無線周波数
-    local isAntiShipModeActive = input.getBool(1)                                                              -- trueになる度に対水上モードで一発発射
+    local isAntiShipModeActive = input.getNumber(19) == 1                                                              -- trueになる度に対水上モードで一発発射
     local antiShipTargetCoords = { x = input.getNumber(15), y = input.getNumber(16), z = input.getNumber(17) } -- 対水上モードで発射する目標の座標
     local id = input.getNumber(18)                                                                             -- 火器管制レーダーから送られてくる目標ID
     local targetShipId = id +
         190000
     local antiShipTargetInfos = nil
+    local antiShipRequestSignal = isAntiShipModeActive and id ~= 0
+    local isNewAntiShipRequest = antiShipRequestSignal and not previousAntiShipRequest
+    previousAntiShipRequest = antiShipRequestSignal
     -- 脅威度判定/火器管制マイコンであることを示すために + 100000, 対水上モードであることを示すために + 90000する
-    if isAntiShipModeActive and id ~= 0 then
+    if isNewAntiShipRequest then
         antiShipTargetInfos = {
             x = antiShipTargetCoords.x,
             y = antiShipTargetCoords.y,
@@ -321,93 +395,150 @@ function onTick()
         local targetSpeed               = math.sqrt(detectedTarget.vX ^ 2 + detectedTarget.vY ^ 2 + detectedTarget.vZ ^ 2)
         detectedTarget.speed            = targetSpeed -- (任意) 情報をテーブルに保存
 
-        -- 2. 「こちらを向いているか」を判定
+        -- 2. Physics Sensor座標系のXZ平面で「こちらを向いているか」を判定
         local isFacingUs                = false
-        if targetSpeed > 0.1 then -- 速度がゼロに近い場合は計算不可
-            -- 目標から自機へ向かうベクトル (レーダーオフセット前の自機座標を使用)
-            local vecToOwn = {
-                x = ownWorldCoords.x - detectedTarget.x,
-                y = ownWorldCoords.y - detectedTarget.y,
-                z = ownWorldCoords.z - detectedTarget.z
-            }
-            -- 目標から自機までの距離
-            local distToOwn = math.sqrt(vecToOwn.x ^ 2 + vecToOwn.y ^ 2 + vecToOwn.z ^ 2)
+        local horizontalSpeed           = math.sqrt(detectedTarget.vX ^ 2 + detectedTarget.vZ ^ 2)
+        local vecToOwnX                 = ownWorldCoords.x - detectedTarget.x
+        local vecToOwnZ                 = ownWorldCoords.z - detectedTarget.z
+        local horizontalDistToOwn       = math.sqrt(vecToOwnX ^ 2 + vecToOwnZ ^ 2)
 
-            if distToOwn > 0.1 then
-                -- 目標の速度ベクトル (V_target) と 目標から自機へのベクトル (V_to_own) の内積を計算
-                local dotProduct = detectedTarget.vX * vecToOwn.x +
-                    detectedTarget.vY * vecToOwn.y +
-                    detectedTarget.vZ * vecToOwn.z
+        if horizontalSpeed > 0.1 and horizontalDistToOwn > 0.1 then
+            local horizontalDot = detectedTarget.vX * vecToOwnX + detectedTarget.vZ * vecToOwnZ
+            local facingCosine = horizontalDot / (horizontalSpeed * horizontalDistToOwn)
+            isFacingUs = facingCosine >= THREAT_FACING_THRESHOLD
+        end
 
-                -- 正規化された内積 (コサイン類似度) を計算
-                -- この値が 1 に近いほど、目標は正確に自機を向いている
-                local normalizedDot = dotProduct / (targetSpeed * distToOwn)
+        -- 3. 速度・指向条件を満たした新しい同定成功だけを、目標IDごとに数える
+        local isThreat = isFacingUs and (targetSpeed >= INTERCEPT_THREAT_SPEED)
+        local threatHits = 0
+        if isDetected then
+            threatHits = updateThreatHitCount(detectedTarget.id, detectedTarget.hits, isThreat)
+        end
+        detectedTarget.isThreat = isThreat -- (任意) 情報をテーブルに保存
+        detectedTarget.threatHits = threatHits
+        local checkThreatTargetsID = (threatTargetsID[detectedTarget.id] == nil)
 
-                -- コサイン値が指定した閾値 (例: 0.5 = 60度以内) より大きければ「こちらを向いている」と判定
-                if normalizedDot > THREAT_FACING_THRESHOLD then
-                    isFacingUs = true
+        -- 発射待ちキュー内の同じ目標IDを更新する。
+        -- detectionTickLagは観測間隔でも増えるため、IDが存在する限りロストとは判定しない。
+        if isDetected then
+            for _, queuedLaunch in ipairs(launchQueue) do
+                if queuedLaunch.mode == "air" and detectedTarget.id == queuedLaunch.targetID then
+                    queuedLaunch.lastTargetConfirmedTick = currentTick
+                    queuedLaunch.x = detectedTarget.x
+                    queuedLaunch.y = detectedTarget.y
+                    queuedLaunch.z = detectedTarget.z
+                    queuedLaunch.vX = detectedTarget.vX
+                    queuedLaunch.vY = detectedTarget.vY
+                    queuedLaunch.vZ = detectedTarget.vZ
+                    queuedLaunch.detectionTickLag = detectedTarget.detectionTickLag
                 end
             end
         end
-        -- 3. 最終的な脅威判定
-        local isThreat = isFacingUs and (targetSpeed > INTERCEPT_THREAT_SPEED)
-        detectedTarget.isThreat = isThreat -- (任意) 情報をテーブルに保存
 
-        local checkThreatTargetsID = (threatTargetsID[detectedTarget.id] == nil)
-
-        -- 4. 脅威であり、かつ迎撃条件を満たす場合の処理 (VLS発射など)
-        if isThreat and detectedTarget.detectionTickLag == 1 and detectedTarget.hits > THREAT_HITS_THRESHOLD and checkThreatTargetsID then
-            -- このターゲットは迎撃すべき脅威と判定
-
-            local assignedMissileID = nextMissileID
-            nextMissileID = nextMissileID + 1
-
-            -- ミサイルごとにユニークな周波数を計算 (例: 1001, 1002...)
-            local assignedFreq = BASE_FREQUENCY + assignedMissileID
-
-            -- VLS発射信号 (チャンネル1 On/Off)
-            launchChannel = launchChannel + 1
-            output.setBool(launchChannel, true)
-
-            -- ミサイル管理テーブルに追加
-            threatTargetsID[detectedTarget.id] = assignedMissileID
-            activeMissiles[assignedMissileID] = {
+        -- 4. 迎撃条件を満たした目標を、空きVLSセルがある限り発射待ちキューへ追加する。
+        local hasAvailableCell = nextMissileID + #launchQueue <= 32
+        if hasAvailableCell and isDetected and isThreat and detectedTarget.detectionTickLag == 1 and
+            threatHits >= THREAT_HITS_THRESHOLD and checkThreatTargetsID and
+            queuedThreatTargets[detectedTarget.id] == nil then
+            table.insert(launchQueue, {
+                mode = "air",
                 targetID = detectedTarget.id,
-                freq = assignedFreq,
-                lastSeenTick = currentTick
-            }
+                x = detectedTarget.x,
+                y = detectedTarget.y,
+                z = detectedTarget.z,
+                vX = detectedTarget.vX,
+                vY = detectedTarget.vY,
+                vZ = detectedTarget.vZ,
+                detectionTickLag = detectedTarget.detectionTickLag,
+                lastTargetConfirmedTick = currentTick
+            })
+            queuedThreatTargets[detectedTarget.id] = true
+        end
 
-            -- データリンク情報 (チャンネル 1-6 Number)
-            output.setNumber(1, detectedTarget.x)   -- 目標 Global X
-            output.setNumber(2, detectedTarget.y)   -- 目標 Global Y
-            output.setNumber(3, detectedTarget.z)   -- 目標 Global Z
-            output.setNumber(4, detectedTarget.vX)  -- 目標 Global vX
-            output.setNumber(5, detectedTarget.vY)  -- 目標 Global vY
-            output.setNumber(6, detectedTarget.vZ)  -- 目標 Global vZ
-            output.setNumber(12, detectedTarget.id) -- 目標ID
-            output.setNumber(13, assignedMissileID) -- ミサイルの個別識別用ID
-            output.setNumber(14, assignedFreq)      -- ミサイルに割り当てる専用周波数
-            output.setNumber(15, detectedTarget.detectionTickLag)
-            -- ミサイルが受信する無線の周波数
-            output.setNumber(31, ADS_SEND_FREQ)
-        elseif antiShipTargetInfos then -- 対水上モードの発射シーケンス
-            local assignedMissileID = nextMissileID
-            nextMissileID = nextMissileID + 1
+        hasAvailableCell = nextMissileID + #launchQueue <= 32
+        if hasAvailableCell and antiShipTargetInfos then
+            table.insert(launchQueue, {
+                mode = "antiShip",
+                targetID = antiShipTargetInfos.id,
+                x = antiShipTargetInfos.x,
+                y = antiShipTargetInfos.y,
+                z = antiShipTargetInfos.z,
+                vX = 0,
+                vY = 0,
+                vZ = 0,
+                detectionTickLag = 0
+            })
+        end
+    end
 
-            local assignedFreq = BASE_FREQUENCY + assignedMissileID
+    -- -----------------------------------------------------------------
+    -- 5. 発射待ちキューのロスト処理、ハッチ開放、逐次発射
+    -- -----------------------------------------------------------------
+    local previousQueueHead = launchQueue[1]
+    for index = #launchQueue, 1, -1 do
+        local queuedLaunch = launchQueue[index]
+        if not queuedLaunch.fired and queuedLaunch.mode == "air" and
+            currentTick - queuedLaunch.lastTargetConfirmedTick > LAUNCH_CANCEL_TICKS then
+            queuedThreatTargets[queuedLaunch.targetID] = nil
+            table.remove(launchQueue, index)
+        end
+    end
 
-            launchChannel = launchChannel + 1
-            output.setBool(launchChannel, true)
+    updateLaunchQueueCellAssignments()
+    if launchQueue[1] and launchQueue[1] ~= previousQueueHead then
+        launchQueue[1].dataOutputStartTick = currentTick
+    elseif launchQueue[1] and launchQueue[1].dataOutputStartTick == nil then
+        launchQueue[1].dataOutputStartTick = currentTick
+    end
 
-            output.setNumber(1, antiShipTargetInfos.x)
-            output.setNumber(2, antiShipTargetInfos.y)
-            output.setNumber(3, antiShipTargetInfos.z)
-            output.setNumber(12, antiShipTargetInfos.id)
-            output.setNumber(13, assignedMissileID)
-            output.setNumber(14, assignedFreq)
-            -- ミサイルが受信する無線の周波数
-            output.setNumber(31, ANTI_SHIP_FREQ)
-            table.remove(antiShipTargetInfos, 1)
+    -- キューに入った全セルのハッチを同時に開放する。
+    output.setNumber(16, buildHatchOpenMask())
+
+    -- 共有データバスは先頭の1発に割り当てる。
+    -- 射出後すぐ次弾データへ切り替えると、まだハードポイントから離れていない先発弾が
+    -- 次弾の目標ID・座標・個体IDを取り込むため、切断猶予中は先発弾データを保持する。
+    local launch = launchQueue[1]
+    if launch then
+
+        output.setNumber(1, launch.x)
+        output.setNumber(2, launch.y)
+        output.setNumber(3, launch.z)
+        output.setNumber(4, launch.vX)
+        output.setNumber(5, launch.vY)
+        output.setNumber(6, launch.vZ)
+        output.setNumber(12, launch.targetID)
+        output.setNumber(13, launch.missileID)
+        output.setNumber(14, launch.freq)
+        output.setNumber(15, launch.detectionTickLag)
+        output.setNumber(31, launch.mode == "air" and ADS_SEND_FREQ or ANTI_SHIP_FREQ)
+
+        if launch.fired then
+            -- ハードポイント切断をミサイル側が検出するまで、同じ発射前データを流し続ける。
+            if currentTick >= launch.postLaunchDataHoldEndTick then
+                nextMissileID = launch.missileID + 1
+                table.remove(launchQueue, 1)
+                if launchQueue[1] then launchQueue[1].dataOutputStartTick = currentTick + 1 end
+            end
+        else
+            local isDataPreloaded = currentTick - launch.dataOutputStartTick >= DATA_PRELOAD_TICKS
+            if isDataPreloaded and input.getBool(launch.cellID) then
+                -- ハッチ開放完了を確認したtickだけ、該当セルへ実射出パルスを出す。
+                output.setBool(launch.cellID, true)
+                if launch.mode == "air" then
+                    threatTargetsID[launch.targetID] = launch.missileID
+                    activeMissiles[launch.missileID] = {
+                        targetID = launch.targetID,
+                        freq = launch.freq,
+                        launchTick = currentTick,
+                        lastSeenTick = currentTick,
+                        hasBeenSeen = false
+                    }
+                end
+
+                queuedThreatTargets[launch.targetID] = nil
+                launch.fired = true
+                launch.postLaunchDataHoldEndTick = currentTick + DATA_POSTLAUNCH_HOLD_TICKS
+            end
         end
     end
     output.setNumber(32, 114514) -- 火器管制マイコンからの通信が途絶えたときにわかるようにするための信号
