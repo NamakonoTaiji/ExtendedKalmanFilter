@@ -13,6 +13,7 @@ Track ManagerのComposite出力をそのまま入力へ接続する。
   8. 画面外Lock方向インジケータ
   9. ラベル重複回避
  10. 操作モード表示
+ 11. Lock目標の距離 / 近接速度表示
 
 ======================================================================
 INPUT Number
@@ -41,11 +42,13 @@ Track Manager出力chと同じ番号をそのまま読む。
       1 = Sonar
       2 = Fusion
 
- 12 : Locked System ID
- 13 : Radar Track ID
- 14 : Sonar Track ID
+  12 : Locked System ID
+  13 : Radar Track ID
+  14 : Sonar Track ID
 
- 25-26 : HMD view X,Y
+ 24 : Active sonar effective range (m)
+
+  25-26 : HMD view X,Y
  27-29 : Own X,Y,Z
  30-32 : pitch,yaw,roll
 
@@ -61,6 +64,12 @@ INPUT Bool
   5 : Auto fallback
 
  31 : Lock input
+
+HMD_RENDER_TRACK_TIMEOUT
+  HMD Track cache保持時間。default = 600 tick
+
+HMD_LOCKED_TRACK_TIMEOUT
+  Lock目標のHMD Track cache保持時間。default = 1200 tick
 
 ======================================================================
 Renderer Track cache
@@ -97,6 +106,374 @@ function prop(name, default)
     return v
 end
 
+
+--[[
+Map Rendererへ移行済みの旧HMD map描画。
+
+--====================================================================
+-- Tactical map HMD
+--====================================================================
+
+function hmdMapZoom()
+    return hmdMapZoomValue
+end
+
+function hmdMapCursor()
+    if hmdMapCursorTurns <= 0 then
+        return 0, 0
+    end
+
+    local x = viewX / hmdMapCursorTurns
+    local y = -viewY / hmdMapCursorTurns
+
+    x = math.max(-1, math.min(1, x))
+    y = math.max(-1, math.min(1, y))
+
+    return x, y
+end
+
+function drawMapBracket(x, y, radius, length)
+    screen.drawLine(
+        x - radius, y - radius,
+        x - radius + length, y - radius
+    )
+    screen.drawLine(
+        x - radius, y - radius,
+        x - radius, y - radius + length
+    )
+
+    screen.drawLine(
+        x + radius, y - radius,
+        x + radius - length, y - radius
+    )
+    screen.drawLine(
+        x + radius, y - radius,
+        x + radius, y - radius + length
+    )
+
+    screen.drawLine(
+        x - radius, y + radius,
+        x - radius + length, y + radius
+    )
+    screen.drawLine(
+        x - radius, y + radius,
+        x - radius, y + radius - length
+    )
+
+    screen.drawLine(
+        x + radius, y + radius,
+        x + radius - length, y + radius
+    )
+    screen.drawLine(
+        x + radius, y + radius,
+        x + radius, y + radius - length
+    )
+end
+
+function drawMapUnit(x, y, association, displaySource)
+    if association == RADAR then
+        screen.drawCircle(x, y, 3)
+    elseif association == SONAR then
+        screen.drawLine(x, y - 4, x + 4, y)
+        screen.drawLine(x + 4, y, x, y + 4)
+        screen.drawLine(x, y + 4, x - 4, y)
+        screen.drawLine(x - 4, y, x, y - 4)
+    else
+        screen.drawRect(x - 4, y - 4, 8, 8)
+
+        if displaySource == RADAR or
+            displaySource == FUSION then
+            screen.drawLine(x - 2, y, x + 2, y)
+        end
+
+        if displaySource == SONAR or
+            displaySource == FUSION then
+            screen.drawLine(x, y - 2, x, y + 2)
+        end
+    end
+end
+
+function drawMapView()
+    local w = screen.getWidth()
+    local h = screen.getHeight()
+    local centerX = w / 2
+    local centerY = h / 2
+    local mapZoom = hmdMapZoom()
+    local cursorNX, cursorNY = hmdMapCursor()
+    local cursorX = centerX + cursorNX * centerX
+    local cursorY = centerY + cursorNY * centerY
+    local gatePixels = hmdMapLockRadius * centerY
+    local candidateID = 0
+    local candidateDistance2 = gatePixels * gatePixels
+    local lockedRange
+    local lockedClosingSpeed
+    local visibleTracks = {}
+
+    screen.drawMap(
+        ownX,
+        ownZ,
+        mapZoom
+    )
+
+    -- アクティブソーナーの現在捜索範囲。
+    if activeSonarRange > 0 then
+        local rangePixels =
+            activeSonarRange /
+            (mapZoom * 1000) * w
+
+        screen.setColor(
+            0,
+            120,
+            255,
+            math.floor(alpha * 0.35 + 0.5)
+        )
+        screen.drawCircle(
+            centerX,
+            centerY,
+            rangePixels
+        )
+    end
+
+    for id, t in pairs(tracks) do
+        local gx, gy, gz = predictTrack(t)
+        local dx = gx - ownX
+        local dy = gy - ownY
+        local dz = gz - ownZ
+        local distance =
+            math.sqrt(
+                dx * dx +
+                dy * dy +
+                dz * dz
+            )
+
+        if id == lockedSystemID then
+            lockedRange = distance
+
+            if distance > 0.001 then
+                local relativeVx = t[4] - ownVx
+                local relativeVy = t[5] - ownVy
+                local relativeVz = t[6] - ownVz
+
+                lockedClosingSpeed = -(
+                    dx * relativeVx +
+                    dy * relativeVy +
+                    dz * relativeVz
+                ) / distance
+            else
+                lockedClosingSpeed = 0
+            end
+        end
+
+        local sx, sy =
+            map.mapToScreen(
+                ownX,
+                ownZ,
+                mapZoom,
+                w,
+                h,
+                gx,
+                gz
+            )
+
+        if sx >= 0 and sx < w and
+            sy >= 0 and sy < h then
+            visibleTracks[#visibleTracks + 1] = {
+                id,
+                sx,
+                sy,
+                t
+            }
+
+            if lockedSystemID == 0 then
+                local cursorDx = sx - cursorX
+                local cursorDy = sy - cursorY
+                local cursorDistance2 =
+                    cursorDx * cursorDx +
+                    cursorDy * cursorDy
+
+                if cursorDistance2 < candidateDistance2 then
+                    candidateDistance2 = cursorDistance2
+                    candidateID = id
+                end
+            end
+        end
+    end
+
+    table.sort(
+        visibleTracks,
+        function(a, b) return a[1] < b[1] end
+    )
+
+    -- System Tracks。赤=通常、水色=Lock候補、黄=Lock中。
+    for _, item in ipairs(visibleTracks) do
+        local id = item[1]
+        local x = item[2]
+        local y = item[3]
+        local t = item[4]
+
+        if id == lockedSystemID then
+            screen.setColor(255, 220, 0, alpha)
+        elseif id == candidateID then
+            screen.setColor(0, 220, 255, alpha)
+        else
+            screen.setColor(255, 40, 40, alpha)
+        end
+
+        drawMapUnit(
+            x,
+            y,
+            t[8],
+            t[9]
+        )
+
+        if id == lockedSystemID then
+            drawMapBracket(x, y, 9, 3)
+        elseif id == candidateID then
+            drawMapBracket(x, y, 7, 2)
+        end
+
+        screen.drawText(
+            x + 6,
+            y - 3,
+            id
+        )
+    end
+
+    -- 自機。
+    screen.setColor(0, 255, 80, alpha)
+    screen.drawCircle(centerX, centerY, 4)
+    screen.drawLine(
+        centerX - 2,
+        centerY,
+        centerX + 2,
+        centerY
+    )
+    screen.drawLine(
+        centerX,
+        centerY - 2,
+        centerX,
+        centerY + 2
+    )
+
+    -- 首振りで操作するMap cursorとLock gate。
+    screen.setColor(0, 255, 0, alpha)
+    screen.drawCircle(
+        cursorX,
+        cursorY,
+        gatePixels
+    )
+    screen.drawLine(
+        cursorX - 7,
+        cursorY,
+        cursorX - 2,
+        cursorY
+    )
+    screen.drawLine(
+        cursorX + 2,
+        cursorY,
+        cursorX + 7,
+        cursorY
+    )
+    screen.drawLine(
+        cursorX,
+        cursorY - 7,
+        cursorX,
+        cursorY - 2
+    )
+    screen.drawLine(
+        cursorX,
+        cursorY + 2,
+        cursorX,
+        cursorY + 7
+    )
+
+    local modeText
+
+    if positionMode == FUSION then
+        modeText =
+            "F>" ..
+            (fusionOutputSonar and "S" or "R")
+    elseif positionMode == SONAR then
+        modeText = "S"
+    else
+        modeText = "R"
+    end
+
+    local lockText =
+        lockedSystemID > 0 and "*" or
+        (lockInput and "L" or "-")
+
+    local statusText =
+        "MAP " ..
+        lockText ..
+        " " ..
+        modeText ..
+        (autoFallback and " A" or "")
+
+    local activeRangeValue =
+        math.floor(activeSonarRange + 0.5)
+
+    local activeText =
+        "Active: " ..
+        tostring(activeRangeValue) ..
+        "m"
+
+    local statusWidth =
+        math.max(
+            #statusText,
+            #activeText
+        ) * 4 + 4
+
+    screen.setColor(0, 0, 0, 180)
+    screen.drawRectF(0, 0, statusWidth, 15)
+    screen.setColor(0, 255, 0, alpha)
+    screen.drawText(2, 2, statusText)
+    screen.drawText(2, 8, activeText)
+
+    if lockedSystemID > 0 then
+        local rangeText =
+            lockedRange and
+            ("RNG " .. formatDistance(lockedRange)) or
+            "RNG ---"
+
+        local closingText =
+            lockedClosingSpeed and
+            ("VC " .. formatClosingSpeed(lockedClosingSpeed)) or
+            "VC ---"
+
+        local infoWidth =
+            math.max(
+                #rangeText,
+                #closingText
+            ) * 4 + 4
+
+        local infoX = math.max(0, w - infoWidth)
+
+        screen.setColor(0, 0, 0, 180)
+        screen.drawRectF(infoX, 0, infoWidth, 15)
+        screen.setColor(0, 255, 0, alpha)
+        screen.drawText(infoX + 2, 2, rangeText)
+        screen.drawText(infoX + 2, 8, closingText)
+    end
+
+    local zoomValue =
+        math.floor(mapZoom * 10 + 0.5) /
+        10
+
+    local zoomText =
+        tostring(zoomValue) ..
+        "km"
+
+    screen.setColor(255, 255, 255, alpha)
+    screen.drawText(2, h - 6, zoomText)
+    screen.drawText(w / 2 - 2, 2, "N")
+end
+]]
+
+function onDraw()
+    drawDirectView()
+end
+
 -- Track ManagerのLock判定と同じ値を設定すること。
 offsetX = property.getNumber("offsetX")
 offsetY = property.getNumber("offsetY")
@@ -105,9 +482,10 @@ offsetZ = property.getNumber("offsetZ")
 alpha = prop("RGBAlpha", 255)
 verticalFov = math.rad(prop("HMD_FOV_HEIGHT", 58))
 
--- System Track packetがこのtick数来なければRenderer cacheから削除。
--- Track Managerは通常1周数tick程度なので90tickなら十分余裕がある。
-trackTimeout = prop("RENDER_TRACK_TIMEOUT", 90)
+-- Track数が増えて時分割packetの1周が長くなっても、
+-- 更新待ちのTrackを画面から消さない。
+trackTimeout = prop("HMD_RENDER_TRACK_TIMEOUT", 180)
+lockedTrackTimeout = prop("HMD_LOCKED_TRACK_TIMEOUT", 300)
 
 tracks = {}
 tick = 0
@@ -119,6 +497,11 @@ ownX = 0
 ownY = 0
 ownZ = 0
 
+ownVx = 0
+ownVy = 0
+ownVz = 0
+ownPositionValid = false
+
 pitch = 0
 yaw = 0
 roll = 0
@@ -129,8 +512,10 @@ lockInput = false
 positionMode = RADAR
 fusionOutputSonar = false
 autoFallback = false
+activeSonarRange = 0
 
 
+-- Direct-view helpers.
 --====================================================================
 -- Orientation
 --====================================================================
@@ -235,7 +620,12 @@ end
 
 function pruneTracks()
     for id, t in pairs(tracks) do
-        if tick - t[12] > trackTimeout then
+        local timeout =
+            id == lockedSystemID and
+            lockedTrackTimeout or
+            trackTimeout
+
+        if tick - t[12] > timeout then
             tracks[id] = nil
         end
     end
@@ -255,6 +645,27 @@ function predictTrack(t)
 end
 
 
+-- HMD固定表示用の距離文字列。
+function formatDistance(distance)
+    if distance >= 10000 then
+        local text = math.floor(distance / 100) / 10
+        return tostring(text .. "km")
+    end
+
+    return math.floor(distance + .5) .. "m"
+end
+
+
+-- 正のVCは接近、負のVCは離隔を表す。
+function formatClosingSpeed(speed)
+    local rounded = math.floor(math.abs(speed) + .5)
+    local sign = speed >= 0 and "+" or "-"
+
+    return sign .. rounded .. "m/s"
+end
+
+
+-- Direct-view label collision avoidance.
 --====================================================================
 -- Label collision avoidance
 --====================================================================
@@ -350,9 +761,33 @@ function onTick()
     viewX = input.getNumber(25)
     viewY = input.getNumber(26)
 
-    ownX = input.getNumber(27)
-    ownY = input.getNumber(28)
-    ownZ = input.getNumber(29)
+    local newOwnX = input.getNumber(27)
+    local newOwnY = input.getNumber(28)
+    local newOwnZ = input.getNumber(29)
+
+    if ownPositionValid then
+        local vx = (newOwnX - ownX) * 60
+        local vy = (newOwnY - ownY) * 60
+        local vz = (newOwnZ - ownZ) * 60
+        local speed2 = vx*vx + vy*vy + vz*vz
+
+        -- スポーン/テレポート時の巨大な差分速度を除外。
+        if speed2 < 1000000 then
+            ownVx = vx
+            ownVy = vy
+            ownVz = vz
+        else
+            ownVx = 0
+            ownVy = 0
+            ownVz = 0
+        end
+    else
+        ownPositionValid = true
+    end
+
+    ownX = newOwnX
+    ownY = newOwnY
+    ownZ = newOwnZ
 
     pitch = input.getNumber(30)
     yaw = input.getNumber(31)
@@ -362,6 +797,7 @@ function onTick()
         math.floor(input.getNumber(12) + .5)
 
     lockInput = input.getBool(31)
+    activeSonarRange = input.getNumber(24)
 
     positionMode =
         input.getBool(3) and FUSION or
@@ -372,11 +808,12 @@ function onTick()
 end
 
 
+-- Direct-view renderer.
 --====================================================================
 -- HMD draw
 --====================================================================
 
-function onDraw()
+function drawDirectView()
     local w = screen.getWidth()
     local h = screen.getHeight()
 
@@ -423,6 +860,8 @@ function onDraw()
     local projected = {}
 
     local lockedDirection
+    local lockedRange
+    local lockedClosingSpeed
 
     ------------------------------------------------------------------
     -- Global System Track -> own local -> HMD projection
@@ -430,10 +869,40 @@ function onDraw()
     for id, t in pairs(tracks) do
         local gx, gy, gz = predictTrack(t)
 
+        local globalDx = gx - ownX
+        local globalDy = gy - ownY
+        local globalDz = gz - ownZ
+        local globalDistance =
+            math.sqrt(
+                globalDx*globalDx +
+                globalDy*globalDy +
+                globalDz*globalDz
+            )
+
+        if id == lockedSystemID then
+            lockedRange = globalDistance
+
+            if globalDistance > 0.001 then
+                local relativeVx = t[4] - ownVx
+                local relativeVy = t[5] - ownVy
+                local relativeVz = t[6] - ownVz
+
+                -- 相対速度の視線方向成分。
+                -- range rateの符号を反転し、接近を正とする。
+                lockedClosingSpeed = -(
+                    globalDx * relativeVx +
+                    globalDy * relativeVy +
+                    globalDz * relativeVz
+                ) / globalDistance
+            else
+                lockedClosingSpeed = 0
+            end
+        end
+
         local x, y, z = rotate(
-            gx - ownX,
-            gy - ownY,
-            gz - ownZ,
+            globalDx,
+            globalDy,
+            globalDz,
             ownQ,
             true
         )
@@ -462,7 +931,7 @@ function onDraw()
             true
         )
 
-        if vz > .1 then
+        if vz > 0.1 then
             local px =
                 centerX +
                 horizontalScale * vx / vz
@@ -557,6 +1026,53 @@ function onDraw()
     screen.setColor(0, 255, 0, alpha)
     screen.drawText(2, 2, statusText)
 
+    local activeRangeValue =
+        math.floor(activeSonarRange + 0.5)
+
+    local activeText =
+        "Active: " ..
+        tostring(activeRangeValue) ..
+        "m"
+
+    screen.drawText(2, 8, activeText)
+
+
+    ------------------------------------------------------------------
+    -- Locked target range / closing speed
+    --
+    -- VCは接近時に正、離隔時に負。
+    -- Lock目標が画面外でも右上に固定表示する。
+    ------------------------------------------------------------------
+    local lockInfoRect
+
+    if lockedSystemID > 0 then
+        local rangeText =
+            lockedRange and
+            ("RNG " .. formatDistance(lockedRange)) or
+            "RNG ---"
+
+        local closingText =
+            lockedClosingSpeed and
+            ("VC " .. formatClosingSpeed(lockedClosingSpeed)) or
+            "VC ---"
+
+        local infoWidth =
+            math.max(#rangeText, #closingText) * 4
+
+        local infoX = math.max(0, w - infoWidth - 2)
+
+        screen.setColor(0, 255, 0, alpha)
+        screen.drawText(infoX, 2, rangeText)
+        screen.drawText(infoX, 8, closingText)
+
+        lockInfoRect = {
+            infoX,
+            0,
+            infoWidth + 2,
+            15
+        }
+    end
+
 
     ------------------------------------------------------------------
     -- Label collision memory
@@ -567,10 +1083,17 @@ function onDraw()
         {
             0,
             0,
-            #statusText * 4 + 4,
-            8
+            math.max(
+                #statusText,
+                #activeText
+            ) * 4 + 4,
+            14
         }
     }
+
+    if lockInfoRect then
+        occupied[#occupied + 1] = lockInfoRect
+    end
 
 
     ------------------------------------------------------------------
@@ -798,8 +1321,8 @@ function onDraw()
             ) /
             (verticalFov / 2)
 
-        if math.abs(dx) < .001 then dx = .001 end
-        if math.abs(dy) < .001 then dy = .001 end
+        if math.abs(dx) < 0.001 then dx = 0.001 end
+        if math.abs(dy) < 0.001 then dy = 0.001 end
 
         local margin = 6
 

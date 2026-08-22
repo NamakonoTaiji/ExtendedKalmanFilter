@@ -38,9 +38,9 @@ isPPN                        = true
 isHeadCapture                = false
 targetCoords                 = { 0, 0, 0 }
 targetVelocity               = { 0, 0, 0 }
-parachute                    = false
+fuse                    = false
 
-DIVE_START_TANJENT           = math.tan(math.rad(40))                        -- 巡航モードからダイブを開始させる角度
+DIVE_START_TANJENT           = math.tan(math.rad(30))                        -- 巡航モードからダイブを開始させる角度
 PN_FIN_STRENGTH              = property.getNumber("PN_FIN_STRENGTH")         -- 比例航法時のフィンにかける係数
 PPN_FIN_STRENGTH             = property.getNumber("PPN_FIN_STRENGTH")        -- 単追尾時のフィンにかける係数
 SKIMMING_ALT                 = property.getNumber("SKIMMING_ALT")            -- 対水上モード巡航高度
@@ -294,7 +294,7 @@ function onTick()
     local ownCoordsVec          = { x = ownCoords[1], y = ownCoords[2], z = ownCoords[3] }
     local activeTargetCoordsVec = targetCoordsVec
     local LOS_vec_global
-
+    
     -- 指定された高度mまで垂直上昇
 
     if (ownCoordsVec.y < GUIDANCE_START_ALTITUDE) and not isGuidanceStart then
@@ -370,8 +370,8 @@ function onTick()
         -- 9. 誘導指令として使う
 
         --    ご提示のコードの変数名に合わせる
-        yawAngle                               = los_rate_yaw * DT * PN_FIN_STRENGTH    -- (rad/tick)
-        pitchAngle                             = -los_rate_pitch * DT * PN_FIN_STRENGTH -- (rad/tick)
+        yawAngle                               = los_rate_yaw * PN_FIN_STRENGTH    -- (rad/tick)
+        pitchAngle                             = -los_rate_pitch * PN_FIN_STRENGTH -- (rad/tick)
     else
         local targetLocalPosVec =
             globalToLocal(
@@ -396,12 +396,12 @@ function onTick()
 
 
 
-    -- ミサイルレーダーの有効圏内かつ対水上モードでない場合ミサイルレーダーを有効化・中間誘導用翼の出力をゼロに
-    if ((distance - selfSpeed * IMPACT_DELAY < IMPACT_RADIUS) or (targetCoordsVec.y > ownCoordsVec.y)) and isGuidanceStart then
-        parachute = true
+    -- 目標至近、目標高度未満、自機が低速時に爆発
+    if ((distance - selfSpeed * IMPACT_DELAY < IMPACT_RADIUS) or (targetCoordsVec.y > ownCoordsVec.y) or selfSpeed * 60 < 10) and isGuidanceStart then
+        fuse = true
     end
 
-    output.setBool(1, parachute)
+    output.setBool(1, fuse)
     output.setNumber(1, yawAngle)
     output.setNumber(2, pitchAngle)
 end

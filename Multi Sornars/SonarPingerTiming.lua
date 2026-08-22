@@ -24,7 +24,10 @@ Multi Sonar Ping Scheduler
 - 距離入力の変更は次の周期開始時に反映する。
 - 距離 <= 0 の間は発射しない。
 --]]
-MAX_DISTANCE = property.getNumber("DIST_STEP") * 4096
+
+MAX_DISTANCE = property.getNumber("MAX_DISTANCE")
+MIN_DISTANCE = property.getNumber("MIN_DISTANCE")
+DISTANCE_STEP = (MAX_DISTANCE - MIN_DISTANCE) / property.getNumber("DIST_STEP")
 SOUND_SPEED = 1480
 TICKS_PER_SECOND = 60
 
@@ -39,9 +42,9 @@ end
 phaseTick = 0
 cycleTicks = 0
 running = false
-
-function startCycle(distance)
-    cycleTicks = math.floor(distance * 2 * TICKS_PER_SECOND / SOUND_SPEED + 0.5)
+distance = 8000
+function startCycle(dist)
+    cycleTicks = math.floor(dist * 2 * TICKS_PER_SECOND / SOUND_SPEED + 0.5)
 
     -- 全ソーナーを別tickに割り当てられる最低周期を保証
     if cycleTicks < SONAR_COUNT then
@@ -77,10 +80,16 @@ function onTick()
         output.setBool(i, false)
     end
 
-    local distance     = MAX_DISTANCE * input.getNumber(7)
-    local targetCoords = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
-    local ownCoords    = { input.getNumber(4), input.getNumber(5), input.getNumber(6) }
-    local isDetecting  = input.getBool(1)
+    local targetCoords  = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
+    local ownCoords     = { input.getNumber(4), input.getNumber(5), input.getNumber(6) }
+    local isDetecting   = input.getBool(1)
+    local increaseRange = input.getBool(2)
+    local decreaseRange = input.getBool(3)
+    if increaseRange then
+        distance = math.min(distance + DISTANCE_STEP, MAX_DISTANCE)
+    elseif decreaseRange then
+        distance = math.max(distance - DISTANCE_STEP, MIN_DISTANCE)
+    end
 
     if isDetecting then
         distance = vectorMagnitude(vectorSub(targetCoords, ownCoords)) * 1.1 + 500
@@ -110,9 +119,9 @@ function onTick()
 
     phaseTick = phaseTick + 1
 
-    -- 次tickから新周期。新しい距離入力もここで反映される
-    if phaseTick >= cycleTicks then
+    -- 次tickから新周期。捜索距離が変更された場合は新周期
+    if phaseTick >= cycleTicks or increaseRange or decreaseRange then
         running = false
     end
-    output.setNumber(1,MAX_DISTANCE)
+    output.setNumber(1, distance)
 end

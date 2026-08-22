@@ -5,8 +5,28 @@
 MAX_FORWARD = property.getNumber("MAX_FORWARD")
 MAX_REVERSE = property.getNumber("MAX_REVERSE")
 
-FORWARD_GEARS = 6
+FORWARD_GEARS = 5
 REVERSE_GEARS = 2
+
+
+--================================
+-- Speed hold settings
+--================================
+
+-- Target speed added by each gear [m/s]
+-- Defaults make forward gears 3, 6, 9, 12, 15, 18 m/s.
+FORWARD_SPEED_STEP = property.getNumber("FORWARD_SPEED_STEP")
+REVERSE_SPEED_STEP = property.getNumber("REVERSE_SPEED_STEP")
+
+-- PI gains. Values are pitch command per speed error.
+SPEED_KP = property.getNumber("SPEED_KP")
+SPEED_KI = property.getNumber("SPEED_KI")
+
+-- Stormworks returns 0 for a property which does not exist.
+if FORWARD_SPEED_STEP <= 0 then FORWARD_SPEED_STEP = 3 end
+if REVERSE_SPEED_STEP <= 0 then REVERSE_SPEED_STEP = 3 end
+if SPEED_KP <= 0 then SPEED_KP = 0.002 end
+if SPEED_KI <= 0 then SPEED_KI = 0.00002 end
 
 
 --================================
@@ -31,6 +51,14 @@ STEER_FF = 0.06
 -- Maximum steering pitch correction
 MAX_STEER = property.getNumber("MAX_STEER")
 
+-- Maximum reverse steering difference relative to base reverse pitch.
+-- Keeping this below 1 prevents the inner propeller from reaching
+-- zero or changing to forward pitch during a reverse turn.
+REVERSE_STEER_RATIO = property.getNumber("REVERSE_STEER_RATIO")
+
+if REVERSE_STEER_RATIO <= 0 then REVERSE_STEER_RATIO = 0.75 end
+REVERSE_STEER_RATIO = math.min(REVERSE_STEER_RATIO, 0.95)
+
 
 --================================
 -- Pitch movement
@@ -39,16 +67,6 @@ MAX_STEER = property.getNumber("MAX_STEER")
 -- Maximum pitch movement per tick
 PITCH_SLEW = 0.001
 
-
---================================
--- RPS protection
---================================
-
--- Set these to suit the engine
-RPS_HIGH = 60
-
--- Pitch added if RPS exceeds RPS_HIGH
-RPS_GAIN = 0.01
 
 --================================
 -- Direction corrections
@@ -70,6 +88,9 @@ lastShift = 0
 
 leftPitch = 0
 rightPitch = 0
+
+speedIntegral = 0
+controllerGear = 0
 
 
 function clamp(x, mn, mx)
@@ -111,11 +132,7 @@ function onTick()
             input.getNumber(3)
         )
 
-    rps =
-        math.abs(
-            input.getNumber(4)
-        )
-
+    -- Number input 4 is intentionally unused (engine RPS removed).
     yawRate =
         input.getNumber(5)
         * YAW_SIGN
@@ -150,57 +167,95 @@ function onTick()
 
 
     --============================
-    -- Gear -> pitch
+    -- Gear -> target speed
     --============================
 
-    basePitch = 0
+    targetSpeed = 0
+    driveDirection = 0
 
     if gear > 0 then
 
-        basePitch =
-            MAX_FORWARD
-            * gear
-            / FORWARD_GEARS
+        targetSpeed =
+            gear
+            * FORWARD_SPEED_STEP
+
+        driveDirection = 1
 
     elseif gear < 0 then
 
-        basePitch =
-            (-MAX_REVERSE)
-            * gear
-            / REVERSE_GEARS
+        targetSpeed =
+            (-gear)
+            * REVERSE_SPEED_STEP
+
+        driveDirection = -1
     end
 
 
---============================
--- RPS protection
---============================
+    --============================
+    -- Speed PI controller
+    --
+    -- The old linear gear-to-pitch mapping made first gear too
+    -- powerful because hull speed is very nonlinear versus pitch.
+    -- This controller instead finds the pitch required to hold the
+    -- speed assigned to the selected gear.
+    --============================
 
-rpsCorrection = 0
+    basePitch = 0
+    speedError = targetSpeed - speed
 
-if rps > RPS_HIGH and basePitch > 0 then
+    -- Do not carry high-gear integral into a downshift or reversal.
+    if gear == 0
+        or gear * controllerGear < 0
+        or math.abs(gear) < math.abs(controllerGear) then
 
-    -- 1段分のPitch幅
-    gearPitchStep =
-        MAX_FORWARD
-        / FORWARD_GEARS
+        speedIntegral = 0
+    end
 
-    -- RPSによる補正
-    rpsCorrection =
-        clamp(
-            (rps - RPS_HIGH)
-            * RPS_GAIN,
-            0,
-            gearPitchStep * 0.5
-        )
+    controllerGear = gear
 
-    -- 現在のギアPitchに対して
-    -- 最大半段分だけ増ピッチ
-    basePitch =
-        math.min(
-            basePitch + rpsCorrection,
-            MAX_FORWARD
-        )
-end
+    if driveDirection ~= 0 then
+
+        pitchLimit =
+            driveDirection > 0
+            and MAX_FORWARD
+            or math.abs(MAX_REVERSE)
+
+        proportional =
+            speedError
+            * SPEED_KP
+
+        requestedPitch =
+            speedIntegral
+            + proportional
+
+        -- Conditional integration prevents wind-up at both limits.
+        if not (
+            requestedPitch >= pitchLimit and speedError > 0
+        ) and not (
+            requestedPitch <= 0 and speedError < 0
+        ) then
+
+            speedIntegral =
+                clamp(
+                    speedIntegral
+                    + speedError * SPEED_KI,
+                    0,
+                    pitchLimit
+                )
+        end
+
+        pitchMagnitude =
+            clamp(
+                speedIntegral
+                + proportional,
+                0,
+                pitchLimit
+            )
+
+        basePitch =
+            pitchMagnitude
+            * driveDirection
+    end
 
 
     --============================
@@ -270,6 +325,19 @@ end
     targetRight = basePitch
 
     d = math.abs(steerCorrection)
+
+    -- At low reverse pitch an absolute steering correction can be
+    -- much larger than the propulsion pitch. Limit the left/right
+    -- difference so both propellers continue producing reverse thrust.
+    if basePitch < 0 then
+
+        d =
+            math.min(
+                d,
+                math.abs(basePitch)
+                * REVERSE_STEER_RATIO
+            )
+    end
 
 
     if basePitch > 0 then
@@ -443,4 +511,7 @@ end
         7,
         yawRate
     )
+
+    output.setNumber(8, targetSpeed)
+    output.setNumber(9, speedError)
 end

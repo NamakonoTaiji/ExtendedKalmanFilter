@@ -35,7 +35,7 @@ PI2                          = PI * 2
 initialGuidanceCounter       = 0
 isGuidanceStart              = false
 isPPN                        = true
-parachute                    = false
+fuse                    = false
 deploy                       = false
 DIVE_START_TANJENT           = math.tan(math.rad(30))                        -- 巡航モードからダイブを開始させる角度
 PN_FIN_STRENGTH              = property.getNumber("PN_FIN_STRENGTH")         -- 比例航法時のフィンにかける係数
@@ -411,15 +411,15 @@ function onTick()
         and (horizontalDist < parachuteDeployDist
             or selfAltitude < deployAltitude)
         and initialGuidanceCounter > 120 then
-        parachute = true
+        fuse = true
     end
 
     if isTerminalCourse and selfAltitude < deployAltitude
         and initialGuidanceCounter > 60
-        and parachute then
+        and fuse then
         deploy = true
     end
-    output.setBool(1, parachute)
+    output.setBool(1, fuse)
     output.setBool(2, deploy)
     output.setNumber(1, yawAngle)
     output.setNumber(2, pitchAngle)

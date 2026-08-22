@@ -31,6 +31,10 @@ Radar
    19    : Detect (1=valid)
    20    : lastSeenTick
 
+Active sonar
+   21 : Effective range (m)
+   22 : HMD Map lock radius (screen half-height ratio)
+
 HMD / Own vehicle
    25-26 : HMD view X,Y
    27-29 : own X,Y,Z
@@ -39,16 +43,22 @@ HMD / Own vehicle
 ----------------------------------------------------------------------
 INPUT Bool
 ----------------------------------------------------------------------
-   2  : Sonar position mode
-   3  : Fusion position mode
-        B2=OFF,B3=OFF -> Radar
-        B2=ON ,B3=OFF -> Sonar
-        B3=ON         -> Fusion
-   4  : Fusion output ID preference
+   1  : Sonar position mode
+   2  : Fusion position mode
+        B1=OFF,B2=OFF -> Radar
+        B1=ON ,B2=OFF -> Sonar
+        B2=ON         -> Fusion
+   3  : Fusion output ID preference
         OFF=Radar / ON=Sonar
-   5  : Auto fallback
+   4  : Auto fallback
 
-   31 : Lock
+   6  : HMD/Map lock mode
+        OFF=Direct view / ON=Tactical map
+
+   9  : Map zoom in
+  10  : Map zoom out
+
+  31  : Lock
         ※現在渡された最新版コードの割り当てをそのまま維持。
 
 ----------------------------------------------------------------------
@@ -80,6 +90,9 @@ OUTPUT Number
   13 : Radar Track ID
   14 : Sonar Track ID
 
+  22 : HMD Map lock radius (pass-through from input 22)
+  24 : Active sonar effective range (pass-through from input 21)
+
    ---- Rendererが自機姿勢を直接使えるようpass-through ----
   25-26 : HMD view X,Y
   27-29 : own X,Y,Z
@@ -93,6 +106,9 @@ OUTPUT Bool
    3 : Fusion position mode (pass-through)
    4 : Fusion output Sonar (pass-through)
    5 : Auto fallback (pass-through)
+   9 : Map zoom in (pass-through)
+  10 : Map zoom out (pass-through)
+  30 : HMD map mode (pass-through)
   31 : Lock input (pass-through)
 
 ----------------------------------------------------------------------
@@ -105,25 +121,32 @@ System Trackが消滅するとpacketも来なくなるため、Renderer側では
 一定時間packet更新の無いSystem IDを削除する。
 ]]
 
-PI = math.pi
+IN = input.getNumber
+IB = input.getBool
+ON = output.setNumber
+OB = output.setBool
+PN = property.getNumber
+M = math
+
+PI = M.pi
 TAU = PI * 2
 
 function prop(name, default)
-    local v = property.getNumber(name)
+    local v = PN(name)
     if v == 0 then return default end
     return v
 end
 
-offsetX = property.getNumber("offsetX")
-offsetY = property.getNumber("offsetY")
-offsetZ = property.getNumber("offsetZ")
+offsetX = PN("offsetX")
+offsetY = PN("offsetY")
+offsetZ = PN("offsetZ")
 
 sensorLost = prop("TARGET_LOST_THRESHOLD_TICKS", 120)
 posGate = prop("ASSOC_POS_GATE", 250)
 velGate = prop("ASSOC_VEL_GATE", 60)
 keepMult = 2
 lockMult = 3
-confirmCount = math.max(1, math.floor(prop("ASSOC_CONFIRM", 2) + .5))
+confirmCount = M.max(1, M.floor(prop("ASSOC_CONFIRM", 2) + .5))
 breakCount = 3
 lockBreakCount = breakCount * 2
 reacquireCount = confirmCount
@@ -145,7 +168,7 @@ candidateMemory = {}
 tick = 0
 nextSystemID = 1
 lockedSystemID = 0
-lockHadTarget = false
+lockedSystemMemory = nil
 packetCursor = 0
 
 viewX = 0
@@ -153,54 +176,47 @@ viewY = 0
 positionMode = MODE_RADAR
 fusionOutputSonar = false
 autoFallback = false
+activeSonarRange = 0
+mapMode = false
 
--- Euler(ZYX) -> quaternion
-function eulerQuaternion(roll, yaw, pitch)
-    roll = roll / 2
-    yaw = yaw / 2
-    pitch = pitch / 2
+-- Map Renderer側と同じ値を使用すること。
+mapZoomLevels = {
+    1,
+    2,
+    5,
+    10,
+    20,
+    30,
+    50,
+    90
+}
+mapZoomIndex = M.max(
+    1,
+    M.min(
+        #mapZoomLevels,
+        M.floor(prop("MAP_ZOOM_INDEX", 1) + 0.5)
+    )
+)
+mapZoom = mapZoomLevels[mapZoomIndex]
+mapZoomInPrev = false
+mapZoomOutPrev = false
+hmdMapAspect = prop("HMD_MAP_ASPECT", 4 / 3)
+hmdMapCursorTurns = prop("HMD_MAP_CURSOR_ANGLE", 45) / 360
+hmdMapLockRadius = prop("HMD_MAP_LOCK_RADIUS", 0.1)
 
+-- Euler(ZYX)姿勢の逆回転
+function rotate(x, y, z, roll, yaw, pitch)
     local cr, sr, cy, sy, cp, sp
-    cr, sr = math.cos(roll), math.sin(roll)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-
-    return {
-        cr * cy * cp + sr * sy * sp,
-        cr * cy * sp - sr * sy * cp,
-        cr * sy * cp + sr * cy * sp,
-        sr * cy * cp - cr * sy * sp
-    }
-end
-
--- inverse=true なら逆回転
-function rotate(x, y, z, q, inverse)
-    local w, a, b, c, r11, r12, r13, r21, r22, r23, r31, r32, r33
-    w, a, b, c = q[1], q[2], q[3], q[4]
-
-    r11 = 1 - 2 * (b * b + c * c)
-    r12 = 2 * (a * b - c * w)
-    r13 = 2 * (a * c + b * w)
-
-    r21 = 2 * (a * b + c * w)
-    r22 = 1 - 2 * (a * a + c * c)
-    r23 = 2 * (b * c - a * w)
-
-    r31 = 2 * (a * c - b * w)
-    r32 = 2 * (b * c + a * w)
-    r33 = 1 - 2 * (a * a + b * b)
-
-    if inverse then
-        return
-            r11 * x + r21 * y + r31 * z,
-            r12 * x + r22 * y + r32 * z,
-            r13 * x + r23 * y + r33 * z
-    end
+    cr, sr = M.cos(roll), M.sin(roll)
+    cy, sy = M.cos(yaw), M.sin(yaw)
+    cp, sp = M.cos(pitch), M.sin(pitch)
 
     return
-        r11 * x + r12 * y + r13 * z,
-        r21 * x + r22 * y + r23 * z,
-        r31 * x + r32 * y + r33 * z
+        cr * cy * x + sr * cy * y - sy * z,
+        (cr * sy * sp - sr * cp) * x +
+        (sr * sy * sp + cr * cp) * y + cy * sp * z,
+        (cr * sy * cp + sr * sp) * x +
+        (sr * sy * cp - cr * sp) * y + cy * cp * z
 end
 
 -- HMDが受信したtickから現在までだけ等速外挿
@@ -273,20 +289,20 @@ function ensureSystem(source, id)
 end
 
 function readSensor(base, tracks)
-    if input.getNumber(base + 9) ~= 1 then return nil end
+    if IN(base + 9) ~= 1 then return nil end
 
-    local id = math.floor(input.getNumber(base + 7) + .5)
+    local id = M.floor(IN(base + 7) + .5)
     if id < 1 then return nil end
 
     tracks[id] = {
-        input.getNumber(base + 1),
-        input.getNumber(base + 2),
-        input.getNumber(base + 3),
-        input.getNumber(base + 4),
-        input.getNumber(base + 5),
-        input.getNumber(base + 6),
-        input.getNumber(base + 8),
-        input.getNumber(base + 10),
+        IN(base + 1),
+        IN(base + 2),
+        IN(base + 3),
+        IN(base + 4),
+        IN(base + 5),
+        IN(base + 6),
+        IN(base + 8),
+        IN(base + 10),
         tick
     }
 
@@ -411,6 +427,55 @@ function updateSystems()
                 lockedSystemID = 0
             end
         end
+    end
+end
+
+-- Lock対象Systemが統合やSensor Track ID変更で作り直されても、
+-- 同じ目標へLockを引き継げるよう最後の位置・速度を保存する。
+function systemTrack(s)
+    return {
+        s[9], s[10], s[11],
+        s[12], s[13], s[14],
+        0, 0, tick
+    }
+end
+
+function rememberLockedSystem()
+    local s = systems[lockedSystemID]
+
+    if s and s[9] ~= 0 then
+        lockedSystemMemory = systemTrack(s)
+    end
+end
+
+-- 保存したLock位置を現在tickまで等速外挿し、
+-- 位置・速度の両方が近い後継SystemだけへLockを移す。
+function reacquireLockedSystem()
+    if lockedSystemID ~= 0 or
+        not lockedSystemMemory then
+        return
+    end
+
+    local bestScore = M.huge
+    local bestID = 0
+
+    for id, s in pairs(systems) do
+        if s[9] ~= 0 then
+            local score = scoreTracks(
+                lockedSystemMemory,
+                systemTrack(s),
+                lockMult
+            )
+
+            if score and score < bestScore then
+                bestScore = score
+                bestID = id
+            end
+        end
+    end
+
+    if bestID > 0 then
+        lockedSystemID = bestID
     end
 end
 
@@ -587,10 +652,11 @@ function reacquireMissing()
 
                 if missing ~= nil then
                     mult = isLocked and lockMult or keepMult
-                    bestScore = math.huge
+                    bestScore = M.huge
 
                     for _, candidateSystem in pairs(systems) do
                         if candidateSystem[1] ~= s[1] and
+                            candidateSystem[1] ~= lockedSystemID and
                             not used[candidateSystem[1]] then
                             local candidateTrack
 
@@ -704,51 +770,135 @@ function angleDifference(a, b)
 end
 
 --====================================================================
--- Lock acquisition
+-- Tactical map cursor / Lock acquisition
 --
--- 描画はRendererへ移したが、Lock acquisitionはTrack Managerに残す。
--- これによりRenderer -> Managerのフィードバック配線が不要になる。
--- System Trackのglobal座標を自機localへ変換し、HMD視線から30deg以内で
--- 最も近い角度のSystem TrackをLockする。
+-- 描画はRenderer、Lock判定はTrack Managerで行う。
+-- 両者で同じmap zoom / head angle / cursor gateを使うことで、
+-- HMD上のカーソル位置とLock対象を一致させる。
 --====================================================================
-function acquireLock(ownX, ownY, ownZ, ownQ)
-    if lockedSystemID ~= 0 or lockHadTarget then return end
+function updateMapZoom()
+    local zoomIn = IB(9)
+    local zoomOut = IB(10)
 
-    local best = .2741556778 -- (30deg)^2
+    if zoomIn and not mapZoomInPrev then
+        mapZoomIndex = M.max(
+            1,
+            mapZoomIndex - 1
+        )
+    end
+
+    if zoomOut and not mapZoomOutPrev then
+        mapZoomIndex = M.min(
+            #mapZoomLevels,
+            mapZoomIndex + 1
+        )
+    end
+
+    mapZoomInPrev = zoomIn
+    mapZoomOutPrev = zoomOut
+    mapZoom = mapZoomLevels[mapZoomIndex]
+end
+
+function hmdMapCursor()
+    if hmdMapCursorTurns <= 0 then
+        return 0, 0
+    end
+
+    local x = viewX / hmdMapCursorTurns
+    local y = -viewY / hmdMapCursorTurns
+
+    x = M.max(-1, M.min(1, x))
+    y = M.max(-1, M.min(1, y))
+
+    return x, y
+end
+
+function acquireMapLock(ownX, ownZ)
+    if lockedSystemID ~= 0 or lockedSystemMemory then return end
+
+    local zoomMeters = mapZoom * 1000
+    local halfWidth = zoomMeters / 2
+    local halfHeight = halfWidth / hmdMapAspect
+    local cursorX, cursorY = hmdMapCursor()
+    local cursorWorldX = ownX + cursorX * halfWidth
+    local cursorWorldZ = ownZ - cursorY * halfHeight
+    local best = hmdMapLockRadius * hmdMapLockRadius
+
+    for _, s in pairs(systems) do
+        if s[9] ~= 0 then
+            local normalizedX =
+                (s[9] - ownX) / halfWidth
+
+            local normalizedY =
+                -(s[11] - ownZ) / halfHeight
+
+            if M.abs(normalizedX) <= 1 and
+                M.abs(normalizedY) <= 1 then
+                -- halfHeightを1とする画面ピクセル相当の距離。
+                local dx =
+                    (s[9] - cursorWorldX) /
+                    halfHeight
+
+                local dz =
+                    (s[11] - cursorWorldZ) /
+                    halfHeight
+
+                local d2 = dx * dx + dz * dz
+
+                if d2 < best then
+                    best = d2
+                    lockedSystemID = s[1]
+                end
+            end
+        end
+    end
+
+end
+
+-- 従来の実視界HMD用Lock。
+-- HMD視線から30deg以内で最も角度の近いTrackを選択する。
+function acquireDirectLock(
+    ownX,
+    ownY,
+    ownZ,
+    ownRoll,
+    ownYaw,
+    ownPitch
+)
+    if lockedSystemID ~= 0 or lockedSystemMemory then return end
+
+    local best = 0.2741556778 -- (30deg)^2
     local viewAzimuth = viewX * TAU
     local viewElevation = -viewY * TAU
 
     for _, s in pairs(systems) do
         if s[9] ~= 0 then
-            local x, y, z, azimuth, elevation, da, de, d2
-
-            x, y, z = rotate(
+            local x, y, z = rotate(
                 s[9] - ownX,
                 s[10] - ownY,
                 s[11] - ownZ,
-                ownQ,
-                true
+                ownRoll,
+                ownYaw,
+                ownPitch
             )
 
-            -- HMD基準位置offset。
-            -- Renderer側でも同じoffsetを設定する。
             x = x + offsetX
             y = y + offsetY
             z = z + offsetZ
 
-            azimuth = math.atan(x, z)
-            elevation = math.atan(
+            local azimuth = M.atan(x, z)
+            local elevation = M.atan(
                 y,
-                math.sqrt(x * x + z * z)
+                M.sqrt(x * x + z * z)
             )
 
-            da = angleDifference(
+            local da = angleDifference(
                 viewAzimuth,
                 azimuth
             )
 
-            de = elevation - viewElevation
-            d2 = da * da + de * de
+            local de = elevation - viewElevation
+            local d2 = da * da + de * de
 
             if d2 < best then
                 best = d2
@@ -757,9 +907,6 @@ function acquireLock(ownX, ownY, ownZ, ownQ)
         end
     end
 
-    if lockedSystemID > 0 then
-        lockHadTarget = true
-    end
 end
 
 --====================================================================
@@ -803,13 +950,15 @@ end
 function outputSystemPacket(s)
     local valid = s ~= nil
 
-    output.setBool(1, valid)
+    OB(1, valid)
 
     if not valid then
         -- 出力値が前packetのまま残らないよう明示的に0へ戻す。
         for ch = 2, 14 do
-            output.setNumber(ch, 0)
+            ON(ch, 0)
         end
+        -- Lock IDはpacket固有値ではないため常時出力する。
+        ON(12, lockedSystemID)
         return
     end
 
@@ -823,32 +972,35 @@ function outputSystemPacket(s)
         state = 0 -- R
     end
 
-    output.setNumber(2, s[1])
+    ON(2, s[1])
 
-    output.setNumber(3, s[9])
-    output.setNumber(4, s[10])
-    output.setNumber(5, s[11])
+    ON(3, s[9])
+    ON(4, s[10])
+    ON(5, s[11])
 
-    output.setNumber(6, s[12])
-    output.setNumber(7, s[13])
-    output.setNumber(8, s[14])
+    ON(6, s[12])
+    ON(7, s[13])
+    ON(8, s[14])
 
-    output.setNumber(9, s[15])
+    ON(9, s[15])
 
-    output.setNumber(10, state)
-    output.setNumber(11, s[16] or state)
+    ON(10, state)
+    ON(11, s[16] or state)
 
-    output.setNumber(12, lockedSystemID)
-    output.setNumber(13, s[2])
-    output.setNumber(14, s[3])
+    ON(12, lockedSystemID)
+    ON(13, s[2])
+    ON(14, s[3])
 end
 
 function onTick()
     tick = tick + 1
 
-    local ownX, ownY, ownZ, ownQ
+    local ownX, ownY, ownZ, ownPitch, ownYaw, ownRoll
     local sonarID, radarID
     local outputID = 0
+
+    -- このtick内のSystem統合・削除より前にLock状態を退避する。
+    rememberLockedSystem()
 
     ------------------------------------------------------------------
     -- Candidate memory maintenance
@@ -862,30 +1014,31 @@ function onTick()
     --
     -- 最新版コードではLockがBool31へ移されているため、そのまま使用。
     ------------------------------------------------------------------
-    lockInput = input.getBool(31)
+    lockInput = IB(31)
+    mapMode = IB(6)
 
     positionMode =
-        input.getBool(2) and MODE_FUSION or
-        (input.getBool(1) and MODE_SONAR or MODE_RADAR)
+        IB(2) and MODE_FUSION or
+        (IB(1) and MODE_SONAR or MODE_RADAR)
 
-    fusionOutputSonar = input.getBool(3)
-    autoFallback = input.getBool(4)
-
+    fusionOutputSonar = IB(3)
+    autoFallback = IB(4)
+    updateMapZoom()
+    
     ------------------------------------------------------------------
     -- HMD / own vehicle state
     ------------------------------------------------------------------
-    viewX = input.getNumber(25)
-    viewY = input.getNumber(26)
+    viewX = IN(25)
+    viewY = IN(26)
+    activeSonarRange = IN(21)
 
-    ownX = input.getNumber(27)
-    ownY = input.getNumber(28)
-    ownZ = input.getNumber(29)
+    ownX = IN(27)
+    ownY = IN(28)
+    ownZ = IN(29)
 
-    ownQ = eulerQuaternion(
-        input.getNumber(32),
-        input.getNumber(31),
-        input.getNumber(30)
-    )
+    ownPitch = IN(30)
+    ownYaw = IN(31)
+    ownRoll = IN(32)
 
     ------------------------------------------------------------------
     -- Sensor Track reception
@@ -915,16 +1068,34 @@ function onTick()
     -- Lock
     --
     -- Lock inputを離した時だけ完全解除。
-    -- Lock対象Systemが消滅しても押しっぱなしなら別Systemへ乗換えない。
+    -- Lock対象SystemのIDが変わった場合は、保存した位置・速度から
+    -- 同じ目標と判定できる後継SystemへLockを引き継ぐ。
     ------------------------------------------------------------------
     if not lockInput then
         lockedSystemID = 0
-        lockHadTarget = false
+        lockedSystemMemory = nil
     else
-        acquireLock(
-            ownX, ownY, ownZ,
-            ownQ
-        )
+        if lockedSystemMemory then
+            reacquireLockedSystem()
+        else
+            if mapMode then
+                acquireMapLock(
+                    ownX,
+                    ownZ
+                )
+            else
+                acquireDirectLock(
+                    ownX,
+                    ownY,
+                    ownZ,
+                    ownRoll,
+                    ownYaw,
+                    ownPitch
+                )
+            end
+        end
+
+        rememberLockedSystem()
     end
 
     ------------------------------------------------------------------
@@ -936,7 +1107,7 @@ function onTick()
         )
     end
 
-    output.setNumber(1, outputID)
+    ON(1, outputID)
 
     ------------------------------------------------------------------
     -- Time-divided System Track packet for HMD Renderer
@@ -950,26 +1121,30 @@ function onTick()
     --
     -- RendererをこのComposite出力1本だけで動かせるようにする。
     ------------------------------------------------------------------
-    output.setNumber(25, viewX)
-    output.setNumber(26, viewY)
+    ON(25, viewX)
+    ON(26, viewY)
 
-    output.setNumber(27, ownX)
-    output.setNumber(28, ownY)
-    output.setNumber(29, ownZ)
+    ON(27, ownX)
+    ON(28, ownY)
+    ON(29, ownZ)
 
-    output.setNumber(30, input.getNumber(30))
-    output.setNumber(31, input.getNumber(31))
-    output.setNumber(32, input.getNumber(32))
-
+    ON(30, ownPitch)
+    ON(31, ownYaw)
+    ON(32, ownRoll)
+    ON(24, activeSonarRange) -- アクティブソーナー捜索距離をパススルー
     ------------------------------------------------------------------
     -- Operator mode pass-through
     ------------------------------------------------------------------
     -- Rendererへの出力
 
-    output.setBool(2, input.getBool(1)) -- Sonar mode
-    output.setBool(3, input.getBool(2)) -- Fusion mode
-    output.setBool(4, input.getBool(3)) -- Fusion output Sonar
-    output.setBool(5, input.getBool(4)) -- Auto fallback
+    OB(2, IB(1)) -- Sonar mode
+    OB(3, IB(2)) -- Fusion mode
+    OB(4, IB(3)) -- Fusion output Sonar
+    OB(5, IB(4)) -- Auto fallback
 
-    output.setBool(31, lockInput)
+    OB(9, IB(9)) -- Map zoom in
+    OB(10, IB(10)) -- Map zoom out
+
+    OB(30, mapMode)
+    OB(31, lockInput)
 end

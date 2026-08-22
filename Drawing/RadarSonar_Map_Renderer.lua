@@ -10,6 +10,8 @@ INPUT Number
 
 Track Manager出力をそのまま入力。
 
+  1 : Encoded Sensor Track ID（Lock表示の補助判定）
+
   2 : System ID
 
   3 : X
@@ -42,6 +44,12 @@ Track Manager出力をそのまま入力。
  17 : Merge detection Z
  18 : Number of merges
 
+ 19 : Active sonar effective range (m)
+
+ 22 : HMD Map lock radius (screen half-height ratio)
+
+ 25-26 : HMD view X,Y
+
  27 : Own X
  28 : Own Y
  29 : Own Z
@@ -51,6 +59,9 @@ INPUT Bool
 ======================================================================
 
   1 : System Track Packet Valid
+  2 : Pinger shot pulse
+  9 : Map zoom in
+ 10 : Map zoom out
 
 ======================================================================
 表示
@@ -84,10 +95,6 @@ Association marker:
 Properties
 ======================================================================
 
-MAP_ZOOM
-  マップ横幅。単位 km。
-  default = 5
-
 VECTOR_TIME
   ベクトルが何秒先を表すか。
   default = 10
@@ -104,12 +111,34 @@ RENDER_TRACK_TIMEOUT
   Track packet timeout。
   default = 90 tick
 
+LOCKED_RENDER_TRACK_TIMEOUT
+  Lock対象のTrack packet timeout。
+  default = 600 tick
+
 MERGE_MARKER_TIMEOUT
   Merge detection markerの表示時間。
   default = 60 tick
 
+SONAR_WAVE_SPEED
+  ソーナー波紋の伝播速度。単位 m/s。
+  default = 1480
+
+SONAR_RIPPLE_LIMIT
+  同時に保持する波紋数の上限。
+  default = 32
+
 RGBAlpha
   default = 255
+
+MAP_ZOOM_INDEX
+  初期zoom level。1-8。default = 1
+
+HMD_MAP_CURSOR_ANGLE
+  Map端までカーソルを動かす首振り角。単位 deg。
+  default = 45
+
+HMD_MAP_LOCK_RADIUSはTrackManager入力Number 22へ接続し、
+Map RendererにはNumber 22として渡す。
 ]]
 
 RADAR = 0
@@ -131,28 +160,43 @@ end
 --====================================================================
 
 zoomLevels = {
-    .5,
     1,
     2,
     5,
     10,
     20,
-    40,
-    80,
+    30,
+    50,
+    90,
 }
 
-zoomIndex = 5
+zoomIndex = math.max(
+    1,
+    math.min(
+        #zoomLevels,
+        math.floor(prop("MAP_ZOOM_INDEX", 1) + 0.5)
+    )
+)
 mapZoom = zoomLevels[zoomIndex]
+
+mapCursorTurns = prop("HMD_MAP_CURSOR_ANGLE", 45) / 360
 
 vectorTime = prop("VECTOR_TIME", 10)
 vectorMaxPixels = prop("VECTOR_MAX_PIXELS", 35)
 
 ownVelSmooth = prop("OWN_VEL_SMOOTH", .15)
 
+HMD_MAP_LOCK_RADIUS = prop("HMD_MAP_LOCK_RADIUS", 0.1)
 trackTimeout = prop("RENDER_TRACK_TIMEOUT", 90)
+lockedTrackTimeout = prop("LOCKED_RENDER_TRACK_TIMEOUT", 600)
 mergeMarkerTimeout = prop("MERGE_MARKER_TIMEOUT", 60)
+sonarWaveSpeed = 1480
+sonarRippleLimit = math.max(
+    1,
+    math.floor(prop("SONAR_RIPPLE_LIMIT", 32) + 0.5)
+)
 
-alpha =prop("RGBAlpha", 255)
+alpha = prop("RGBAlpha", 255)
 
 
 --====================================================================
@@ -161,6 +205,7 @@ alpha =prop("RGBAlpha", 255)
 
 tracks = {}
 mergeMarkers = {}
+sonarRipples = {}
 
 tick = 0
 
@@ -174,9 +219,14 @@ ownVz = 0
 ownPositionValid = false
 
 lockedSystemID = 0
+cursorCandidateID = 0
+pingerShot = false
+activeSonarRange = 0
 
 zoomInPrev = false
-zoomIndex = 1
+zoomOutPrev = false
+viewX = 0
+viewY = 0
 --====================================================================
 -- Track reception
 --====================================================================
@@ -255,9 +305,139 @@ function pruneMergeMarkers()
     end
 end
 
+-- pingerShotは1 tickのパルスとして扱う。
+-- 発射後に自機が移動しても発射位置から広がるよう、
+-- パルス受信時の世界座標と捜索距離を保存する。
+function receivePingerShot()
+    if not pingerShot or activeSonarRange <= 0 then
+        return
+    end
+
+    sonarRipples[#sonarRipples + 1] = {
+        ownX,
+        ownZ,
+        tick,
+        activeSonarRange
+    }
+
+    if #sonarRipples > sonarRippleLimit then
+        table.remove(sonarRipples, 1)
+    end
+end
+
+function pruneSonarRipples()
+    for i = #sonarRipples, 1, -1 do
+        local ripple = sonarRipples[i]
+        local elapsed = (tick - ripple[3]) / 60
+        local radius = elapsed * sonarWaveSpeed
+
+        if radius > ripple[4] then
+            table.remove(sonarRipples, i)
+        end
+    end
+end
+
+-- 現在のアクティブソーナー捜索範囲。
+-- 発射波紋と異なり、常に現在の自機位置を中心とする。
+function drawActiveSonarRange(w, h)
+    if activeSonarRange <= 0 then
+        return
+    end
+
+    local centerX, centerY =
+        map.mapToScreen(
+            ownX,
+            ownZ,
+            mapZoom,
+            w,
+            h,
+            ownX,
+            ownZ
+        )
+
+    local edgeX =
+        map.mapToScreen(
+            ownX,
+            ownZ,
+            mapZoom,
+            w,
+            h,
+            ownX + activeSonarRange,
+            ownZ
+        )
+
+    local pixelRadius = math.abs(edgeX - centerX)
+
+    screen.setColor(
+        0,
+        120,
+        255,
+        math.floor(alpha * 0.35 + 0.5)
+    )
+
+    screen.drawCircle(
+        centerX,
+        centerY,
+        pixelRadius
+    )
+end
+
+function drawSonarRipples(w, h)
+    screen.setColor(
+        0,
+        180,
+        255,
+        math.floor(alpha * 0.75 + 0.5)
+    )
+
+    for _, ripple in ipairs(sonarRipples) do
+        local elapsed = (tick - ripple[3]) / 60
+        local radius = math.min(
+            elapsed * sonarWaveSpeed,
+            ripple[4]
+        )
+
+        local centerX, centerY =
+            map.mapToScreen(
+                ownX,
+                ownZ,
+                mapZoom,
+                w,
+                h,
+                ripple[1],
+                ripple[2]
+            )
+
+        local edgeX =
+            map.mapToScreen(
+                ownX,
+                ownZ,
+                mapZoom,
+                w,
+                h,
+                ripple[1] + radius,
+                ripple[2]
+            )
+
+        local pixelRadius = math.abs(edgeX - centerX)
+
+        -- 円周が画面と交差する場合だけ描画する。
+        if centerX + pixelRadius >= 0 and
+            centerX - pixelRadius < w and
+            centerY + pixelRadius >= 0 and
+            centerY - pixelRadius < h then
+            screen.drawCircle(
+                centerX,
+                centerY,
+                pixelRadius
+            )
+        end
+    end
+end
+
 function updateZoom()
-    local zoomIn = input.getBool(6)
-    local zoomOut = input.getBool(7)
+    local zoomIn = input.getBool(9)
+    local zoomOut = input.getBool(10)
 
     -- 押した瞬間だけ1段階変更
     if zoomIn and not zoomInPrev then
@@ -285,7 +465,12 @@ end
 
 function pruneTracks()
     for id, t in pairs(tracks) do
-        if tick - t[12] > trackTimeout then
+        local timeout =
+            id == lockedSystemID and
+            lockedTrackTimeout or
+            trackTimeout
+
+        if tick - t[12] > timeout then
             tracks[id] = nil
         end
     end
@@ -538,6 +723,118 @@ function drawLockBracket(x, y)
     )
 end
 
+function mapCursor()
+    if mapCursorTurns <= 0 then
+        return 0, 0
+    end
+
+    local x = viewX / mapCursorTurns
+    local y = -viewY / mapCursorTurns
+
+    x = math.max(-1, math.min(1, x))
+    y = math.max(-1, math.min(1, y))
+
+    return x, y
+end
+
+function findMapCursorCandidate(
+    w,
+    h,
+    cursorX,
+    cursorY,
+    gatePixels
+)
+    if lockedSystemID > 0 then
+        return 0
+    end
+
+    local candidateID = 0
+    local bestDistance2 = gatePixels * gatePixels
+
+    for id, t in pairs(tracks) do
+        local tx, ty, tz = predictTrack(t)
+        local sx, sy =
+            map.mapToScreen(
+                ownX,
+                ownZ,
+                mapZoom,
+                w,
+                h,
+                tx,
+                tz
+            )
+
+        if sx >= 0 and sx < w and
+            sy >= 0 and sy < h then
+            local dx = sx - cursorX
+            local dy = sy - cursorY
+            local distance2 = dx * dx + dy * dy
+
+            if distance2 < bestDistance2 then
+                bestDistance2 = distance2
+                candidateID = id
+            end
+        end
+    end
+
+    return candidateID
+end
+
+-- Track ManagerのNumber 1はRadar IDをn*10、Sonar IDをn*10+1で
+-- 出力する。System IDの到着を待たず、cache内のSensor IDから
+-- Lock対象Systemを特定する。
+function findEncodedLockSystem(encodedID)
+    if encodedID < 1 then return 0 end
+
+    local sensorID =
+        math.floor(encodedID / 10)
+    local isSonar =
+        encodedID - sensorID * 10 == 1
+
+    for id, t in pairs(tracks) do
+        if (isSonar and t[11] == sensorID) or
+            (not isSonar and t[10] == sensorID) then
+            return id
+        end
+    end
+
+    return 0
+end
+
+function drawMapCursor(cursorX, cursorY, gatePixels)
+    screen.setColor(0, 255, 0, alpha)
+    screen.drawCircle(
+        cursorX,
+        cursorY,
+        gatePixels
+    )
+
+    screen.drawLine(
+        cursorX - 7,
+        cursorY,
+        cursorX - 2,
+        cursorY
+    )
+    screen.drawLine(
+        cursorX + 2,
+        cursorY,
+        cursorX + 7,
+        cursorY
+    )
+    screen.drawLine(
+        cursorX,
+        cursorY - 7,
+        cursorX,
+        cursorY - 2
+    )
+    screen.drawLine(
+        cursorX,
+        cursorY + 2,
+        cursorX,
+        cursorY + 7
+    )
+end
+
 function drawMergeMarker(x, y, merges)
     if merges == 1 then
         screen.setColor(
@@ -563,8 +860,8 @@ function drawMergeMarker(x, y, merges)
     end
 
     screen.drawLine(
-        x-6,
-        y-6,
+        x - 6,
+        y - 6,
         x + 6,
         y + 6
     )
@@ -582,18 +879,48 @@ end
 
 function onTick()
     tick = tick + 1
-
+    pingerShot = input.getBool(2)
+    activeSonarRange = input.getNumber(19)
+    mapLockRadius = HMD_MAP_LOCK_RADIUS
+    viewX = input.getNumber(25)
+    viewY = input.getNumber(26)
     receiveTrackPacket()
+
+    -- ch12を正式なLock IDとして使用する。
+    -- 新しいIDのTrack packetが未着なら、直前のカーソル候補を
+    -- 仮表示し、packet到着後に正式IDへ切り替える。
+    local receivedLockID =
+        math.floor(
+            input.getNumber(12) + 0.5
+        )
+    local encodedLockID =
+        math.floor(
+            input.getNumber(1) + 0.5
+        )
+    local matchedLockID =
+        findEncodedLockSystem(encodedLockID)
+
+    if receivedLockID > 0 and
+        tracks[receivedLockID] then
+        lockedSystemID = receivedLockID
+    elseif matchedLockID > 0 then
+        lockedSystemID = matchedLockID
+    elseif receivedLockID == 0 and
+        encodedLockID == 0 then
+        lockedSystemID = 0
+    elseif lockedSystemID == 0 and
+        cursorCandidateID > 0 then
+        lockedSystemID = cursorCandidateID
+    end
+
     receiveMergeMarker()
     pruneTracks()
     pruneMergeMarkers()
 
     updateOwnPosition()
+    receivePingerShot()
+    pruneSonarRipples()
     updateZoom()
-    lockedSystemID =
-        math.floor(
-            input.getNumber(12) + .5
-        )
 end
 
 --====================================================================
@@ -617,6 +944,13 @@ function onDraw()
         ownZ,
         mapZoom
     )
+
+    -- 現在のアクティブソーナー捜索範囲。
+    drawActiveSonarRange(w, h)
+
+    -- pinger発射位置から捜索距離まで広がる波紋。
+    -- Mapの上、目標マーカーの下に描画する。
+    drawSonarRipples(w, h)
 
 
     ------------------------------------------------------------------
@@ -756,6 +1090,24 @@ function onDraw()
 
 
     ------------------------------------------------------------------
+    -- HMD view controlled map cursor / Lock candidate
+    ------------------------------------------------------------------
+
+    local cursorNX, cursorNY = mapCursor()
+    local cursorX = w / 2 + cursorNX * w / 2
+    local cursorY = h / 2 + cursorNY * h / 2
+    local cursorGatePixels = mapLockRadius * h / 2
+    cursorCandidateID =
+        findMapCursorCandidate(
+            w,
+            h,
+            cursorX,
+            cursorY,
+            cursorGatePixels
+        )
+
+
+    ------------------------------------------------------------------
     -- Targets
     ------------------------------------------------------------------
 
@@ -830,6 +1182,13 @@ function onDraw()
                 0,
                 alpha
             )
+        elseif id == cursorCandidateID then
+            screen.setColor(
+                0,
+                220,
+                255,
+                alpha
+            )
         else
             screen.setColor(
                 255,
@@ -856,6 +1215,11 @@ function onDraw()
                 sx,
                 sy
             )
+        elseif id == cursorCandidateID then
+            drawLockBracket(
+                sx,
+                sy
+            )
         end
 
 
@@ -869,6 +1233,17 @@ function onDraw()
             id
         )
     end
+
+
+    ------------------------------------------------------------------
+    -- Map cursor
+    ------------------------------------------------------------------
+
+    drawMapCursor(
+        cursorX,
+        cursorY,
+        cursorGatePixels
+    )
 
 
     ------------------------------------------------------------------

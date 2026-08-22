@@ -36,16 +36,17 @@ PI2                         = PI * 2
 
 launchedCount               = 0
 currentTick                 = 0
-isPingerRequested           = false
 pingerRequestedTick         = 0
 oldChosenViewTargetID       = 0
 reorientMode                = false
+initialScanReadyTick        = math.huge
+previousUnderwaterState     = false
 
 REORIENT_ENTER_ANGLE        = 70 * PI / 180
 REORIENT_EXIT_ANGLE         = 20 * PI / 180
 
-SOUND_SPEED_PER_TICK        = 24.666
-MIN_INITIAL_PINGS           = 4
+SOUND_SPEED_PER_TICK        = 24.66666
+MIN_INITIAL_PINGS           = 3
 
 PN_FIN_STRENGTH             = property.getNumber("PN_FIN_STRENGTH")
 PPN_FIN_STRENGTH            = property.getNumber("PPN_FIN_STRENGTH")
@@ -84,6 +85,7 @@ VT_FUSE_IMPACT_DIST         = property.getNumber("VT_FUSE_IMPACT_DIST")
 
 targetCoords                = { 0, 0, 0 }
 initialTargetCoords         = { 0, 0, 0 }
+selectionAnchorCoords       = { 0, 0, 0 }
 targetInfos                 = {}
 chosenViewTargetID          = 0
 velocityBuffer              = { x = 0, y = 0, z = 0 }
@@ -488,6 +490,7 @@ function onTick()
     local yawAngle, pitchAngle
     currentTick = currentTick + 1
     targetUpdatedCounter = targetUpdatedCounter + 1
+
     -- 目標座標
     -- X=0を通過する目標も扱えるよう、3軸のどれかが入力されていれば更新する
     local tx = input.getNumber(24)
@@ -591,31 +594,63 @@ function onTick()
     local isLaunch = input.getNumber(23) == 1
     local isPing   = input.getNumber(22) == 1 -- ピンガーの発信信号
 
-    if isLaunch then
+    if isLaunch and ownCoords[2] < 0 then
         launchedCount = launchedCount + 1
     end
 
-    -- ASROCから切り離された時点を初期走査の起点にする。
-    -- 搭載中にソナー系が動作していても、そのPingやトラックは持ち込まない。
-    if isLaunch and not previousLaunchState then
+    local underwater = isLaunch and ownCoords[2] < 0
+
+    -- 着水した瞬間を初期走査の起点にする。
+    -- 搭載中・飛翔中のPingやトラックは持ち込まない。
+    if underwater and not previousUnderwaterState then
         initialPingCounts = 0
+        initialScanReadyTick = math.huge
         targetInfos = {}
         chosenViewTargetID = 0
         velocityBuffer = { x = 0, y = 0, z = 0 }
-        previousPingState = false
+        reorientMode = false
+        pingerRequestedTick = currentTick
+
+        -- 最後に受信した有効な目的地を、今回の選択基準として固定する。
+        -- 着水tickの入力が一時的に0でも原点へ戻さない。
+        selectionAnchorCoords = {
+            initialTargetCoords[1],
+            initialTargetCoords[2],
+            initialTargetCoords[3]
+        }
+        targetCoords = {
+            selectionAnchorCoords[1],
+            selectionAnchorCoords[2],
+            selectionAnchorCoords[3]
+        }
     end
 
-    -- NewtonDistanceFinderのPing出力は、送信から待受終了までONのレベル信号。
-    -- ONの各tickではなく立ち上がりだけを1回として数える。
-    if isLaunch and isPing and not previousPingState then
+    -- isPingは1 tickパルスなので、そのまま数える
+    if underwater and isPing and initialPingCounts < MIN_INITIAL_PINGS then
         initialPingCounts = initialPingCounts + 1
+
+        if initialPingCounts == MIN_INITIAL_PINGS then
+            local anchorDistance =
+                vector_magnitude(subtract(selectionAnchorCoords, ownCoords))
+
+            -- 4発目について探索範囲の遠端から反射が返るまで待つ
+            initialScanReadyTick =
+                currentTick +
+                math.ceil(
+                    (anchorDistance + CLOSEST_DISTANCE_THRESHOLD) *
+                    2 / SOUND_SPEED_PER_TICK +
+                    15
+                )
+        end
     end
+
+
     local initialScanComplete =
-        isLaunch and
+        underwater and
         initialPingCounts >= MIN_INITIAL_PINGS and
-        not isPing
-    previousPingState = isPing
-    previousLaunchState = isLaunch
+        currentTick >= initialScanReadyTick
+
+    previousUnderwaterState = underwater
 
     -- 距離に応じた次回Pingまでの待ち時間より短いT_LOSTが設定されても、
     -- 次の反射が返る前に選択中のトラックを消さない。
@@ -666,14 +701,16 @@ function onTick()
     if chosenViewTargetID ~= 0 and not selectedTargetExists then
         chosenViewTargetID = 0
         initialPingCounts = 0
+        initialScanReadyTick = math.huge
         targetInfos = {}
         targetCoords = {
-            initialTargetCoords[1],
-            initialTargetCoords[2],
-            initialTargetCoords[3]
+            selectionAnchorCoords[1],
+            selectionAnchorCoords[2],
+            selectionAnchorCoords[3]
         }
         velocityBuffer = { x = 0, y = 0, z = 0 }
         reorientMode = false
+        pingerRequestedTick = currentTick
         isTargetFound = false
         initialScanComplete = false
     end
@@ -688,9 +725,9 @@ function onTick()
         if not isTargetFound and chosenViewTargetID == 0 then
             for _, target in ipairs(targetInfos) do
                 local distanceDiffSq =
-                    (target.x - initialTargetCoords[1]) ^ 2 +
-                    (target.y - initialTargetCoords[2]) ^ 2 +
-                    (target.z - initialTargetCoords[3]) ^ 2
+                    (target.x - selectionAnchorCoords[1]) ^ 2 +
+                    (target.y - selectionAnchorCoords[2]) ^ 2 +
+                    (target.z - selectionAnchorCoords[3]) ^ 2
                 if distanceDiffSq < closestDistanceSq and
                     distanceDiffSq < closestDistanceThresholdSq then
                     closestDistanceSq = distanceDiffSq
@@ -700,6 +737,8 @@ function onTick()
                     targetCoords = { target.x, target.y, target.z }
                     velocityBuffer = selectedTargetVelocity
                     targetUpdatedCounter = 0
+                    -- 終末追尾用Pingの周期を選択時点から開始する。
+                    pingerRequestedTick = currentTick
                     --[[                         debug.log("Target found, Distance = : " ..
                             math.sqrt(closestDistanceSq) ..
                             ", ID = " ..
@@ -707,6 +746,21 @@ function onTick()
                             target.z) ]]
                 end
             end
+        end
+
+        -- 4発分の反射を待っても目的地周辺に候補がなければ、
+        -- 後着の単発反射へ即座に食いつかず、新しい4発走査を開始する。
+        if chosenViewTargetID == 0 then
+            initialPingCounts = 0
+            initialScanReadyTick = math.huge
+            targetInfos = {}
+            targetCoords = {
+                selectionAnchorCoords[1],
+                selectionAnchorCoords[2],
+                selectionAnchorCoords[3]
+            }
+            velocityBuffer = { x = 0, y = 0, z = 0 }
+            pingerRequestedTick = currentTick
         end
     end
 
@@ -752,7 +806,7 @@ function onTick()
     -- 3. グローバル座標系でのLOS (Line of Sight) ベクトルを計算
     LOS_vec_global = subtract(activeTargetCoordsVec, ownCoordsVec)
     if isLaunch then
-        if launchedCount > 240 and not isPPN then
+        if launchedCount > 60 and not isPPN then
             if chosenViewTargetID ~= 0 then
                 -- 現在の機首前方をグローバル座標へ変換
                 local forwardGlobal =
@@ -1261,7 +1315,7 @@ function onTick()
     end
 
     local fuse = false
-    if launchedCount > 300 and isTargetFound and not IS_VTFUSE_ENABLED then
+    if launchedCount > 60 and isTargetFound and not IS_VTFUSE_ENABLED then
         fuse = true
     end
 
@@ -1276,14 +1330,25 @@ function onTick()
     output.setNumber(5, targetCoords[3])
     output.setNumber(6, pingerIntervalTick)
 
+    -- 4発目の後は探索範囲の遠端から反射が返るまで追加発射しない。
+    local waitingInitialEcho =
+        initialPingCounts >= MIN_INITIAL_PINGS and
+        currentTick < initialScanReadyTick
+
+    local allowPingerRequest =
+        underwater and
+        not waitingInitialEcho
+
     -- booleanで直接ピンガーをリクエストすることもできる
     local isSecondPingerRequest = false
-    if currentTick == pingerRequestedTick + math.floor(pingerIntervalTick / 2) then
+    if allowPingerRequest and
+        currentTick == pingerRequestedTick + math.floor(pingerIntervalTick / 2) then
         isSecondPingerRequest = true
     end
 
     local isPingerRequest = false
-    if currentTick >= pingerRequestedTick + pingerIntervalTick then
+    if allowPingerRequest and
+        currentTick >= pingerRequestedTick + pingerIntervalTick then
         isPingerRequest = true
         pingerRequestedTick = currentTick
     end

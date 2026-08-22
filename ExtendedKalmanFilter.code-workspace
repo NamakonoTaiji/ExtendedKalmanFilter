@@ -17,10 +17,6 @@
       "path": "ADS V3/ADS V3 CIWS"
     },
     {
-      "name": "TomahawkTaxi",
-      "path": "Others/TomahawkTaxi"
-    },
-    {
       "name": "NewKalmanFilter",
       "path": "ADS V3/NewKalmanFilter"
     },
@@ -37,18 +33,6 @@
       "path": "ADS V3/ADS V3 System"
     },
     {
-      "name": "HeadMountDisplay",
-      "path": "Others/HeadMountDisplay"
-    },
-    {
-      "name": "Heli",
-      "path": "Others/Heli"
-    },
-    {
-      "name": "RWR",
-      "path": "Others/RWR"
-    },
-    {
       "name": "AddonLua",
       "path": "AddonLua"
     },
@@ -61,9 +45,13 @@
       "path": "ASM"
     },
     {
+      "name": "Drawing",
+      "path": "Drawing"
+    },
+    {
       "name": "Root (Docs/Mathlib/etc)",
       "path": "."
-    }
+    },
   ],
   "settings": {
     "liveServer.settings.multiRootWorkspaceName": "ADS V3 Missile"
