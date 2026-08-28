@@ -1,12 +1,8 @@
 {
   "folders": [
     {
-      "name": "HGV Missile",
-      "path": "GPTWorkspace/HGV Missile"
-    },
-    {
-      "name": "AA Missile",
-      "path": "GPTWorkspace/AA Missile"
+      "name": "ADSV4",
+      "path": "GPTWorkspace/ADSV4"
     },
     {
       "name": "GPTWorkspace",
