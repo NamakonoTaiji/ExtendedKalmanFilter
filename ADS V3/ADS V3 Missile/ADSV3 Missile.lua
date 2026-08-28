@@ -3,9 +3,10 @@
 至近距離ではミサイル出力を使用して近接信管で目標を破壊する。
 
 -- 入力:
-- bool 1: 目標を検出中
+- bool 1: KFが有効な追跡目標を出力中 (現行誘導では未使用)
 - bool 2: 対水上モードか否か
 - bool 3: 発射済みか否か
+- bool 32: ミサイル出力用レーダーが目標を検出中
 - num 1: 推定目標座標 X
 - num 2: 推定目標座標 Y
 - num 3: 推定目標座標 Z
@@ -27,17 +28,18 @@
 - num 3: 近接速度
 
 -- 追加プロパティ:
+- num MISSILE_RADAR_MAX_ANGLE: 終末レーダー起動を許可する最大目標アスペクト角（度、0以下は40度）
+- bool PN_GAIN_SCHEDULE_ENABLE: 300～100mの対空PNゲインスケジュールを有効化
 - bool GRAVITY_COMP_ENABLE: 重力補償の有効化
 - num GRAVITY_COMP_GAIN: 重力補償のフィン加算ゲイン
 ]]
 
 
 DT                             = 1 / 60
-PI                             = math.pi
-PI2                            = PI * 2
 
 oldDistance                    = 0
 missileRadarIO                 = false
+missileRadarBlocked            = false
 isLaunched                     = false
 lauchedCount                   = 0
 initialGuidanceCounter         = 0
@@ -47,13 +49,44 @@ isHeadCapture                  = false
 mainRadarIO                    = false
 targetCoords                   = { 0, 0, 0 }
 targetVelocity                 = { 0, 0, 0 }
+previousTargetVelocity         = nil
 previousOwnCoords              = nil
--- debugCounter                   = 0
+previousPreviousOwnCoords      = nil
+previousOwnOrientation         = nil
+selfDetonateCount              = 0
+fuseIO                         = false
+
+--------------------------------------------------------------------------------
+-- ビーム機動試験用デバッグ設定・集計状態
+-- 誘導・終末レーダー有効化・最接近・自爆を記録する。FOV計測はMissileFOVDebug.lua側で行う。
+--------------------------------------------------------------------------------
+DEBUG_LOG_ENABLED              = true
+debugTick                      = 0
+debugLaunchTick                = nil
+debugPNStarted                 = false
+debugPreviousTerminalRadar     = false
+debugEverRadarDetection        = false
+debugCurrentLossTicks          = 0
+debugMaximumLossTicks          = 0
+debugReacquired                = false
+debugMinimumDistance           = math.huge
+debugTerminalArmed             = false
+debugRecedingTicks             = 0
+debugClosestPassLogged         = false
+debugFinalSummaryLogged        = false
+DEBUG_TERMINAL_DISTANCE        = 500
+DEBUG_CLOSEST_INCREASE         = 50
+DEBUG_CLOSEST_CONFIRM_TICKS    = 3
+DEBUG_FIN_INPUT_LIMIT          = 10
 
 DIVE_START_TANJENT             = math.tan(math.rad(70))                               -- 巡航モードからダイブを開始させる角度
 PN_FIN_STRENGTH                = property.getNumber("PN_FIN_STRENGTH")                -- 比例航法時のフィンにかける係数
+PN_GAIN_SCHEDULE_ENABLE        = property.getBool("PN_GAIN_SCHEDULE_ENABLE")          -- 交差コース用の距離・相対横速度ゲインスケジュール
 PPN_FIN_STRENGTH               = property.getNumber("PPN_FIN_STRENGTH")               -- 単追尾時のフィンにかける係数
 MISSILE_FIN_DISTANCE_THRESHOLD = property.getNumber("MISSILE_FIN_DISTANCE_THRESHOLD") -- 至近距離で誘導を行う広角レーダーの有効範囲
+MISSILE_RADAR_MAX_ANGLE        = property.getNumber("MISSILE_RADAR_MAX_ANGLE")          -- 目標進行方向と目標から自機への方向がなす最大角（度）
+if MISSILE_RADAR_MAX_ANGLE <= 0 then MISSILE_RADAR_MAX_ANGLE = 40 end
+MISSILE_RADAR_MAX_ANGLE        = math.rad(MISSILE_RADAR_MAX_ANGLE)
 SKIMMING_ALT                   = property.getNumber("SKIMMING_ALT")                   -- 対水上モード巡航高度
 GUIDANCE_START_ALTITUDE        = property.getNumber("GUIDANCE_START_ALTITUDE")        -- 誘導開始高度
 LOGIC_DELAY                    = property.getNumber("LOGIC_DELAY")
@@ -73,9 +106,6 @@ HEAD_LEAD_MAX_SCALE            = property.getNumber("HEAD_LEAD_MAX_SCALE")
 -- {x, y, z} 形式で保存
 oldLOS_vec_global_normalized   = { x = 0, y = 0, z = 1 } -- 初期値 (例: 前方)
 
-oldLOS                         = { azimuth = 0, elevation = 0 }
-currentLOS                     = { azimuth = 0, elevation = 0 }
-LOStable                       = { old = oldLOS, current = currentLOS }
 isInit                         = true -- 近接速度計算初期化
 --- 3Dベクトル a から b を引きます (a - b)
 ---@param a Vector3 {x: number, y: number, z: number} または {number, number, number}
@@ -169,42 +199,22 @@ function multiplyQuaternions(q_a, q_b)
     return { w_result, x_result, y_result, z_result }
 end
 
--- 物理センサーのロールピッチヨーからクォータニオンへ変換
-function eulerZYX_to_quaternion(roll, yaw, pitch)
-    local half_roll, half_yaw, half_pitch, cr, sr, cy, sy, cp, sp, w, x, y, z
-    -- nilチェックは原則削除
-    half_roll = roll * 0.5
-    half_yaw = yaw * 0.5
-    half_pitch = pitch * 0.5
-    cr = math.cos(half_roll)
-    sr = math.sin(half_roll)
-    cy = math.cos(half_yaw)
-    sy = math.sin(half_yaw)
-    cp = math.cos(half_pitch)
-    sp = math.sin(half_pitch)
-    w = cr * cy * cp + sr * sy * sp
-    x = cr * cy * sp - sr * sy * cp
-    y = cr * sy * cp + sr * cy * sp
-    z = sr * cy * cp - cr * sy * sp
-    return { w, x, y, z }
-end
-
-function rotateVectorByQuaternion(vector, quaternion)
-    local px, py, pz, p, q, q_conj, temp, p_prime
-    -- nilチェックは原則削除
-    px = vector[1] or vector.x or 0
-    py = vector[2] or vector.y or 0
-    pz = vector[3] or vector.z or 0
-    -- nilチェックは原則削除
-    p = { 0, px, py, pz }
-    q = quaternion
-    q_conj = { q[1], -q[2], -q[3], -q[4] }
-    -- nilチェックは原則削除
-    temp = multiplyQuaternions(q, p)
-    -- nilチェックは原則削除
-    p_prime = multiplyQuaternions(temp, q_conj)
-    -- nilチェックは原則削除
-    return { p_prime[2], p_prime[3], p_prime[4] }
+-- クォータニオンの1 tick差分を角速度相当としてLOGIC_DELAY tick先へ外挿する。
+-- qと-qは同じ姿勢なので、内積が負なら前回値の符号を反転して最短側を使う。
+function predictQuaternion(q, previousQ, ticks)
+    if not previousQ then return q end
+    local dot = 0
+    for i = 1, 4 do dot = dot + q[i] * previousQ[i] end
+    local sign = dot < 0 and -1 or 1
+    local predicted, normSquared = {}, 0
+    for i = 1, 4 do
+        local component = q[i] + (q[i] - previousQ[i] * sign) * ticks
+        predicted[i] = component
+        normSquared = normSquared + component ^ 2
+    end
+    local inverseNorm = 1 / math.sqrt(normSquared)
+    for i = 1, 4 do predicted[i] = predicted[i] * inverseNorm end
+    return predicted
 end
 
 function rotateVectorByInverseQuaternion(vector, quaternion)
@@ -311,32 +321,6 @@ function getGravityCorrection(localVelocity, gravity)
     )
 end
 
---- 乗り物などのローカル座標を、ワールド座標系のグローバル座標に変換します。
----@description 基準となるオブジェクトのグローバル位置と姿勢（クォータニオン）を用いて、
---              オブジェクト上の相対的な位置（ローカル座標）を絶対的な位置（グローバル座標）に変換します。
----@param localPosition Vector3 {x: number, y: number, z: number} 変換したいオブジェクト上のローカル座標。
----@param objectGlobalPos Vector3 {x: number, y: number, z: number} 基準オブジェクト自体のグローバル座標。
----@param objectOrientationQuat Quaternion {w: number, x: number, y: number, z: number} 基準オブジェクトの姿勢を表すクォータニオン。
----@return Vector3 {x: number, y: number, z: number} 変換後のグローバル座標。
-function localToGlobal(localPosition, objectGlobalPos, objectOrientationQuat)
-    -- 1. 入力テーブルからローカル座標の各成分を取得
-    --    {x,y,z} 形式と {1,2,3} 形式の両方に対応します。
-    local lx = localPosition.x or localPosition[1] or 0
-    local ly = localPosition.y or localPosition[2] or 0
-    local lz = localPosition.z or localPosition[3] or 0
-    local localVec = { lx, ly, lz }
-
-    -- 2. クォータニオンでローカル座標ベクトルを回転させ、グローバル座標系での相対ベクトルを計算
-    local relativeGlobalVec = rotateVectorByQuaternion(localVec, objectOrientationQuat)
-
-    -- 3. オブジェクトのグローバル座標に相対ベクトルを加算し、最終的なグローバル座標を算出
-    local gx = relativeGlobalVec[1] + objectGlobalPos.x
-    local gy = relativeGlobalVec[2] + objectGlobalPos.y
-    local gz = relativeGlobalVec[3] + objectGlobalPos.z
-
-    return { x = gx, y = gy, z = gz }
-end
-
 --- ワールド座標系のグローバル座標を、特定のオブジェクトを基準としたローカル座標に変換します。
 ---@description 基準オブジェクトからターゲットへの相対ベクトルを計算し、
 --              オブジェクトの姿勢（逆クォータニオン）で回転させることでローカル座標を求めます。
@@ -373,57 +357,203 @@ function coordsToAngle(localPosVec)
     return { azimuth = currentLocalAzimuth, elevation = currentLocalElevation }
 end
 
--- ローカル極座標からローカル直交座標へ
----@param dist number 距離
----@param localAziRad number 方位角(ラジアン)
----@param localEleRad number 仰角(ラジアン)
----@return Vector3 ローカル座標(x右方向, y上方向, z前方向)
-function localAngleDistToLocalCoords(dist, localAziRad, localEleRad)
-    local localX, localY, localZ
-    localX = dist * math.cos(localEleRad) * math.sin(localAziRad)
-    localY = dist * math.sin(localEleRad)
-    localZ = dist * math.cos(localEleRad) * math.cos(localAziRad)
-    return { x = localX, y = localY, z = localZ }
+-- 300～100mだけ有効。相対横速度80～160m/sと距離端50mで線形に立ち上げる。
+function getScheduledPNGain(distance, lateralSpeed, enabled)
+    local schedule = enabled and math.max(0, math.min(1,
+        (300 - distance) / 50, (distance - 100) / 50, (lateralSpeed - 80) / 80)) or 0
+    return PN_FIN_STRENGTH + math.max(0, 1.5 - PN_FIN_STRENGTH) * schedule, schedule
+end
+
+--------------------------------------------------------------------------------
+-- ビーム機動試験用デバッグログ
+-- debug.logはこの関数へ集約する。距離はm、時間はtick。
+--------------------------------------------------------------------------------
+function updateGuidanceDebug(isLaunch, isPN, terminalRadarOn, isRadarDetecting,
+                             distance, approachVelocity, selfDetonation,
+                             losRateYaw, losRatePitch, preGravityYaw, preGravityPitch,
+                             outputYaw, outputPitch, targetLateralAcceleration,
+                             relativeLateralSpeed, effectivePNGain, pnSchedule)
+    debugTick = debugTick + 1
+    if not DEBUG_LOG_ENABLED then return end
+
+    local function rounded(value, scale)
+        if value >= 0 then
+            return math.floor(value * scale + 0.5) / scale
+        end
+        return math.ceil(value * scale - 0.5) / scale
+    end
+
+    if isLaunch and debugLaunchTick == nil then
+        debugLaunchTick = debugTick
+        debug.log("[AA_DBG] LAUNCH tick=" .. debugTick .. " distance_m=" .. rounded(distance, 10))
+    end
+
+    if not isLaunch then
+        debugPreviousTerminalRadar = terminalRadarOn
+        return
+    end
+
+    local flightTick = debugTick - debugLaunchTick
+
+    if distance > 0 and distance <= DEBUG_TERMINAL_DISTANCE then
+        if not debugTerminalArmed then
+            debugTerminalArmed = true
+            debugMinimumDistance = distance
+        elseif distance < debugMinimumDistance then
+            debugMinimumDistance = distance
+        end
+    end
+
+    if isPN and not debugPNStarted then
+        debugPNStarted = true
+        debug.log("[AA_DBG] PN_START tick=" .. debugTick .. " flight_tick=" .. flightTick ..
+            " distance_m=" .. rounded(distance, 10))
+    end
+
+    if terminalRadarOn and not debugPreviousTerminalRadar then
+        debug.log("[AA_DBG] TERMINAL_RADAR_ON tick=" .. debugTick .. " flight_tick=" .. flightTick ..
+            " distance_m=" .. rounded(distance, 10))
+    end
+
+    if terminalRadarOn then
+        if isRadarDetecting then
+            if debugCurrentLossTicks > 0 then
+                debugReacquired = true
+                debug.log("[AA_DBG] RADAR_REACQUIRED tick=" .. debugTick .. " flight_tick=" .. flightTick ..
+                    " distance_m=" .. rounded(distance, 10) ..
+                    " loss_ticks=" .. debugCurrentLossTicks)
+            elseif not debugEverRadarDetection then
+                debug.log("[AA_DBG] RADAR_ACQUIRED tick=" .. debugTick .. " flight_tick=" .. flightTick ..
+                    " distance_m=" .. rounded(distance, 10))
+            end
+            debugEverRadarDetection = true
+            debugCurrentLossTicks = 0
+        elseif debugEverRadarDetection then
+            debugCurrentLossTicks = debugCurrentLossTicks + 1
+            if debugCurrentLossTicks > debugMaximumLossTicks then
+                debugMaximumLossTicks = debugCurrentLossTicks
+            end
+            if debugCurrentLossTicks == 1 then
+                debug.log("[AA_DBG] RADAR_LOST_START tick=" .. debugTick .. " flight_tick=" .. flightTick ..
+                    " distance_m=" .. rounded(distance, 10))
+            end
+        end
+
+        if flightTick % 60 == 0 then
+            debug.log("[AA_DBG] STATUS tick=" .. debugTick .. " flight_tick=" .. flightTick ..
+                " distance_m=" .. rounded(distance, 10) .. " pn=" .. tostring(isPN) ..
+                " radar_detecting=" .. tostring(isRadarDetecting) ..
+                " current_loss_ticks=" .. debugCurrentLossTicks ..
+                " max_loss_ticks=" .. debugMaximumLossTicks ..
+                " reacquired=" .. tostring(debugReacquired) ..
+                " min_distance_m=" .. (debugTerminalArmed and rounded(debugMinimumDistance, 10) or -1))
+        end
+    end
+
+    if debugTerminalArmed and isPN then
+        local closingSpeed = -approachVelocity / DT
+        local timeToGo = closingSpeed > 0.1 and distance / closingSpeed or -1
+        debug.log("[AA_DBG] PN_TERMINAL tick=" .. debugTick .. " flight_tick=" .. flightTick ..
+            " distance_m=" .. rounded(distance, 10) ..
+            " los_yaw_rad_s=" .. rounded(losRateYaw, 1000) ..
+            " los_pitch_rad_s=" .. rounded(losRatePitch, 1000) ..
+            " los_lateral_speed_mps=" .. rounded(relativeLateralSpeed, 10) ..
+            " pn_gain=" .. rounded(effectivePNGain, 1000) ..
+            " pn_schedule=" .. rounded(pnSchedule, 1000) ..
+            " pre_gravity_yaw=" .. rounded(preGravityYaw, 1000) ..
+            " pre_gravity_pitch=" .. rounded(preGravityPitch, 1000) ..
+            " output_yaw=" .. rounded(outputYaw, 1000) ..
+            " output_pitch=" .. rounded(outputPitch, 1000) ..
+            " yaw_over_limit=" .. tostring(math.abs(outputYaw) > DEBUG_FIN_INPUT_LIMIT) ..
+            " pitch_over_limit=" .. tostring(math.abs(outputPitch) > DEBUG_FIN_INPUT_LIMIT) ..
+            " closing_speed_mps=" .. rounded(closingSpeed, 10) ..
+            " tgo_s=" .. rounded(timeToGo, 1000) ..
+            " target_lateral_accel_mps2=" .. rounded(targetLateralAcceleration, 10))
+    end
+
+    if debugTerminalArmed and approachVelocity > 0 and
+        distance > debugMinimumDistance + DEBUG_CLOSEST_INCREASE then
+        debugRecedingTicks = debugRecedingTicks + 1
+    else
+        debugRecedingTicks = 0
+    end
+    if debugRecedingTicks >= DEBUG_CLOSEST_CONFIRM_TICKS and not debugClosestPassLogged then
+        debugClosestPassLogged = true
+        debug.log("[AA_DBG] CLOSEST_PASS tick=" .. debugTick .. " flight_tick=" .. flightTick ..
+            " min_distance_m=" .. rounded(debugMinimumDistance, 10) ..
+            " current_distance_m=" .. rounded(distance, 10) ..
+            " confirm_ticks=" .. debugRecedingTicks)
+    end
+
+    if selfDetonation and not debugFinalSummaryLogged then
+        debugFinalSummaryLogged = true
+        debug.log("[AA_DBG] FINAL reason=self_detonation tick=" .. debugTick .. " flight_tick=" .. flightTick ..
+            " max_loss_ticks=" .. debugMaximumLossTicks ..
+            " reacquired=" .. tostring(debugReacquired) ..
+            " min_distance_m=" .. (debugTerminalArmed and rounded(debugMinimumDistance, 10) or -1))
+    end
+
+    debugPreviousTerminalRadar = terminalRadarOn
 end
 
 function onTick()
-    -- debugCounter = -- debugCounter + 1
-    -- debug.log("-----------------" .. -- debugCounter .. "----------------")
     -- 1. 座標・オイラー角の取得
-    local isDetecting    = input.getBool(1)
+    local isMissileRadarDetecting, ownCoords, predictedOwnCoords, ownOrientation, predictedOwnOrientation, worldVelocity, selfLocalVelocity
+    local localVelocityArray, isAntiShipMode, isLaunch, distance, targetCoordsVec, ownCoordsVec, activeTargetCoordsVec, activeTargetVelocitysVec, LOS_vec_global
+    local targetAcceleration, currentLOS_vec_global_normalized, targetLateralAcceleration, los_rate_pitch, los_rate_yaw
+    local relativeLateralSpeed, effectivePNGain, pnSchedule = 0, PN_FIN_STRENGTH, 0
+    isMissileRadarDetecting = input.getBool(32) -- 至近距離で使うミサイルレーダーが目標を検出中か
 
-    targetCoords         = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
+    targetCoords            = { input.getNumber(1), input.getNumber(2), input.getNumber(3) }
 
-    targetVelocity       = { input.getNumber(4), input.getNumber(5), input.getNumber(6) }
-
-    local ownCoords      = { input.getNumber(13), input.getNumber(14), input.getNumber(15) }
-    local ownOrientation = { input.getNumber(16), input.getNumber(17), input.getNumber(18), input.getNumber(19) }
-
-    -- 追加の速度入力を使わず、自機座標の差分から速度を求める。
-    local worldVelocity  = { 0, 0, 0 }
-    if previousOwnCoords then
-        worldVelocity = {
-            (ownCoords[1] - previousOwnCoords[1]) / DT,
-            (ownCoords[2] - previousOwnCoords[2]) / DT,
-            (ownCoords[3] - previousOwnCoords[3]) / DT
-        }
+    targetVelocity          = { input.getNumber(4), input.getNumber(5), input.getNumber(6) }
+    targetAcceleration      = { 0, 0, 0 }
+    if previousTargetVelocity then
+        for axis = 1, 3 do
+            targetAcceleration[axis] = (targetVelocity[axis] - previousTargetVelocity[axis]) / DT
+        end
     end
-    previousOwnCoords        = { ownCoords[1], ownCoords[2], ownCoords[3] }
+    previousTargetVelocity  = { targetVelocity[1], targetVelocity[2], targetVelocity[3] }
 
-    local localVelocityArray =
+    ownCoords               = { input.getNumber(13), input.getNumber(14), input.getNumber(15) }
+    ownOrientation          = { input.getNumber(16), input.getNumber(17), input.getNumber(18), input.getNumber(19) }
+    predictedOwnOrientation = predictQuaternion(ownOrientation, previousOwnOrientation, LOGIC_DELAY)
+    previousOwnOrientation  = ownOrientation
+
+    -- 自機速度は1階差分、加速度は速度の差分（位置の2階差分）から求める。
+    -- 誘導LOSにはLOGIC_DELAY tick先の位置と姿勢を使う。
+    worldVelocity           = { 0, 0, 0 }
+    predictedOwnCoords      = {}
+    local previousPosition = previousOwnCoords or ownCoords
+    local delaySquaredHalf = LOGIC_DELAY ^ 2 * 0.5
+    for axis = 1, 3 do
+        local velocityPerTick = ownCoords[axis] - previousPosition[axis]
+        local accelerationPerTick2 = 0
+        worldVelocity[axis] = velocityPerTick / DT
+        if previousPreviousOwnCoords then
+            accelerationPerTick2 = velocityPerTick - previousPosition[axis] + previousPreviousOwnCoords[axis]
+        end
+        predictedOwnCoords[axis] = ownCoords[axis]
+            + velocityPerTick * LOGIC_DELAY
+            + accelerationPerTick2 * delaySquaredHalf
+    end
+    previousPreviousOwnCoords = previousOwnCoords
+    previousOwnCoords = ownCoords
+
+    localVelocityArray =
         rotateVectorByInverseQuaternion(
             worldVelocity,
             ownOrientation
         )
-    local selfLocalVelocity  = {
+    selfLocalVelocity  = {
         x = localVelocityArray[1],
         y = localVelocityArray[2],
         z = localVelocityArray[3]
     }
 
-    local isAntiShipMode     = input.getBool(2)
-    local isLaunch           = input.getBool(3)
-    local distance           = vector_magnitude(subtract(targetCoords, ownCoords))
+    isAntiShipMode     = input.getBool(2)
+    isLaunch           = input.getBool(3)
+    distance           = vector_magnitude(subtract(targetCoords, predictedOwnCoords))
 
     if isLaunch and not isLaunched then
         lauchedCount = lauchedCount + 1
@@ -433,11 +563,10 @@ function onTick()
     end
 
     -- {x, y, z} 形式のベクトルテーブルに変換
-    local targetCoordsVec          = { x = targetCoords[1], y = targetCoords[2], z = targetCoords[3] }
-    local ownCoordsVec             = { x = ownCoords[1], y = ownCoords[2], z = ownCoords[3] }
-    local activeTargetCoordsVec    = targetCoordsVec
-    local activeTargetVelocitysVec = { vx = targetVelocity[1], vy = targetVelocity[2], vz = targetVelocity[3] }
-    local LOS_vec_global
+    targetCoordsVec          = { x = targetCoords[1], y = targetCoords[2], z = targetCoords[3] }
+    ownCoordsVec             = { x = predictedOwnCoords[1], y = predictedOwnCoords[2], z = predictedOwnCoords[3] }
+    activeTargetCoordsVec    = targetCoordsVec
+    activeTargetVelocitysVec = { vx = targetVelocity[1], vy = targetVelocity[2], vz = targetVelocity[3] }
 
     -- 指定された高度mまで垂直上昇
     if isLaunch then
@@ -462,10 +591,11 @@ function onTick()
     ----------------------------------------------------------------------------
     local yawAngle, pitchAngle
     if isGuidanceStart then
-        local dx = targetCoordsVec.x - ownCoordsVec.x
-        local dz = targetCoordsVec.z - ownCoordsVec.z
-        local horizontalDist = math.sqrt(dx * dx + dz * dz)
-        local diveStartDistance = math.min(1500, math.max(SKIMMING_ALT / DIVE_START_TANJENT, 500))
+        local dx, dz, horizontalDist, diveStartDistance
+        dx = targetCoordsVec.x - ownCoordsVec.x
+        dz = targetCoordsVec.z - ownCoordsVec.z
+        horizontalDist = math.sqrt(dx * dx + dz * dz)
+        diveStartDistance = math.min(1500, math.max(SKIMMING_ALT / DIVE_START_TANJENT, 500))
 
         ---- 対水上モード
         if isAntiShipMode then
@@ -478,41 +608,44 @@ function onTick()
                 local dirZ = dz / horizontalDist
                 activeTargetCoordsVec = {
                     x = ownCoordsVec.x + dirX * 100,
-                    y = math.max(ownCoords[2] / 1.5, SKIMMING_ALT),
+                    y = math.max(ownCoordsVec.y / 1.5, SKIMMING_ALT),
                     z = ownCoordsVec.z + dirZ * 100
                 }
             end
         elseif targetCoordsVec.y > 1000 and distance > 1500 then
-            local vx = activeTargetVelocitysVec.vx
-            local vy = activeTargetVelocitysVec.vy
-            local vz = activeTargetVelocitysVec.vz
+            local vx, vy, vz, targetSpeed
+            vx = activeTargetVelocitysVec.vx
+            vy = activeTargetVelocitysVec.vy
+            vz = activeTargetVelocitysVec.vz
 
-            local targetSpeed = math.sqrt(
+            targetSpeed = math.sqrt(
                 vx * vx + vy * vy + vz * vz
             )
 
             if targetSpeed > BALLISTIC_MIN_SPEED then
-                local dirX = vx / targetSpeed
-                local dirY = vy / targetSpeed
-                local dirZ = vz / targetSpeed
+                local dirX, dirY, dirZ, relX, relY, relZ, relDistance, toMissileX, toMissileY, toMissileZ, facing, headOn, leadScale, leadDistance
+                local alongTrack, crossX, crossY, crossZ, crossTrack, captureRequired, releaseAllowed
+                dirX = vx / targetSpeed
+                dirY = vy / targetSpeed
+                dirZ = vz / targetSpeed
 
                 -- 目標から迎撃ミサイルへの相対位置
-                local relX = ownCoordsVec.x - targetCoordsVec.x
-                local relY = ownCoordsVec.y - targetCoordsVec.y
-                local relZ = ownCoordsVec.z - targetCoordsVec.z
+                relX = ownCoordsVec.x - targetCoordsVec.x
+                relY = ownCoordsVec.y - targetCoordsVec.y
+                relZ = ownCoordsVec.z - targetCoordsVec.z
 
-                local relDistance = math.sqrt(
+                relDistance = math.sqrt(
                     relX * relX
                     + relY * relY
                     + relZ * relZ
                 )
 
-                local toMissileX = relX / math.max(relDistance, 1)
-                local toMissileY = relY / math.max(relDistance, 1)
-                local toMissileZ = relZ / math.max(relDistance, 1)
+                toMissileX = relX / math.max(relDistance, 1)
+                toMissileY = relY / math.max(relDistance, 1)
+                toMissileZ = relZ / math.max(relDistance, 1)
 
                 -- 目標が迎撃ミサイルへどれだけ正対しているか
-                local facing =
+                facing =
                     dirX * toMissileX
                     + dirY * toMissileY
                     + dirZ * toMissileZ
@@ -520,38 +653,38 @@ function onTick()
                 facing = math.max(-1, math.min(1, facing))
 
                 -- 正対時のみリードを小さくする
-                local headOn = math.max(facing, 0)
+                headOn = math.max(facing, 0)
                 headOn = headOn * headOn
 
-                local leadScale =
+                leadScale =
                     HEAD_LEAD_MAX_SCALE
                     - (HEAD_LEAD_MAX_SCALE - HEAD_LEAD_MIN_SCALE)
                     * headOn
 
-                local leadDistance = distance * leadScale
+                leadDistance = distance * leadScale
 
                 -- 目標進行方向に対する前後位置
-                local alongTrack =
+                alongTrack =
                     relX * dirX
                     + relY * dirY
                     + relZ * dirZ
 
                 -- 目標進行軸からの距離
-                local crossX = relX - dirX * alongTrack
-                local crossY = relY - dirY * alongTrack
-                local crossZ = relZ - dirZ * alongTrack
+                crossX = relX - dirX * alongTrack
+                crossY = relY - dirY * alongTrack
+                crossZ = relZ - dirZ * alongTrack
 
-                local crossTrack = math.sqrt(
+                crossTrack = math.sqrt(
                     crossX * crossX
                     + crossY * crossY
                     + crossZ * crossZ
                 )
 
-                local captureRequired =
+                captureRequired =
                     alongTrack < 0
                     or crossTrack > HEAD_CORRIDOR_RADIUS * 1.5
 
-                local releaseAllowed =
+                releaseAllowed =
                     alongTrack > HEAD_RELEASE_DISTANCE
                     and crossTrack < HEAD_CORRIDOR_RADIUS
 
@@ -606,21 +739,27 @@ function onTick()
     end
 
     -- 3. グローバル座標系でのLOS (Line of Sight) ベクトルを計算
-    LOS_vec_global = subtract(activeTargetCoordsVec, ownCoordsVec)
+    LOS_vec_global                  = subtract(activeTargetCoordsVec, ownCoordsVec)
+    currentLOS_vec_global_normalized = normalize(LOS_vec_global)
+    -- KF推定速度の1 tick差分から目標加速度を求め、LOS方向成分を除いた大きさを診断する。
+    local accelerationAlongLOS      = dot(targetAcceleration, currentLOS_vec_global_normalized)
+    targetLateralAcceleration       = math.sqrt(math.max(0,
+        dot(targetAcceleration, targetAcceleration) - accelerationAlongLOS ^ 2))
+    los_rate_pitch                  = 0
+    los_rate_yaw                    = 0
     if not isPPN then
-        -- 4. グローバルLOSベクトルを正規化
-        local currentLOS_vec_global_normalized = normalize(LOS_vec_global)
+        local omega_LOS_global_vec, omega_LOS_global, omega_LOS_local
 
         -- 5. グローバル座標系でのLOS角速度ベクトル (omega) を計算
         --    omega_vec = (v_old x v_current)
         --    (v_old x v_current) の大きさは sin(theta)
         --    thetaが小さい場合, sin(theta) ~= theta (ラジアン)
         --    角速度 (rad/s) = theta / DT
-        local omega_LOS_global_vec             = cross_product(oldLOS_vec_global_normalized,
+        omega_LOS_global_vec             = cross_product(oldLOS_vec_global_normalized,
             currentLOS_vec_global_normalized)
 
         -- DTで割る (角速度ベクトルにする)
-        local omega_LOS_global                 = {
+        omega_LOS_global                 = {
             omega_LOS_global_vec[1] / DT,
             omega_LOS_global_vec[2] / DT,
             omega_LOS_global_vec[3] / DT
@@ -630,33 +769,36 @@ function onTick()
         --    rotateVectorByInverseQuaternion は q_conj * p * q を行い、
         --    グローバルベクトル p をローカル座標系に変換します。
         --    p = omega_LOS_global (グローバルでのLOS回転)
-        --    q = ownOrientation (自機の姿勢)
+        --    q = predictedOwnOrientation (LOGIC_DELAY tick先の自機姿勢)
         --    結果 = omega_LOS_local (自機から見たLOS回転)
-        local omega_LOS_local                  = rotateVectorByInverseQuaternion(omega_LOS_global, ownOrientation)
+        omega_LOS_local                  = rotateVectorByInverseQuaternion(omega_LOS_global, predictedOwnOrientation)
 
         -- 7. ローカルなLOS角速度の各成分を取得
         --    自機の座標系 (X:右, Y:上, Z:前) と仮定
         --    coordsToAngle の定義 atan(x, z) [方位], atan(y, horiz) [仰角] より:
         --    - 方位角 (Yaw) の変化は、Y軸 (Up) 周りの回転
         --    - 仰角 (Pitch) の変化は、X軸 (Right) 周りの回転
-        local los_rate_pitch                   = omega_LOS_local[1] -- X軸 (Right) 周りの角速度 (rad/s)
-        local los_rate_yaw                     = omega_LOS_local[2] -- Y軸 (Up)    周りの角速度 (rad/s)
+        los_rate_pitch                   = omega_LOS_local[1] -- X軸 (Right) 周りの角速度 (rad/s)
+        los_rate_yaw                     = omega_LOS_local[2] -- Y軸 (Up)    周りの角速度 (rad/s)
         -- local los_rate_roll  = omega_LOS_local[3] -- Z軸 (Fwd)   周りの角速度 (通常不要)
 
         -- 8. 状態を更新 (次のフレームのために)
-        oldLOS_vec_global_normalized           = currentLOS_vec_global_normalized
+        oldLOS_vec_global_normalized     = currentLOS_vec_global_normalized
 
-        -- 9. 誘導指令として使う
+        -- 9. LOS角速度から相対横速度相当値を求め、限定ゲインを適用する
+        relativeLateralSpeed             = distance * vector_magnitude(omega_LOS_global)
+        effectivePNGain, pnSchedule       = getScheduledPNGain(distance, relativeLateralSpeed,
+            PN_GAIN_SCHEDULE_ENABLE and not isAntiShipMode)
 
         --    ご提示のコードの変数名に合わせる
-        yawAngle                               = los_rate_yaw * PN_FIN_STRENGTH    -- (rad/tick)
-        pitchAngle                             = -los_rate_pitch * PN_FIN_STRENGTH -- (rad/tick)
+        yawAngle                         = los_rate_yaw * effectivePNGain    -- (rad/tick)
+        pitchAngle                       = -los_rate_pitch * effectivePNGain -- (rad/tick)
     else
         local targetLocalPosVec =
             globalToLocal(
                 activeTargetCoordsVec,
                 ownCoordsVec,
-                ownOrientation
+                predictedOwnOrientation
             )
 
         local targetAngle = coordsToAngle(targetLocalPosVec)
@@ -670,7 +812,7 @@ function onTick()
             * PPN_FIN_STRENGTH
 
         oldLOS_vec_global_normalized =
-            normalize(LOS_vec_global)
+            currentLOS_vec_global_normalized
     end
 
     if isInit and isLaunched then
@@ -686,10 +828,13 @@ function onTick()
     oldDistance = distance
 
     -- 重力補償だけは常に効かせたいので重力補正の前で誘導を無効化
-    if missileRadarIO then
+    if missileRadarIO and isMissileRadarDetecting then
         yawAngle = 0
         pitchAngle = 0
     end
+    -- 終末診断用に、重力補償を加える直前の指令を保存する。
+    local preGravityYawAngle = yawAngle
+    local preGravityPitchAngle = pitchAngle
 
     -- 誘導指令へ重力補償だけを加算する。
     -- 発射前は母機の移動を拾わないよう無効化する。
@@ -705,17 +850,62 @@ function onTick()
         pitchAngle = pitchAngle + gravityPitchCorrection
         yawAngle = yawAngle + gravityYawCorrection
     end
-    -- ミサイルレーダーの有効圏内かつ対水上モードでない場合ミサイルレーダーを有効化・中間誘導用翼の出力をゼロに
-    local isFuseEnable = false
-    if distance + approach_Velocity * LOGIC_DELAY < MISSILE_FIN_DISTANCE_THRESHOLD and not isAntiShipMode and isLaunched then
-        missileRadarIO = true
-        isFuseEnable = true
+    -- 有効圏内へ入った瞬間、目標の進行方向に対して正面にいなければ終末レーダーを永久に無効化する。
+    if distance + approach_Velocity * LOGIC_DELAY < MISSILE_FIN_DISTANCE_THRESHOLD
+        and not isAntiShipMode and isLaunched and not missileRadarIO and not missileRadarBlocked then
+        local toMissile = subtract(ownCoordsVec, targetCoordsVec)
+        local targetSpeed = vector_magnitude(targetVelocity)
+        local targetFacing = 1
+        if targetSpeed > 0.1 and distance > 0.1 then
+            targetFacing = dot(targetVelocity, toMissile) / (targetSpeed * distance)
+            targetFacing = math.max(-1, math.min(1, targetFacing))
+        end
+        local targetAspectAngle = math.acos(targetFacing)
+        if targetAspectAngle >= MISSILE_RADAR_MAX_ANGLE then
+            missileRadarBlocked = true
+        else
+            missileRadarIO = true
+        end
     end
+    if distance < 500 and isLaunched then
+        fuseIO = true
+    end
+    if approach_Velocity > 0 and isLaunched then
+        selfDetonateCount = selfDetonateCount + 1
+    else
+        selfDetonateCount = 0
+    end
+
+    local selfDetonation = false
+    if selfDetonateCount > 60 and not isAntiShipMode then
+        selfDetonation = true
+    end
+
+    updateGuidanceDebug(
+        isLaunch,
+        not isPPN,
+        missileRadarIO,
+        isMissileRadarDetecting,
+        distance,
+        approach_Velocity,
+        selfDetonation,
+        los_rate_yaw,
+        los_rate_pitch,
+        preGravityYawAngle,
+        preGravityPitchAngle,
+        yawAngle,
+        pitchAngle,
+        targetLateralAcceleration,
+        relativeLateralSpeed,
+        effectivePNGain,
+        pnSchedule
+    )
 
     output.setBool(1, missileRadarIO)
     output.setBool(2, isAntiShipMode)
     output.setBool(3, mainRadarIO)
-    output.setBool(4, isFuseEnable)
+    output.setBool(4, selfDetonation)
+    output.setBool(5, fuseIO)
     output.setNumber(1, yawAngle)
     output.setNumber(2, pitchAngle)
     output.setNumber(3, approach_Velocity)

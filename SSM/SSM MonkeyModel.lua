@@ -42,6 +42,7 @@ lauchedCount                   = 0
 initialGuidanceCounter         = 0
 isGuidanceStart                = false
 isPPN                          = true
+isDive = false
 
 DIVE_START_TANJENT             = math.tan(math.rad(50))
 PN_FIN_STRENGTH                = property.getNumber("PN_FIN_STRENGTH")
@@ -329,7 +330,7 @@ function onTick()
             isPPN =false
         end
         -- 水平距離が500mより離れている場合は「自機から目標方向へ500m先、高度10m」を仮の目標にする
-        if horizontalDist > diveStartDistance or (horizontalDist > 500 and ownCoordsVec.y < 40) then
+        if (horizontalDist > diveStartDistance or (horizontalDist > 500 and ownCoordsVec.y < 40)) and not isDive then
             local dirX = dx / horizontalDist
             local dirZ = dz / horizontalDist
             activeTargetCoordsVec = {
@@ -337,6 +338,8 @@ function onTick()
                 y = math.max(ownCoords[2] / 1.1, SKIMMING_ALT),
                 z = ownCoordsVec.z + dirZ * 100
             }
+        elseif isGuidanceStart then
+            isDive = true
         end
     end
     -- 3. グローバル座標系でのLOS (Line of Sight) ベクトルを計算
@@ -384,8 +387,8 @@ function onTick()
         -- 9. 誘導指令として使う
 
         --    ご提示のコードの変数名に合わせる
-        yawAngle                               = los_rate_yaw * DT * PN_FIN_STRENGTH    -- (rad/tick)
-        pitchAngle                             = -los_rate_pitch * DT * PN_FIN_STRENGTH -- (rad/tick)
+        yawAngle                               = los_rate_yaw  * PN_FIN_STRENGTH    -- (rad/tick)
+        pitchAngle                             = -los_rate_pitch  * PN_FIN_STRENGTH -- (rad/tick)
         
     else
         -- 初期誘導は単追尾

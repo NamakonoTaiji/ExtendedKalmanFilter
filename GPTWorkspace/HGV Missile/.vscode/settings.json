@@ -37,10 +37,10 @@
     ],
     "Lua.runtime.pathStrict": true,
     "Lua.workspace.library": [
-        "f:/StormWorksProjects/ExtendedKalmanFilter/Drawing/",
+        "f:/StormWorksProjects/ExtendedKalmanFilter/GPTWorkspace/HGV Missile/",
         "c:/Users/kazum/.vscode/extensions/nameouschangey.lifeboatapi-0.0.33/assets/lua/Common/",
         "c:/Users/kazum/.vscode/extensions/nameouschangey.lifeboatapi-0.0.33/assets/lua/Microcontroller/",
-        "f:/StormWorksProjects/ExtendedKalmanFilter/Drawing/_build/libs/"
+        "f:/StormWorksProjects/ExtendedKalmanFilter/GPTWorkspace/HGV Missile/_build/libs/"
     ],
     "lifeboatapi.stormworks.libs.gitLibraries": [
         {

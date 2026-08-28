@@ -1,12 +1,20 @@
 {
   "folders": [
     {
+      "name": "HGV Missile",
+      "path": "GPTWorkspace/HGV Missile"
+    },
+    {
+      "name": "AA Missile",
+      "path": "GPTWorkspace/AA Missile"
+    },
+    {
       "name": "GPTWorkspace",
       "path": "GPTWorkspace"
     },
     {
-      "name": "ShipControl",
-      "path": "ShipControl"
+      "name": "ADS V3 Missile",
+      "path": "ADS V3/ADS V3 Missile"
     },
     {
       "name": "Multi Sornars",
@@ -25,10 +33,6 @@
       "path": "ADS V3/BallisticCalacuator"
     },
     {
-      "name": "ADS V3 Missile",
-      "path": "ADS V3/ADS V3 Missile"
-    },
-    {
       "name": "ADS V3 System",
       "path": "ADS V3/ADS V3 System"
     },
@@ -41,17 +45,13 @@
       "path": "Torpedo"
     },
     {
-      "name": "ASM",
-      "path": "ASM"
-    },
-    {
       "name": "Drawing",
       "path": "Drawing"
     },
     {
       "name": "Root (Docs/Mathlib/etc)",
       "path": "."
-    },
+    }
   ],
   "settings": {
     "liveServer.settings.multiRootWorkspaceName": "ADS V3 Missile"

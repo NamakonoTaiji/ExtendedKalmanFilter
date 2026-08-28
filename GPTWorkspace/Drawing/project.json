@@ -1,0 +1,145 @@
+{
+  "formatVersion": "stormworks-project-json-v11",
+  "sourceName": "F:\\\\StormWorksProjects\\\\ExtendedKalmanFilter\\\\MicroControllers\\\\TestControllers\\\\Test.xml",
+  "name": "HeadMountDisplay",
+  "description": "No description set.",
+  "width": 3,
+  "length": 3,
+  "icon": [
+    "................",
+    ".###.......###..",
+    "....#.........#.",
+    "....#.........#.",
+    ".###.......###..",
+    "#.....#.#.#.....",
+    "#......#..#.....",
+    ".###..#.#..###..",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................"
+  ],
+  "nodes": [
+    {
+      "id": "Physics",
+      "type": "composite_in",
+      "label": "Physics",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": "Pilotseat1",
+      "type": "composite_in",
+      "label": "Pilotseat1",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 0,
+        "y": 1
+      }
+    },
+    {
+      "id": "SonarKF",
+      "type": "composite_in",
+      "label": "SonarKF",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 1,
+        "y": 1
+      }
+    },
+    {
+      "id": "TrackingID",
+      "type": "number_out",
+      "label": "TrackingID",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 0,
+        "y": 2
+      }
+    },
+    {
+      "id": "RadarKF",
+      "type": "composite_in",
+      "label": "RadarKF",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 1,
+        "y": 2
+      }
+    },
+    {
+      "id": "Map Zoom Level",
+      "type": "composite_in",
+      "label": "Map Zoom Level",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 2,
+        "y": 2
+      }
+    },
+    {
+      "id": "HMD",
+      "type": "video_out",
+      "label": "HMD",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 1,
+        "y": 0
+      }
+    },
+    {
+      "id": "Monitor",
+      "type": "video_out",
+      "label": "Monitor",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 2,
+        "y": 0
+      }
+    },
+    {
+      "id": "MergeCounterSonar",
+      "type": "composite_in",
+      "label": "MergeCounterSonar",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 2,
+        "y": 1
+      }
+    },
+    {
+      "id": "Debug",
+      "type": "composite_out",
+      "label": "Debug",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 1,
+        "y": 0
+      }
+    },
+    {
+      "id": "ActiveONOFF/Range",
+      "type": "composite_in",
+      "label": "ActiveONOFF/Range",
+      "description": "The input signal to be processed.",
+      "nodePosition": {
+        "x": 2,
+        "y": 0
+      }
+    }
+  ],
+  "submodule": {
+    "name": "main",
+    "relativePath": "main.sw-net"
+  },
+  "warnings": [
+    "Imported 108 nodes, 131 links, and 1 submodules from XML."
+  ]
+}

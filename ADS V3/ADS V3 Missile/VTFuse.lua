@@ -9,12 +9,12 @@ oldDistance = 0
 isInit = true
 vtStart = false
 VTfuse = false
-
+MAX_CLOSING_VEL_PER_TICK = -13.33333
 function onTick()
     local distance = iN(1)
     local isDetected = iB(1)
 
-    if isDetected and distance > 500 then
+    if isDetected then
         vtStart = true
     end
 
@@ -31,7 +31,7 @@ function onTick()
         end
 
         -- 1tick分のデルタから近接速度を更新
-        approach_Velocity = distance - oldDistance
+        approach_Velocity = math.max(distance - oldDistance,MAX_CLOSING_VEL_PER_TICK)
         oldDistance = distance
 
         -- ロジック遅延を考慮した起爆判定

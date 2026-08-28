@@ -1,5 +1,5 @@
-GPTWorkspace/
 MicroControllers/
+_build/
 *.toml
 *.yml
 docs/node-v24.19.0-x64.msi

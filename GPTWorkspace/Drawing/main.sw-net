@@ -1,0 +1,101 @@
+module main
+  port in "Physics" : composite
+  port in "Pilotseat1" : composite
+  port in "SonarKF" : composite
+  port out "TrackingID" : number
+  port in "RadarKF" : composite
+  port in "Map Zoom Level" : composite
+  port out "HMD" : video
+  port out "Monitor" : video
+  port in "MergeCounterSonar" : composite
+  port out "Debug" : composite
+  port in "ActiveONOFF/Range" : composite
+
+  inst COMPOSITE_WRITE_NUMBER n45 (count=32, offset=1) : in1=n99_out, in2=n101_out, in3=n102_out, in4=n103_out, in5=n104_out, in6=n105_out, in7=n106_out, in8=n107_out, in9=n191_out, in10=n109_out, in11=n137_out, in12=n138_out, in13=n139_out, in14=n140_out, in15=n141_out, in16=n142_out, in17=n143_out, in18=n144_out, in19=n133_out, in20=n145_out, in21=n189_out, in22=n223_out, in25=n46_out, in26=n47_out, in27=n51_out, in28=n52_out, in29=n53_out, in30=n54_out, in31=n55_out, in32=n56_out, inc=n220_out -> out=n45_out
+  inst COMPOSITE_READ_NUMBER n46 (channel=9) : composite="Pilotseat1" -> out=n46_out
+  inst COMPOSITE_READ_NUMBER n47 (channel=10) : composite="Pilotseat1" -> out=n47_out
+  inst PROPERTY_NUMBER n48 (value=0, n="offsetX") : -> out=n48_out
+  inst PROPERTY_NUMBER n49 (value=0, n="offsetY") : -> out=n49_out
+  inst PROPERTY_NUMBER n50 (value=0, n="offsetZ") : -> out=n50_out
+  inst COMPOSITE_READ_NUMBER n51 (channel=1) : composite="Physics" -> out=n51_out
+  inst COMPOSITE_READ_NUMBER n52 (channel=2) : composite="Physics" -> out=n52_out
+  inst COMPOSITE_READ_NUMBER n53 (channel=3) : composite="Physics" -> out=n53_out
+  inst COMPOSITE_READ_NUMBER n54 (channel=4) : composite="Physics" -> out=n54_out
+  inst COMPOSITE_READ_NUMBER n55 (channel=5) : composite="Physics" -> out=n55_out
+  inst COMPOSITE_READ_NUMBER n56 (channel=6) : composite="Physics" -> out=n56_out
+  inst PROPERTY_NUMBER n95 (value=190, n="RGBAlpha") : -> out=n95_out
+  inst COMPOSITE_READ_NUMBER n99 (channel=1) : composite="SonarKF" -> out=n99_out
+  inst COMPOSITE_READ_NUMBER n101 (channel=2) : composite="SonarKF" -> out=n101_out
+  inst COMPOSITE_READ_NUMBER n102 (channel=3) : composite="SonarKF" -> out=n102_out
+  inst COMPOSITE_READ_NUMBER n103 (channel=4) : composite="SonarKF" -> out=n103_out
+  inst COMPOSITE_READ_NUMBER n104 (channel=5) : composite="SonarKF" -> out=n104_out
+  inst COMPOSITE_READ_NUMBER n105 (channel=6) : composite="SonarKF" -> out=n105_out
+  inst COMPOSITE_READ_NUMBER n106 (channel=12) : composite="SonarKF" -> out=n106_out
+  inst COMPOSITE_READ_NUMBER n107 (channel=32) : composite="SonarKF" -> out=n107_out
+  inst COMPOSITE_READ_NUMBER n109 (channel=10) : composite="SonarKF" -> out=n109_out
+  inst COMPOSITE_READ_NUMBER n122 (channel=1) : composite=n125_composite -> out="TrackingID"
+  inst LUA n125 (script_ref="scripts/n125.lua") : composite=n45_out -> composite=n125_composite
+  inst PROPERTY_NUMBER n126 (value=120, n="TARGET_LOST_THRESHOLD_TICKS") : -> out=n126_out
+  inst PROPERTY_NUMBER n127 (value=450, n="ASSOC_POS_GATE") : -> out=n127_out
+  inst PROPERTY_NUMBER n128 (value=60, n="ASSOC_VEL_GATE") : -> out=n128_out
+  inst PROPERTY_NUMBER n129 (value=3, n="ASSOC_CONFIRM") : -> out=n129_out
+  inst NUM_SWITCHBOX n133 : a=n134_value, b=n135_value, switch=n136_out -> out=n133_out
+  inst CONST n134 (value=1) : -> value=n134_value
+  inst CONST n135 (value=0) : -> value=n135_value
+  inst COMPOSITE_READ_BOOLEAN n136 (channel=1) : composite="RadarKF" -> out=n136_out
+  inst COMPOSITE_READ_NUMBER n137 (channel=1) : composite="RadarKF" -> out=n137_out
+  inst COMPOSITE_READ_NUMBER n138 (channel=2) : composite="RadarKF" -> out=n138_out
+  inst COMPOSITE_READ_NUMBER n139 (channel=3) : composite="RadarKF" -> out=n139_out
+  inst COMPOSITE_READ_NUMBER n140 (channel=4) : composite="RadarKF" -> out=n140_out
+  inst COMPOSITE_READ_NUMBER n141 (channel=5) : composite="RadarKF" -> out=n141_out
+  inst COMPOSITE_READ_NUMBER n142 (channel=6) : composite="RadarKF" -> out=n142_out
+  inst COMPOSITE_READ_NUMBER n143 (channel=12) : composite="RadarKF" -> out=n143_out
+  inst COMPOSITE_READ_NUMBER n144 (channel=32) : composite="RadarKF" -> out=n144_out
+  inst COMPOSITE_READ_NUMBER n145 (channel=10) : composite="RadarKF" -> out=n145_out
+  inst LUA n148 (script_ref="scripts/n148.lua") : composite=n125_composite -> video=n148_video
+  inst LUA n149 (script_ref="scripts/n149.lua") : composite=n173_out -> video=n149_video, video="Monitor"
+  inst COMPOSITE_WRITE_BOOLEAN n151 (count=10, offset=1) : in2=n215_out, in9=n205_out, in10=n206_out, inc=n125_composite -> out=n151_out
+  inst PROPERTY_NUMBER n160 (value=10, n="VECTOR_TIME") : -> out=n160_out
+  inst PROPERTY_NUMBER n161 (value=35, n="VECTOR_MAX_PIXELS") : -> out=n161_out
+  inst PROPERTY_NUMBER n162 (value=0.15, n="OWN_VEL_SMOOTH") : -> out=n162_out
+  inst PROPERTY_NUMBER n163 (value=90, n="RENDER_TRACK_TIMEOUT") : -> out=n163_out
+  inst PROPERTY_NUMBER n164 (value=255, n="RGBAlpha") : -> out=n164_out
+  inst COMPOSITE_WRITE_NUMBER n173 (count=19, offset=1) : in15=n174_out, in16=n175_out, in17=n176_out, in18=n177_out, in19=n189_out, inc=n151_out -> out=n173_out
+  inst COMPOSITE_READ_NUMBER n174 (channel=1) : composite="MergeCounterSonar" -> out=n174_out
+  inst COMPOSITE_READ_NUMBER n175 (channel=2) : composite="MergeCounterSonar" -> out=n175_out
+  inst COMPOSITE_READ_NUMBER n176 (channel=3) : composite="MergeCounterSonar" -> out=n176_out
+  inst COMPOSITE_READ_NUMBER n177 (channel=5) : composite="MergeCounterSonar" -> out=n177_out
+  inst PROPERTY_NUMBER n180 (value=600, n="MERGE_MARKER_TIMEOUT") : -> out=n180_out
+  inst VIDEO_SWITCHBOX n187 : a=n149_video, b=n148_video, switch=n219_out -> out="HMD"
+  inst COMPOSITE_READ_NUMBER n189 (channel=1) : composite="ActiveONOFF/Range" -> out=n189_out
+  inst NUM_SWITCHBOX n191 : a=n192_value, b=n193_value, switch=n194_out -> out=n191_out
+  inst CONST n192 (value=1) : -> value=n192_value
+  inst CONST n193 (value=0) : -> value=n193_value
+  inst COMPOSITE_READ_BOOLEAN n194 (channel=1) : composite="SonarKF" -> out=n194_out
+  inst COMPOSITE_READ_BOOLEAN n195 (channel=1) : -> out=n195_out
+  inst COMPOSITE_READ_BOOLEAN n197 (channel=1) : composite="ActiveONOFF/Range" -> out=n197_out
+  inst COMPOSITE_READ_BOOLEAN n198 (channel=2) : composite="ActiveONOFF/Range" -> out=n198_out
+  inst COMPOSITE_READ_BOOLEAN n199 (channel=3) : composite="ActiveONOFF/Range" -> out=n199_out
+  inst COMPOSITE_READ_BOOLEAN n200 (channel=4) : composite="ActiveONOFF/Range" -> out=n200_out
+  inst COMPOSITE_READ_BOOLEAN n201 (channel=5) : composite="ActiveONOFF/Range" -> out=n201_out
+  inst COMPOSITE_READ_BOOLEAN n202 (channel=6) : composite="ActiveONOFF/Range" -> out=n202_out
+  inst COMPOSITE_READ_BOOLEAN n203 (channel=7) : composite="ActiveONOFF/Range" -> out=n203_out
+  inst COMPOSITE_READ_BOOLEAN n204 (channel=8) : composite="ActiveONOFF/Range" -> out=n204_out
+  inst COMPOSITE_READ_BOOLEAN n205 (channel=1) : composite="Map Zoom Level" -> out=n205_out
+  inst COMPOSITE_READ_BOOLEAN n206 (channel=2) : composite="Map Zoom Level" -> out=n206_out
+  inst PULSE n207 (mode="rise") : a=n197_out -> out=n207_out
+  inst PULSE n208 (mode="rise") : a=n198_out -> out=n208_out
+  inst PULSE n209 (mode="rise") : a=n199_out -> out=n209_out
+  inst PULSE n210 (mode="rise") : a=n200_out -> out=n210_out
+  inst PULSE n211 (mode="rise") : a=n201_out -> out=n211_out
+  inst PULSE n212 (mode="rise") : a=n202_out -> out=n212_out
+  inst PULSE n213 (mode="rise") : a=n203_out -> out=n213_out
+  inst PULSE n214 (mode="rise") : a=n204_out -> out=n214_out
+  inst BOOL_FUNC_8 n215 (expression="x | y |z|w|a|b|c|d") : x=n207_out, y=n208_out, z=n209_out, w=n210_out, a=n211_out, b=n212_out, c=n213_out, d=n214_out -> out=n215_out
+  inst COMPOSITE_READ_BOOLEAN n219 (channel=6) : composite="Pilotseat1" -> out=n219_out
+  inst COMPOSITE_WRITE_BOOLEAN n220 (count=10, offset=1) : in9=n205_out, in10=n206_out, inc="Pilotseat1" -> out=n220_out
+  inst PROPERTY_NUMBER n221 (value=1, n="MAP_ZOOM_INDEX") : -> out=n221_out
+  inst PROPERTY_NUMBER n222 (value=45, n="HMD_MAP_CURSOR_ANGLE") : -> out=n222_out
+  inst PROPERTY_NUMBER n223 (value=0.18, n="HMD_MAP_LOCK_RADIUS") : -> out=n223_out
+  inst PROPERTY_NUMBER n224 (value=1.3333333333333333, n="HMD_MAP_ASPECT") : -> out=n224_out
+end

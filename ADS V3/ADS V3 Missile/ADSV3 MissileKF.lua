@@ -29,6 +29,7 @@ ADSV3 KalmanFilter.lua
 - bool 1: 目標を検出中
 - bool 2: 対水上モードか否か
 - bool 3: 射出済みか否か
+- bool 32: ミサイル出力用レーダーの検出中信号パススルー
 - num 1: 推定目標座標 X
 - num 2: 推定目標座標 Y
 - num 3: 推定目標座標 Z
@@ -95,15 +96,14 @@ dataLinkGlobalPos = { 0, 0, 0 }
 dataLinkTargetVelocity = { 0, 0, 0 }
 isAntiShipMode = false
 hasPrelaunchTargetData = false
+previousOwnGlobalPos = nil
+previousPreviousOwnGlobalPos = nil
+previousOwnOrientation = nil
 --------------------------------------------------------------------------------
 -- ベクトル演算ヘルパー関数
 --------------------------------------------------------------------------------
 function vectorMagnitude(v)
-    local x, y, z
-    x = v[1]
-    y = v[2]
-    z = v[3]
-    return math.sqrt(x ^ 2 + y ^ 2 + z ^ 2)
+    return math.sqrt(v[1] ^ 2 + v[2] ^ 2 + v[3] ^ 2)
 end
 
 -- function vectorNormalize(v)
@@ -131,14 +131,7 @@ end
 -- end
 
 function vectorSub(v1, v2)
-    local x1, x2, y1, y2, z1, z2
-    x1 = v1[1]
-    y1 = v1[2]
-    z1 = v1[3]
-    x2 = v2[1]
-    y2 = v2[2]
-    z2 = v2[3]
-    return { x1 - x2, y1 - y2, z1 - z2 }
+    return { v1[1] - v2[1], v1[2] - v2[2], v1[3] - v2[3] }
 end
 
 -- function vectorScalarMul(s, v)
@@ -359,22 +352,33 @@ end
 end ]]
 
 function eulerZYX_to_quaternion(roll, yaw, pitch)
-    local half_roll, half_yaw, half_pitch, cr, sr, cy, sy, cp, sp, w, x, y, z
+    local cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+    local cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+    local cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+    return {
+        cr * cy * cp + sr * sy * sp,
+        cr * cy * sp - sr * sy * cp,
+        cr * sy * cp + sr * cy * sp,
+        sr * cy * cp - cr * sy * sp
+    }
+end
 
-    half_roll = roll * 0.5
-    half_yaw = yaw * 0.5
-    half_pitch = pitch * 0.5
-    cr = math.cos(half_roll)
-    sr = math.sin(half_roll)
-    cy = math.cos(half_yaw)
-    sy = math.sin(half_yaw)
-    cp = math.cos(half_pitch)
-    sp = math.sin(half_pitch)
-    w = cr * cy * cp + sr * sy * sp
-    x = cr * cy * sp - sr * sy * cp
-    y = cr * sy * cp + sr * cy * sp
-    z = sr * cy * cp - cr * sy * sp
-    return { w, x, y, z }
+-- クォータニオンの1 tick差分を角速度相当としてLOGIC_DELAY tick先へ外挿する。
+-- qと-qは同じ姿勢なので、内積が負なら前回値の符号を反転して最短側を使う。
+function predictQuaternion(q, previousQ, ticks)
+    if not previousQ then return q end
+    local dot = 0
+    for i = 1, 4 do dot = dot + q[i] * previousQ[i] end
+    local sign = dot < 0 and -1 or 1
+    local predicted, normSquared = {}, 0
+    for i = 1, 4 do
+        local component = q[i] + (q[i] - previousQ[i] * sign) * ticks
+        predicted[i] = component
+        normSquared = normSquared + component ^ 2
+    end
+    local inverseNorm = 1 / math.sqrt(normSquared)
+    for i = 1, 4 do predicted[i] = predicted[i] * inverseNorm end
+    return predicted
 end
 
 function rotateVectorByQuaternion(vector, quaternion, isInverse)
@@ -401,48 +405,32 @@ end
 --------------------------------------------------------------------------------
 -- ローカル直交座標からグローバル直交座標へ
 function localToGlobalCoords(localPosVec, ownGlobalPos, ownOrientationQuat)
-    local localX, localY, localZ, globalRelativeVector, globalX, globalY, globalZ
-    -- vector は {x, y, z} または {<index 1>, <index 2>, <index 3>} 形式のテーブルを想定
-
-    localX = localPosVec[1]
-    localY = localPosVec[2]
-    localZ = localPosVec[3]
-
-    globalRelativeVector = rotateVectorByQuaternion({ localX, localY, localZ }, ownOrientationQuat)
-
-    globalX = globalRelativeVector[1] + ownGlobalPos[1]
-    globalY = globalRelativeVector[2] + ownGlobalPos[2]
-    globalZ = globalRelativeVector[3] + ownGlobalPos[3]
-    return { globalX, globalY, globalZ }
+    local relative = rotateVectorByQuaternion(localPosVec, ownOrientationQuat)
+    return {
+        relative[1] + ownGlobalPos[1],
+        relative[2] + ownGlobalPos[2],
+        relative[3] + ownGlobalPos[3]
+    }
 end
 
 -- グローバル直交座標からローカル直交座標へ
 function globalToLocalCoords(globalTargetPos, ownGlobalPos, ownOrientationQuat)
-    local gX, gY, gZ, oX, oY, oZ, relativeVectorGlobal, localVector
-    -- 各入力が {x, y, z} 形式のテーブルを想定
-
-    gX = globalTargetPos[1]
-    gY = globalTargetPos[2]
-    gZ = globalTargetPos[3]
-    oX = ownGlobalPos[1]
-    oY = ownGlobalPos[2]
-    oZ = ownGlobalPos[3]
-
-    relativeVectorGlobal = { gX - oX, gY - oY, gZ - oZ }
-    localVector = rotateVectorByQuaternion(relativeVectorGlobal, ownOrientationQuat, true)
-
-    return { localVector[1], localVector[2], localVector[3] }
+    return rotateVectorByQuaternion({
+        globalTargetPos[1] - ownGlobalPos[1],
+        globalTargetPos[2] - ownGlobalPos[2],
+        globalTargetPos[3] - ownGlobalPos[3]
+    }, ownOrientationQuat, true)
 end
 
 --- ローカル座標から方位角と仰角へ変換
 ---@param localPosVec Vector3 変換したいローカル座標(X右方向, Y上方向, Z前方向)
 ---@return table azimuthとelevationを返します(ラジアン)
 function localCoordsToLocalAngle(localPosVec)
-    local horizontalDistance, currentLocalAzimuth, currentLocalElevation
-    horizontalDistance = math.sqrt(localPosVec[1] ^ 2 + localPosVec[3] ^ 2)
-    currentLocalAzimuth = math.atan(localPosVec[1], localPosVec[3])       -- atan(左右, 前後)
-    currentLocalElevation = math.atan(localPosVec[2], horizontalDistance) -- atan(上下, 水平距離)
-    return { azimuth = currentLocalAzimuth, elevation = currentLocalElevation }
+    local horizontalDistance = math.sqrt(localPosVec[1] ^ 2 + localPosVec[3] ^ 2)
+    return {
+        azimuth = math.atan(localPosVec[1], localPosVec[3]),
+        elevation = math.atan(localPosVec[2], horizontalDistance)
+    }
 end
 
 -- 極座標からローカル座標へ
@@ -480,7 +468,7 @@ function getObservationJacobianAndPrediction(stateVector, ownPosition)
 
     -- 観測予測値 h = [距離, グローバル仰角, グローバル方位角]^T
     predictedDistance = r
-    asin_arg = math.max(-1.0, math.min(1.0, relativeY / r))
+    asin_arg = math.max(-1, math.min(1, relativeY / r))
     predictedElevation = math.asin(asin_arg)           -- YがUp
     predictedAzimuth = math.atan(relativeX, relativeZ) -- atan(East, North) -> Z軸(北)基準の方位角
     h = { { predictedDistance }, { predictedElevation }, { predictedAzimuth } }
@@ -605,7 +593,7 @@ function predictStep(currentTarget, dt_sec)
 
     -- 共分散 P の予測
     -- (dt_ticks=1固定と仮定し、dt_sec の大きさに応じて不確かさを増やす)
-    uncertaintyIncreaseFactor = 1.0 + (PREDICTION_UNCERTAINTY_FACTOR_BASE * dt_sec)
+    uncertaintyIncreaseFactor = 1 + (PREDICTION_UNCERTAINTY_FACTOR_BASE * dt_sec)
 
     P_pred_term1 = mul(F, covariance, T(F))
     P_predicted = sum(scalar(uncertaintyIncreaseFactor, P_pred_term1), Q_adapted)
@@ -618,8 +606,9 @@ end
 ---@param P_predicted table 予測共分散
 ---@param observation table 観測値
 ---@param ownPosition table 自機位置
+---@param trackID number 関連付け候補のトラックID
 ---@return number epsilon, table Y, table S_inv, table H , table R_matrix (マハラノビス距離), table Y (イノベーション), table S_inv (イノベーション共分散の逆), table H, table R_matrix (更新ステップ用)
-function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
+function calculateInnovation(X_predicted, P_predicted, observation, ownPosition, trackID)
     local Z, epsilon, Y, S_inv, H, R_matrix, h, S, epsilon_matrix
     -- 観測ベクトル Z = [距離, グローバル仰角, グローバル方位角]^T
     Z = { { observation.distance }, { observation.elevation }, { observation.azimuth } }
@@ -648,7 +637,7 @@ function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
     -- end
 
     -- 誤差指標 epsilon (マハラノビス距離) の計算: epsilon = Y^T * S^-1 * Y
-    epsilon = 1.0
+    epsilon = 1
     epsilon_matrix = mul(T(Y), S_inv, Y)
     if epsilon_matrix and epsilon_matrix[1] and epsilon_matrix[1][1] then
         epsilon = epsilon_matrix[1][1]
@@ -673,9 +662,9 @@ function calculateInnovation(X_predicted, P_predicted, observation, ownPosition)
             -- 速度ベクトルと移動ベクトルのコサイン類似度 (1.0 = 進行方向と完全に一致)
             local cosTheta = (vx * dx + vy * dy + vz * dz) / (vSpeed * dDist)
 
-            -- 進行方向から外れているほど epsilon を激しく倍増させるペナルティ
-            if cosTheta < 0.8 then
-                epsilon = epsilon * (2.0 - cosTheta)
+            -- 固定中の主トラックを除き、進行方向から外れるほどepsilonを増幅する。
+            if cosTheta < 0.8 and trackID ~= (isTargetTrackMode and trackingID) then
+                epsilon = epsilon * (2 - cosTheta)
             end
         end
     end
@@ -702,7 +691,7 @@ function updateStep(X_predicted, P_predicted, Y, S_inv, H, R_matrix)
     P_updated = sum(P_up_term1, P_up_term2)
 
     -- 誤差指標 epsilon の計算 (calculateInnovation から再計算)
-    epsilon = 1.0
+    epsilon = 1
     epsilon_matrix = mul(T(Y), S_inv, Y)
     if epsilon_matrix and epsilon_matrix[1] and epsilon_matrix[1][1] then
         epsilon = epsilon_matrix[1][1]
@@ -747,7 +736,7 @@ function initializeFilterState(initialObservation, tick, trackID)
         id = trackID, -- ★ トラックID
         X = X_init,
         P = P_init,
-        epsilon = 1.0,
+        epsilon = 1,
         lastTick = tick,     -- 最後に更新/初期化されたTick
         lastSeenTick = tick, -- 最後に観測が紐付けられたTick
         hits = 1,            -- ★ 連続ヒット数 (信頼性評価用)
@@ -771,6 +760,27 @@ function onTick()
     ownEuler = { Pitch = input.getNumber(28), Yaw = input.getNumber(29), Roll = input.getNumber(30) }
 
     ownOrientation = eulerZYX_to_quaternion(ownEuler.Roll, ownEuler.Yaw, ownEuler.Pitch)
+    local predictedOwnOrientation = predictQuaternion(ownOrientation, previousOwnOrientation, LOGIC_DELAY)
+    previousOwnOrientation = ownOrientation
+
+    -- 誘導用の自機位置と姿勢をLOGIC_DELAY tick先へ予測する。
+    -- 速度は1階差分、加速度は速度の差分（位置の2階差分）から求める。
+    -- 現在のレーダー観測を世界座標へ直す処理には適用しない。
+    local previousPosition = previousOwnGlobalPos or ownGlobalPos
+    local delaySquaredHalf = LOGIC_DELAY ^ 2 * 0.5
+    local predictedOwnGlobalPos = {}
+    for axis = 1, 3 do
+        local velocityPerTick = ownGlobalPos[axis] - previousPosition[axis]
+        local accelerationPerTick2 = 0
+        if previousPreviousOwnGlobalPos then
+            accelerationPerTick2 = velocityPerTick - previousPosition[axis] + previousPreviousOwnGlobalPos[axis]
+        end
+        predictedOwnGlobalPos[axis] = ownGlobalPos[axis]
+            + velocityPerTick * LOGIC_DELAY
+            + accelerationPerTick2 * delaySquaredHalf
+    end
+    previousPreviousOwnGlobalPos = previousOwnGlobalPos
+    previousOwnGlobalPos = ownGlobalPos
 
     -- データリンク目標座標,トラッキングID
     -- 発射前フレーム(ID > 100000)はID・座標・速度を同じtickで一括保存する。
@@ -826,11 +836,6 @@ function onTick()
 
     -- 一度アクティブ誘導へ入ったら通信瞬断では解除しない
     isTargetTrackMode = isTargetTrackMode or isLaunch and isTargetInsideEffectiveRange
-    -- 自機姿勢をクォータニオンに変換
-
-    --  (エラー発生時は単位クォータニオンで代替)
-    if ownOrientation == nil then ownOrientation = { 1, 0, 0, 0 } end
-
     -- レーダー観測値の処理
     currentObservations = {} -- このTickで有効なレーダー観測リスト
     if isTargetTrackMode then
@@ -846,27 +851,21 @@ function onTick()
                 -- ローカル直交座標からグローバル直交座標へ
                 targetGlobal = localToGlobalCoords(targetLocalPosVec, ownGlobalPos, ownOrientation)
 
-                -- nilチェックは原則削除
-                if targetGlobal ~= nil then
-                    -- グローバル座標からグローバルな仰角・方位角を計算 (EKF用)
-                    relativeGlobalVec = vectorSub(targetGlobal, ownGlobalPos)
-                    -- nilチェックは原則削除
-                    if relativeGlobalVec ~= nil then
-                        distCheck = vectorMagnitude(relativeGlobalVec)
+                -- グローバル座標からグローバルな仰角・方位角を計算 (EKF用)
+                relativeGlobalVec = vectorSub(targetGlobal, ownGlobalPos)
+                distCheck = vectorMagnitude(relativeGlobalVec)
 
-                        globalElevation = math.asin(math.max(-1.0, math.min(1.0, relativeGlobalVec[2] / distCheck)))
-                        globalAzimuth = math.atan(relativeGlobalVec[1], relativeGlobalVec[3]) -- atan(East, North)
+                globalElevation = math.asin(math.max(-1, math.min(1, relativeGlobalVec[2] / distCheck)))
+                globalAzimuth = math.atan(relativeGlobalVec[1], relativeGlobalVec[3]) -- atan(East, North)
 
-                        table.insert(currentObservations, {
-                            distance = dist,             -- 元の観測距離
-                            azimuth = globalAzimuth,     -- グローバル方位角 (Z軸基準)
-                            elevation = globalElevation, -- グローバル仰角 (Y軸基準)
-                            globalX = targetGlobal[1],
-                            globalY = targetGlobal[2],
-                            globalZ = targetGlobal[3]
-                        })
-                    end -- relativeGlobalVec nil check end
-                end     -- targetGlobal nil check end
+                table.insert(currentObservations, {
+                    distance = dist,             -- 元の観測距離
+                    azimuth = globalAzimuth,     -- グローバル方位角 (Z軸基準)
+                    elevation = globalElevation, -- グローバル仰角 (Y軸基準)
+                    globalX = targetGlobal[1],
+                    globalY = targetGlobal[2],
+                    globalZ = targetGlobal[3]
+                })
             end
         end             -- radar loop end
     end
@@ -879,7 +878,6 @@ function onTick()
 
     for trackID, track in pairs(trackedTargets) do
         local dt_pred_sec = (currentTick - track.lastTick) * DT
-        if dt_pred_sec < 0 then dt_pred_sec = 0 end
 
         local X_pred, P_pred, newIntegralError = predictStep(track, dt_pred_sec)
 
@@ -901,7 +899,6 @@ function onTick()
     -- 予測失敗トラックを削除
     for _, id in ipairs(trackIDsToDelete) do trackedTargets[id] = nil end
     trackIDsToDelete = {} -- リセット
-
     -- (B) データアソシエーション (Global Nearest Neighbor - GNN)
     associations = {}       -- {epsilon, trackID, obsIndex, cache={Y, S_inv, H, R}}
     assignedObsIndices = {} -- 割り当て済みの観測値インデックス
@@ -911,7 +908,7 @@ function onTick()
     for trackID, predTrack in pairs(predictedTracks) do
         for obsIndex, obs in ipairs(currentObservations) do
             local epsilon, Y, S_inv, H, R_matrix = calculateInnovation(
-                predTrack.X_pred, predTrack.P_pred, obs, ownGlobalPos
+                predTrack.X_pred, predTrack.P_pred, obs, ownGlobalPos, trackID
             )
 
             if epsilon < DATA_ASSOCIATION_EPSILON_THRESHOLD then
@@ -973,9 +970,11 @@ function onTick()
             end
         else
             -- === マッチしなかった: ミス処理 ===
-            -- 状態は予測値を保持 (predictStep で P は増加済み)
-            -- track.X = predTrack.X_pred -- lastTick を更新しないので予測状態は保持しない方が良い
-            -- track.P = predTrack.P_pred
+            -- 固定中の主トラックは観測が途切れても停止させず、今回tickの予測状態まで進める。
+            -- lastSeenTickは更新しないため、観測ロスト時間と削除判定は従来どおり維持される。
+            if isTargetTrackMode and trackID == trackingID then
+                track.X, track.P, track.lastTick = predTrack.X_pred, predTrack.P_pred, currentTick
+            end
             track.misses = track.misses + 1
             track.hits = 0 -- 連続ヒット数をリセット (新規トラック判定用)
         end
@@ -1050,26 +1049,24 @@ function onTick()
         local trackX = targetToOutput.X
         local dt_delay = DT * LOGIC_DELAY
         local dt_delay2_half = dt_delay ^ 2 * 0.5
-        local outputX, outputY, outputZ
-        outputX = trackX[1][1] + trackX[2][1] * dt_delay + trackX[3][1] * dt_delay2_half
-        outputY = trackX[4][1] + trackX[5][1] * dt_delay + trackX[6][1] * dt_delay2_half
-        outputZ = trackX[7][1] + trackX[8][1] * dt_delay + trackX[9][1] * dt_delay2_half
-
-        output.setNumber(1, outputX)                                -- X
-        output.setNumber(2, outputY)                                -- Y
-        output.setNumber(3, outputZ)                                -- Z
-        output.setNumber(4, trackX[2][1] + trackX[3][1] * dt_delay) -- Vx
-        output.setNumber(5, trackX[5][1] + trackX[6][1] * dt_delay) -- Vy
-        output.setNumber(6, trackX[8][1] + trackX[9][1] * dt_delay) -- Vz
+        local outputTarget = {}
+        for axis = 1, 3 do
+            local stateIndex = (axis - 1) * 3 + 1
+            outputTarget[axis] = trackX[stateIndex][1]
+                + trackX[stateIndex + 1][1] * dt_delay
+                + trackX[stateIndex + 2][1] * dt_delay2_half
+            output.setNumber(axis, outputTarget[axis])
+            output.setNumber(axis + 3, trackX[stateIndex + 1][1] + trackX[stateIndex + 2][1] * dt_delay)
+        end
 --[[         output.setNumber(7, trackX[3][1])                           -- Ax
         output.setNumber(8, trackX[6][1])                           -- Ay
         output.setNumber(9, trackX[9][1])                           -- Az ]]
-        output.setNumber(12, primaryTrackID or 0)
+        output.setNumber(12, primaryTrackID)
         output.setNumber(32, targetToOutput.epsilon)                -- Epsilon
 
         trackingTargetLocalCoords = globalToLocalCoords(
-            { outputX, outputY, outputZ },
-            ownGlobalPos, ownOrientation
+            outputTarget,
+            predictedOwnGlobalPos, predictedOwnOrientation
         )
         trackingTargetLocalAngle = localCoordsToLocalAngle(trackingTargetLocalCoords)
         radarManualSweepX = trackingTargetLocalAngle.azimuth / PI2
@@ -1080,12 +1077,10 @@ function onTick()
         output.setNumber(11, radarManualSweepY)
     else
         -- トラックがない場合
-        output.setNumber(1, dataLinkGlobalPos[1])
-        output.setNumber(2, dataLinkGlobalPos[2])
-        output.setNumber(3, dataLinkGlobalPos[3])
-        output.setNumber(4, dataLinkTargetVelocity[1])
-        output.setNumber(5, dataLinkTargetVelocity[2])
-        output.setNumber(6, dataLinkTargetVelocity[3])
+        for axis = 1, 3 do
+            output.setNumber(axis, dataLinkGlobalPos[axis])
+            output.setNumber(axis + 3, dataLinkTargetVelocity[axis])
+        end
         for i = 7, 9 do
             output.setNumber(i, 0)
         end
@@ -1093,15 +1088,12 @@ function onTick()
         output.setNumber(10, radarManualSweepX) -- 中心視点
         output.setNumber(11, radarManualSweepY)
     end
-    -- 自機情報パススルー
-    output.setNumber(13, ownGlobalPos[1])
-    output.setNumber(14, ownGlobalPos[2])
-    output.setNumber(15, ownGlobalPos[3])
-    output.setNumber(16, ownOrientation[1])
-    output.setNumber(17, ownOrientation[2])
-    output.setNumber(18, ownOrientation[3])
-    output.setNumber(19, ownOrientation[4])
 
+    -- 自機の現在位置は誘導LuaとFOVロガーへ従来どおりパススルーする。
+    for axis = 1, 3 do output.setNumber(axis + 12, ownGlobalPos[axis]) end
+    for axis = 1, 4 do output.setNumber(axis + 15, ownOrientation[axis]) end
+    -- 一番最後の誘導に使うミサイルレーダーの検出中信号をパススルー
+    output.setBool(32,input.getBool(1))
 --[[             debug.log(
         "ID=" .. input.getNumber(32) ..
         " DL=" .. tostring(dataLinkTrackingID) ..
